@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(arduino-cli board:*)",
+      "Bash(arduino-cli core:*)",
+      "Bash(arduino-cli compile:*)",
+      "Bash(arduino-cli upload:*)",
+      "Bash(cat:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "WebSearch"
+    ]
+  }
+}
