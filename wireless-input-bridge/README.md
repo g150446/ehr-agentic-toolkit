@@ -1,6 +1,6 @@
-# BLE UART Mouse Control
+# Wireless Input Bridge
 
-ESP32でBLE UART経由でUSBマウスを制御するArduinoスケッチです。
+ESP32でBLE UART経由でUSBマウスとキーボードを制御するArduinoスケッチです。
 
 ## 必要なハードウェア
 
@@ -9,9 +9,16 @@ ESP32でBLE UART経由でUSBマウスを制御するArduinoスケッチです。
 
 ## 機能
 
-BLE UART経由で以下のコマンドを送信してUSBマウスを制御できます：
+BLE UART経由で以下のコマンドを送信してUSBマウスとキーボードを制御できます：
 
-### サポートされているコマンド
+### モード切替コマンド
+
+| コマンド | 説明 |
+|---------|------|
+| `mode:mouse` | マウスモードに切り替え |
+| `mode:keyboard` | キーボードモードに切り替え |
+
+### マウスコマンド（マウスモード時）
 
 | コマンド | 説明 | 例 |
 |---------|------|-----|
@@ -21,6 +28,12 @@ BLE UART経由で以下のコマンドを送信してUSBマウスを制御でき
 | `left:N` | カーソルをN ピクセル左に移動 | `left:10` |
 | `right:N` | カーソルをN ピクセル右に移動 | `right:10` |
 | `scroll:N` | N 単位スクロール（正の値で下、負の値で上） | `scroll:5` または `scroll:-5` |
+
+### キーボードコマンド（キーボードモード時）
+
+| コマンド | 説明 | 例 |
+|---------|------|-----|
+| `type:テキスト` | 指定したテキストを入力 | `type:Hello World` |
 
 ## スクロール機能について
 
@@ -41,7 +54,7 @@ scroll:-5   // 上に5単位スクロール
 
 1. このスケッチをESP32にアップロード
 2. シリアルモニタを開く（115200 baud）
-3. BLEデバイス名 "BLE Mouse Control" に接続
+3. BLEデバイス名 "BLE Mouse & Keyboard" に接続
 4. UARTサービス（UUID: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E）経由でコマンドを送信
 
 ## BLE UART接続方法
@@ -52,12 +65,19 @@ scroll:-5   // 上に5単位スクロール
 - **Android**: Serial Bluetooth Terminal, nRF Connect
 - **iOS**: LightBlue, nRF Connect
 
-1. アプリで "BLE Mouse Control" を検索
+1. アプリで "BLE Mouse & Keyboard" を検索
 2. 接続
 3. UART RX Characteristic（UUID: 6E400002-B5A3-F393-E0A9-E50E24DCCA9E）にコマンドを書き込み
 
 ## 使用例
 
+### モード切替
+```
+mode:mouse      // マウスモードに切り替え
+mode:keyboard   // キーボードモードに切り替え
+```
+
+### マウス操作（マウスモード時）
 ```
 click           // 左クリック
 up:10           // 10ピクセル上に移動
@@ -68,12 +88,19 @@ scroll:3        // 下に3単位スクロール
 scroll:-3       // 上に3単位スクロール
 ```
 
+### キーボード操作（キーボードモード時）
+```
+type:Hello World        // "Hello World"と入力
+type:こんにちは         // 日本語入力（要IME設定）
+type:user@example.com   // メールアドレス入力
+```
+
 ## 技術詳細
 
 ### 使用しているライブラリ
 
 - `BLEDevice.h`, `BLEServer.h`, `BLEUtils.h`, `BLE2902.h` - BLE通信
-- `USB.h`, `USBHIDMouse.h` - USB HIDマウスエミュレーション
+- `USB.h`, `USBHIDMouse.h`, `USBHIDKeyboard.h` - USB HIDマウス・キーボードエミュレーション
 
 ### UUIDs
 
@@ -85,7 +112,9 @@ scroll:-3       // 上に3単位スクロール
 
 - このスケッチはArduino USB ModeがUSBモード（OTGモードではない）の時に動作します
 - ESP32-S2またはESP32-S3のようなNative USB対応のボードが必要です
-- マウス制御が有効になると、コンピュータのマウスが乗っ取られます。使用には注意してください
+- マウス・キーボード制御が有効になると、コンピュータの入力デバイスが乗っ取られます。使用には注意してください
+- キーボードモードでの日本語入力には、コンピュータ側でIMEを有効にする必要があります
+- デフォルトではマウスモードで起動します
 
 ## ライセンス
 
