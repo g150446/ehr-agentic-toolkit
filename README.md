@@ -82,23 +82,6 @@ pip install -e .
 pip install -e ".[all]"
 ```
 
-### Initial Setup
-```bash
-# 1. Set up encrypted external SSD
-./scripts/setup_ssd.sh
-
-# 2. Initialize database
-./scripts/start_postgresql.sh
-ehr-bridge init
-
-# 3. Configure your EHR system
-ehr-bridge configure --ehr-type fujitsu
-
-# 4. Set up environment variables
-cp .env.example .env
-# Edit .env with your settings
-```
-
 ### Usage
 ```bash
 # Start the bridge
