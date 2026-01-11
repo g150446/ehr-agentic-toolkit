@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip:*)",
+      "Bash(python test.py:*)",
+      "Bash(python download_model.py:*)",
+      "Bash(bash:*)",
+      "Bash(ls:*)",
+      "Bash(python test_detailed.py:*)",
+      "Bash(python capture.py:*)",
+      "Bash(python capture_windows.py:*)"
+    ]
+  }
+}
