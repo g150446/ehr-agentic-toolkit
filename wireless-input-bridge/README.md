@@ -34,6 +34,10 @@ BLE UART経由で以下のコマンドを送信してUSBマウスとキーボー
 | コマンド | 説明 | 例 |
 |---------|------|-----|
 | `type:テキスト` | 指定したテキストを入力 | `type:Hello World` |
+| `key:enter` | Enterキーを押す | `key:enter` |
+| `key:tab` | Tabキーを押す | `key:tab` |
+| `key:backspace` | Backspaceキーを押す | `key:backspace` |
+| `key:esc` | Escキーを押す | `key:esc` |
 
 ## スクロール機能について
 
@@ -93,6 +97,10 @@ scroll:-3       // 上に3単位スクロール
 type:Hello World        // "Hello World"と入力
 type:こんにちは         // 日本語入力（要IME設定）
 type:user@example.com   // メールアドレス入力
+key:enter               // Enterキーを押す
+key:tab                 // Tabキーを押す
+key:backspace           // Backspaceキーを押す
+key:esc                 // Escキーを押す
 ```
 
 ## 技術詳細

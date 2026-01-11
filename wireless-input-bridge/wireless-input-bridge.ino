@@ -17,6 +17,10 @@
 
   Keyboard Commands:
   - "type:Hello"  : Type text string
+  - "key:enter"   : Press Enter key
+  - "key:tab"     : Press Tab key
+  - "key:backspace" : Press Backspace key
+  - "key:esc"     : Press Escape key
 
   Hardware:
   - ESP32-S2 or ESP32-S3 with Native USB support
@@ -134,6 +138,33 @@ void processCommand(String command) {
     Serial.print("Typed: ");
     Serial.println(text);
   }
+  else if (command.startsWith("key:")) {
+    String keyName = command.substring(4);
+    if (keyName == "enter" || keyName == "return") {
+      Keyboard.write(KEY_RETURN);
+      Serial.println("Pressed: Enter");
+    }
+    else if (keyName == "tab") {
+      Keyboard.write(KEY_TAB);
+      Serial.println("Pressed: Tab");
+    }
+    else if (keyName == "backspace") {
+      Keyboard.write(KEY_BACKSPACE);
+      Serial.println("Pressed: Backspace");
+    }
+    else if (keyName == "delete") {
+      Keyboard.write(KEY_DELETE);
+      Serial.println("Pressed: Delete");
+    }
+    else if (keyName == "esc") {
+      Keyboard.write(KEY_ESC);
+      Serial.println("Pressed: Esc");
+    }
+    else {
+      Serial.print("Unknown key: ");
+      Serial.println(keyName);
+    }
+  }
   else {
     Serial.println("Unknown command");
   }
@@ -219,6 +250,10 @@ void setup() {
   Serial.println("  scroll:N       - Scroll by N units");
   Serial.println("\nKeyboard commands:");
   Serial.println("  type:TEXT      - Type text string");
+  Serial.println("  key:enter      - Press Enter key");
+  Serial.println("  key:tab        - Press Tab key");
+  Serial.println("  key:backspace  - Press Backspace key");
+  Serial.println("  key:esc        - Press Escape key");
   Serial.println("\nCurrent mode: MOUSE");
   Serial.println("=================================\n");
 }
