@@ -1,0 +1,48 @@
+# EHR AI Bridge Toolkit - Python Dependencies
+
+# Core Computer Vision & ML
+opencv-python>=4.6.0
+numpy>=1.21.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# DocLayout-YOLO
+ultralytics>=8.0.0
+# Install DocLayout-YOLO from local directory:
+# pip install -e ./DocLayout-YOLO
+
+# OCR
+easyocr>=1.7.0
+pillow>=9.0.0
+
+# BLE Communication (for Windows login automation)
+bleak>=0.21.1
+
+# Configuration & Environment
+python-dotenv>=1.0.0
+
+# Database (PostgreSQL)
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+
+# Encryption
+cryptography>=41.0.0
+
+# Logging & Monitoring
+colorlog>=6.7.0
+
+# Data Processing
+pandas>=2.0.0
+openpyxl>=3.0.0  # For Excel export
+
+# Testing (optional)
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# Development Tools (optional)
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+
+# Additional SSL support for EasyOCR
+certifi>=2023.0.0
