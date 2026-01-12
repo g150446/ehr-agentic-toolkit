@@ -98,7 +98,19 @@ class ModelManager:
         if self.ui_detection_model is None:
             logger.info("Loading YOLOv8 UI detection model from HuggingFace...")
             try:
+                import torch
                 from ultralyticsplus import YOLO
+
+                # Allow ultralytics classes for PyTorch 2.6+ weights_only=True security
+                # This is safe for trusted HuggingFace models
+                try:
+                    # Import ultralytics classes that need to be allowlisted
+                    from ultralytics.nn.tasks import DetectionModel
+                    torch.serialization.add_safe_globals([DetectionModel])
+                    logger.debug("Added ultralytics.nn.tasks.DetectionModel to safe globals")
+                except Exception as e:
+                    logger.warning(f"Could not add safe globals (older PyTorch version?): {e}")
+
                 self.ui_detection_model = YOLO('foduucom/web-form-ui-field-detection')
 
                 # Set model parameters for optimal performance
