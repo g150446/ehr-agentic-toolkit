@@ -180,6 +180,10 @@ class BrowserController:
         logger.info("Opening Chrome browser...")
 
         try:
+            # Switch to keyboard mode
+            await self.ble.switch_to_keyboard_mode()
+            await asyncio.sleep(0.2)
+
             # Press Windows key to open start menu
             await self.ble.send_command("key:windows")
             await asyncio.sleep(1.0)
@@ -258,6 +262,10 @@ class BrowserController:
         try:
             x, y = coords
 
+            # Switch to mouse mode for clicking
+            await self.ble.switch_to_mouse_mode()
+            await asyncio.sleep(0.2)
+
             # Move mouse to address bar
             await self.ble.move_mouse_to_position(x, y)
             await asyncio.sleep(0.2)
@@ -286,10 +294,14 @@ class BrowserController:
         logger.info(f"Navigating to {url}...")
 
         try:
-            # Click address bar
+            # Click address bar (uses mouse mode internally)
             if not await self.click_address_bar():
                 logger.error("Failed to click address bar")
                 return False
+
+            # Switch to keyboard mode for typing
+            await self.ble.switch_to_keyboard_mode()
+            await asyncio.sleep(0.2)
 
             # Clear existing content (Ctrl+A, Delete)
             await self.ble.send_command("key:ctrl+a")
