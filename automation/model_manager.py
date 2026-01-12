@@ -101,17 +101,27 @@ class ModelManager:
                 import torch
                 from ultralyticsplus import YOLO
 
-                # Allow ultralytics classes for PyTorch 2.6+ weights_only=True security
-                # This is safe for trusted HuggingFace models
-                try:
-                    # Import ultralytics classes that need to be allowlisted
-                    from ultralytics.nn.tasks import DetectionModel
-                    torch.serialization.add_safe_globals([DetectionModel])
-                    logger.debug("Added ultralytics.nn.tasks.DetectionModel to safe globals")
-                except Exception as e:
-                    logger.warning(f"Could not add safe globals (older PyTorch version?): {e}")
+                # For PyTorch 2.6+: Temporarily allow weights_only=False for trusted HuggingFace model
+                # YOLO models contain many nested classes that would need individual allowlisting
+                # Since we trust the foduucom/web-form-ui-field-detection model from HuggingFace,
+                # we temporarily override torch.load to use weights_only=False
+                original_load = torch.load
 
-                self.ui_detection_model = YOLO('foduucom/web-form-ui-field-detection')
+                def safe_load_for_trusted_model(*args, **kwargs):
+                    """Wrapper for torch.load that sets weights_only=False for trusted models"""
+                    kwargs['weights_only'] = False
+                    return original_load(*args, **kwargs)
+
+                # Temporarily replace torch.load
+                torch.load = safe_load_for_trusted_model
+                logger.debug("Temporarily set torch.load to use weights_only=False for trusted model")
+
+                try:
+                    self.ui_detection_model = YOLO('foduucom/web-form-ui-field-detection')
+                finally:
+                    # Restore original torch.load
+                    torch.load = original_load
+                    logger.debug("Restored original torch.load")
 
                 # Set model parameters for optimal performance
                 self.ui_detection_model.overrides['conf'] = 0.25  # NMS confidence threshold
