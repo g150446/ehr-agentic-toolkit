@@ -8,17 +8,21 @@ Automates Windows PC login using:
 - ESP32 BLE UART for keyboard/mouse control
 
 Usage:
-    python -m automation.windows_login [--password PASSWORD] [--debug] [--no-verify]
+    python -m automation.windows_login [--password PASSWORD] [--debug] [--no-verify] [--monitor-mode]
     python -m automation.windows_login --test-ble
     python -m automation.windows_login --test-capture
+    python -m automation.windows_login --password PASSWORD --monitor-mode  # With live window
 """
 
 import asyncio
 import argparse
 import sys
 import logging
+import cv2
+import numpy as np
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # Import automation modules
 from automation.config import load_config, AutomationConfig
@@ -41,6 +45,96 @@ from automation.utils import (
 
 
 logger = logging.getLogger("windows_login")
+
+
+# Monitor mode globals
+_monitor_window_name = "Windows Login Automation Monitor (Press 'q' to quit)"
+_monitor_enabled = False
+
+
+def display_frame_with_status(
+    frame: np.ndarray,
+    phase: str,
+    status: str,
+    progress: Optional[str] = None
+) -> bool:
+    """
+    Display frame with status overlay in monitor mode.
+
+    Args:
+        frame: Frame to display
+        phase: Current phase name (e.g., "Initialization", "Screen Capture")
+        status: Current status message
+        progress: Optional progress indicator (e.g., "[2/5]")
+
+    Returns:
+        False if user pressed 'q' to quit, True otherwise
+    """
+    if not _monitor_enabled or frame is None:
+        return True
+
+    # Create copy for overlay
+    display = frame.copy()
+    h, w = display.shape[:2]
+
+    # Status bar (top)
+    status_lines = [
+        f"Phase: {phase}",
+        f"Status: {status}",
+    ]
+    if progress:
+        status_lines.append(f"Progress: {progress}")
+
+    # Draw semi-transparent background for status bar
+    overlay = display.copy()
+    cv2.rectangle(overlay, (0, 0), (w, 120), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.7, display, 0.3, 0, display)
+
+    # Draw status text
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    y_offset = 30
+    for line in status_lines:
+        cv2.putText(display, line, (10, y_offset), font, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+        y_offset += 30
+
+    # Instructions at bottom
+    instructions = "Press 'q' to quit early | 's' to save screenshot"
+    (tw, th), _ = cv2.getTextSize(instructions, font, 0.5, 1)
+    cv2.rectangle(display, (0, h - 30), (tw + 20, h), (0, 0, 0), -1)
+    cv2.putText(display, instructions, (10, h - 10), font, 0.5, (255, 255, 0), 1, cv2.LINE_AA)
+
+    # Display
+    cv2.imshow(_monitor_window_name, display)
+
+    # Check for keyboard input (non-blocking)
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        logger.info("Monitor mode: User requested quit")
+        return False
+    elif key == ord('s'):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"monitor_manual_{timestamp}.jpg"
+        from automation.utils import save_debug_image
+        from automation.config import load_config
+        config = load_config()
+        save_debug_image(display, filename, config.screenshot_dir, timestamp=False)
+        logger.info(f"Manual screenshot saved: {filename}")
+
+    return True
+
+
+def init_monitor_window():
+    """Initialize monitor window if monitor mode is enabled."""
+    if _monitor_enabled:
+        cv2.namedWindow(_monitor_window_name, cv2.WINDOW_NORMAL)
+        logger.info("Monitor window initialized (press 'q' to quit)")
+
+
+def cleanup_monitor_window():
+    """Cleanup monitor window."""
+    if _monitor_enabled:
+        cv2.destroyAllWindows()
+        logger.info("Monitor window closed")
 
 
 async def test_ble_connection(config: AutomationConfig) -> bool:
@@ -159,6 +253,9 @@ async def perform_windows_login(
     """
     progress = ProgressLogger(5, logger)
 
+    # Initialize monitor window if enabled
+    init_monitor_window()
+
     # ===================================================================
     # Phase 1: Initialization
     # ===================================================================
@@ -221,6 +318,18 @@ async def perform_windows_login(
         # Save initial screen capture
         save_debug_image(frame, "01_initial_screen.jpg", config.screenshot_dir)
 
+        # Display in monitor mode
+        if not display_frame_with_status(
+            frame,
+            "Phase 2: Screen Capture",
+            "Initial screen captured",
+            "[2/5]"
+        ):
+            logger.info("User quit via monitor window")
+            await ble.disconnect()
+            cleanup_monitor_window()
+            return False
+
         progress.step(f"Screen captured: {frame.shape[1]}x{frame.shape[0]}")
         debug_pause(f"画面キャプチャ完了: {frame.shape}", config.debug_mode)
 
@@ -257,6 +366,18 @@ async def perform_windows_login(
             vis_image = visualize_detections(frame, regions)
             save_debug_image(vis_image, "02_initial_analysis.jpg", config.screenshot_dir)
 
+            # Display analyzed image in monitor mode
+            if not display_frame_with_status(
+                vis_image,
+                "Phase 3: Screen Analysis",
+                f"Detected {len(regions)} regions",
+                "[3/5]"
+            ):
+                logger.info("User quit via monitor window")
+                await ble.disconnect()
+                cleanup_monitor_window()
+                return False
+
         progress.step(f"Screen analysis complete: {len(regions)} regions detected")
         debug_pause(f"検出完了: {len(regions)}個の領域", config.debug_mode)
 
@@ -287,6 +408,18 @@ async def perform_windows_login(
 
         if password_screen is not None:
             save_debug_image(password_screen, "03_password_screen.jpg", config.screenshot_dir)
+
+            # Display password screen in monitor mode
+            if not display_frame_with_status(
+                password_screen,
+                "Phase 4: Input Control",
+                "Password screen captured, entering password...",
+                "[4/5]"
+            ):
+                logger.info("User quit via monitor window")
+                await ble.disconnect()
+                cleanup_monitor_window()
+                return False
 
             # Analyze password screen
             if config.debug_mode:
@@ -319,6 +452,18 @@ async def perform_windows_login(
                         password_field
                     )
                     save_debug_image(vis_password, "04_password_field_detected.jpg", config.screenshot_dir)
+
+                    # Display password field detection in monitor mode
+                    if not display_frame_with_status(
+                        vis_password,
+                        "Phase 4: Input Control",
+                        f"Password field detected at ({password_field.region.center['x']}, {password_field.region.center['y']})",
+                        "[4/5]"
+                    ):
+                        logger.info("User quit via monitor window")
+                        await ble.disconnect()
+                        cleanup_monitor_window()
+                        return False
 
                     # Step 4.2: Click password field
                     logger.info("Step 4.2: Clicking password field...")
@@ -385,6 +530,18 @@ async def perform_windows_login(
             if verify_frame is not None:
                 save_debug_image(verify_frame, "05_post_login_screen.jpg", config.screenshot_dir)
 
+                # Display verification frame in monitor mode
+                if not display_frame_with_status(
+                    verify_frame,
+                    "Phase 5: Verification",
+                    "Verifying login success...",
+                    "[5/5]"
+                ):
+                    logger.info("User quit via monitor window")
+                    await ble.disconnect()
+                    cleanup_monitor_window()
+                    return False
+
                 # Simple verification: check if screen changed
                 # (More sophisticated verification could analyze desktop elements)
                 import cv2
@@ -414,6 +571,7 @@ async def perform_windows_login(
     finally:
         # Cleanup
         await ble.disconnect()
+        cleanup_monitor_window()
 
     logger.info("=" * 70)
     if success is True:
@@ -467,8 +625,17 @@ def main():
         type=str,
         help="Path to .env file (default: project root)"
     )
+    parser.add_argument(
+        "--monitor-mode",
+        action="store_true",
+        help="Show live window with automation progress (press 'q' to quit)"
+    )
 
     args = parser.parse_args()
+
+    # Set global monitor mode flag
+    global _monitor_enabled
+    _monitor_enabled = args.monitor_mode
 
     # Load configuration
     try:

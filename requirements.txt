@@ -11,6 +11,9 @@ ultralytics>=8.0.0
 # Install DocLayout-YOLO from local directory:
 # pip install -e ./DocLayout-YOLO
 
+# YOLOv8 UI Detection (for browser assistant)
+ultralyticsplus>=0.0.28
+
 # OCR
 easyocr>=1.7.0
 pillow>=9.0.0

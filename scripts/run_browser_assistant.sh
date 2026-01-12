@@ -1,0 +1,22 @@
+#!/bin/bash
+# Helper script to run Interactive Browser Assistant
+# Automatically sets up environment and runs the automation
+
+# Get project root (parent directory of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# Activate venv if it exists
+if [ -d "venv" ]; then
+    source venv/bin/activate
+else
+    echo "Error: Virtual environment not found. Run ./scripts/setup_automation.sh first."
+    exit 1
+fi
+
+# Set PYTHONPATH
+export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
+
+# Run browser assistant with all passed arguments
+python -m automation.browser_assistant "$@"

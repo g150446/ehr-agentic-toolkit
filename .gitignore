@@ -28,6 +28,10 @@ captures/
 screenshots/
 ehr_captures/
 
+# Automation outputs
+automation_outputs/
+monitor_outputs/
+
 # Logs
 logs/
 *.log
@@ -318,6 +322,7 @@ id_ed25519.pub
 # Cache directories
 .cache/
 *.cache
+.huggingface/
 
 # ===========================
 # Project Specific Exclusions

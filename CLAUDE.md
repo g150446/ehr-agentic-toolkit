@@ -26,6 +26,61 @@ The system follows a layered architecture:
 - **Universal Compatibility**: Works via screen capture, no EHR modification required
 - **Plugin Architecture**: Custom EHR adapters in `ehr_ai_bridge/adapters/`
 
+## Python Environment Setup
+
+**CRITICAL: Always use virtual environment (venv) for Python development in this project.**
+
+### Initial Setup
+
+```bash
+# Create virtual environment in project root
+python3 -m venv venv
+
+# Activate virtual environment
+source venv/bin/activate  # On macOS/Linux
+# OR
+venv\Scripts\activate  # On Windows
+
+# Upgrade pip
+pip install --upgrade pip
+
+# Install project dependencies
+pip install -r requirements.txt
+
+# Install DocLayout-YOLO in editable mode
+cd DocLayout-YOLO
+pip install -e .
+cd ..
+
+# Verify PYTHONPATH for automation module
+export PYTHONPATH=/path/to/ehr-ai-bridge-toolkit:$PYTHONPATH
+```
+
+### Why Virtual Environment?
+
+1. **Dependency Isolation**: Prevents conflicts between project dependencies and system packages
+2. **Reproducibility**: Ensures consistent environment across development machines
+3. **Clean Uninstall**: Easy to remove all project dependencies by deleting venv directory
+4. **Version Control**: Each project can use different versions of the same library
+
+### For Claude Code
+
+When installing Python libraries, **ALWAYS**:
+1. Check if virtual environment is activated (look for `(venv)` in prompt)
+2. If not activated, activate it first: `source venv/bin/activate`
+3. Install packages using `pip install` (will install to venv, not system-wide)
+4. Never install packages globally using system pip unless explicitly requested
+
+### Quick Check
+
+```bash
+# Verify you're using venv Python
+which python  # Should show: /path/to/project/venv/bin/python
+
+# Check installed packages in venv
+pip list
+```
+
 ## Development Commands
 
 ### DocLayout-YOLO (Document Layout Analysis)
@@ -68,6 +123,39 @@ python val.py --data <dataset> --model checkpoint.pt --device 0 --batch-size 64
 # Format DocSynth300K dataset for training
 python format_docsynth300k.py
 ```
+
+### Windows Login Automation
+
+The Windows login automation uses HDMI capture and ESP32 BLE keyboard/mouse emulation.
+
+```bash
+# Test BLE connection to ESP32
+./scripts/run_automation.sh --test-ble
+
+# Test HDMI screen capture
+./scripts/run_automation.sh --test-capture
+
+# Run full login automation (debug mode with step-by-step pauses)
+./scripts/run_automation.sh --password YOUR_PASSWORD --debug
+
+# Run in non-debug mode (automatic execution)
+./scripts/run_automation.sh --password YOUR_PASSWORD
+
+# Skip login verification
+./scripts/run_automation.sh --password YOUR_PASSWORD --no-verify
+```
+
+**Manual usage** (if not using helper script):
+```bash
+export PYTHONPATH=/Users/g150446/gitdir/ehr-ai-bridge-toolkit:$PYTHONPATH
+python -m automation.windows_login --test-ble
+```
+
+**Configuration**: Edit `.env` file in project root:
+- `ESP32_DEVICE_NAME`: BLE device name (default: "BLE Mouse & Keyboard")
+- `CAPTURE_DEVICE_INDEX`: Video capture device index (default: 0)
+- `WINDOWS_LOGIN_PASSWORD`: Windows login password
+- `LOGIN_DEBUG_MODE`: Enable debug mode (default: true)
 
 ### Main EHR Bridge Commands
 
