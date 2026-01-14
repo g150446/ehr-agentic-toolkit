@@ -19,6 +19,7 @@ EHR AI Bridge Toolkit connects your existing on-premises EHR system with AI capa
 - 📹 **Real-time Stream Monitor** - Debug HDMI capture with YOLO detection visualization ✅ **Implemented**
 - 🎮 **Windows Automation** - Automated login via ESP32 BLE keyboard emulation ✅ **Implemented**
 - 💬 **Interactive Browser Assistant** - Terminal chat for remote Chrome control with dual YOLO models (DocLayout + YOLOv8) ✅ **Implemented**
+- 🧪 **BLE Test CLI** - Interactive testing tool for ESP32 keyboard/mouse control ✅ **Implemented**
 
 ## 📊 Project Status
 
@@ -30,6 +31,7 @@ EHR AI Bridge Toolkit connects your existing on-premises EHR system with AI capa
 | **Stream Monitor** | ✅ **Complete** | Interactive HDMI capture monitor with detection overlay |
 | **Windows Automation** | ✅ **Complete** | Automated login via BLE keyboard emulation |
 | **ESP32 BLE Control** | ✅ **Complete** | Keyboard/mouse HID emulation over Bluetooth |
+| **BLE Test CLI** | ✅ **Complete** | Interactive testing tool for ESP32 keyboard/mouse |
 | **Browser Assistant** | ✅ **Complete** | Interactive chat with DocLayout-YOLO + YOLOv8 UI detection |
 | **EHR Adapters** | 🔄 **In Progress** | Fujitsu adapter framework implemented |
 | **Anonymization** | 📋 **Planned** | PHI removal and data anonymization |
@@ -248,13 +250,13 @@ cat .env | grep -E "ESP32_DEVICE_NAME|BLE_"
 
 ```bash
 # Basic mode
-./scripts/run_browser_assistant.sh
+./scripts/run_pc_controller.sh
 
 # Debug mode (recommended for first time)
-./scripts/run_browser_assistant.sh --debug
+./scripts/run_pc_controller.sh --debug
 
 # Custom video device
-./scripts/run_browser_assistant.sh --device 1 --debug
+./scripts/run_pc_controller.sh --device 1 --debug
 ```
 
 **3. Interactive Chat Session**
@@ -443,7 +445,7 @@ If you get an import error, the package might not be installed. Run setup again:
 
 - Check MiraBox is connected and powered
 - Verify Windows PC HDMI is connected to MiraBox
-- Try different device index: `./scripts/run_browser_assistant.sh --device 1`
+- Try different device index: `./scripts/run_pc_controller.sh --device 1`
 - Test capture: `./scripts/run_automation.sh --test-capture`
 
 **Chrome doesn't open**

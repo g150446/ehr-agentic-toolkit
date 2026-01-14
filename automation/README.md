@@ -4,30 +4,182 @@ This directory contains automation tools for HDMI capture, screen analysis, and 
 
 ## Tools
 
-1. **HDMI Capture Stream Monitor** - Real-time video monitoring with optional YOLO detection
+1. **HDMI Capture Stream Monitor** - Standalone real-time video monitoring with optional YOLO detection
 2. **Windows Login Automation** - Automated login using HDMI capture and ESP32 BLE control
 3. **Interactive Browser Assistant** - Terminal chat interface for remote Chrome browser control
+4. **BLE Test CLI** - Interactive testing tool for ESP32 BLE keyboard and mouse
+
+---
+
+## BLE Test CLI
+
+Interactive command-line tool for manually testing BLE keyboard and mouse commands with the ESP32 wireless input bridge. Provides a REPL-style interface for sending individual commands to test the BLE connection and input control.
+
+### Quick Start
+
+```bash
+# Start interactive CLI
+./scripts/run_ble_test.sh
+
+# With custom device name
+./scripts/run_ble_test.sh --device-name "My ESP32"
+
+# With custom timeout
+./scripts/run_ble_test.sh --timeout 15
+```
+
+### Interactive Commands
+
+Once in the CLI, use these commands:
+
+#### Connection Management
+```
+connect         - Scan and connect to ESP32
+disconnect      - Disconnect from ESP32
+status          - Show connection status and current mode
+scan            - Scan for available BLE devices
+```
+
+#### Mode Switching
+```
+keyboard        - Switch to keyboard mode
+mouse           - Switch to mouse mode
+```
+
+#### Keyboard Commands (requires keyboard mode)
+```
+type "text"     - Type text string
+press <key>     - Press special key (enter, tab, esc, backspace, delete)
+```
+
+#### Mouse Commands (requires mouse mode)
+```
+move <x> <y>    - Move mouse relatively (positive=right/down, negative=left/up)
+moveto <x> <y>  - Move to absolute position from top-left
+click           - Left mouse click
+scroll <amount> - Scroll wheel (positive=down, negative=up)
+reset           - Reset cursor to origin (0, 0)
+```
+
+#### Utilities
+```
+raw <command>   - Send raw BLE UART command
+help [command]  - Show help for all commands or specific command
+quit / exit     - Exit the CLI
+```
+
+### Example Session
+
+```
+$ ./scripts/run_ble_test.sh
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLE Keyboard & Mouse Test CLI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type 'help' for commands, 'quit' to exit
+
+(BLE Test) connect
+[INFO] Scanning for: BLE Mouse & Keyboard
+[SUCCESS] Connected to ESP32 at XX:XX:XX:XX:XX:XX
+
+(BLE Test) keyboard
+[SUCCESS] Switched to keyboard mode
+
+(BLE Test) type "Hello World"
+[SUCCESS] Typed: Hello World
+
+(BLE Test) press enter
+[SUCCESS] Pressed: Enter
+
+(BLE Test) mouse
+[SUCCESS] Switched to mouse mode
+
+(BLE Test) move 100 50
+[SUCCESS] Moved: right 100, down 50
+
+(BLE Test) click
+[SUCCESS] Clicked
+
+(BLE Test) status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Connected:      Yes
+Device:         BLE Mouse & Keyboard
+Address:        XX:XX:XX:XX:XX:XX
+Current Mode:   Mouse
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+(BLE Test) quit
+Goodbye!
+```
+
+### Features
+
+- **Interactive REPL interface** - Natural command-line interaction with history
+- **Colored output** - Visual feedback with success/error/info messages
+- **Connection status tracking** - Always know if you're connected and in what mode
+- **Comprehensive help** - Built-in help for all commands
+- **Error handling** - Clear error messages with helpful hints
+- **Tab completion** - Command history with up/down arrows
+- **Raw command mode** - Send any BLE UART command for debugging
+
+### Use Cases
+
+- **Test ESP32 BLE connection** - Verify ESP32 is advertising and accepting connections
+- **Manual keyboard control** - Type text and press keys remotely
+- **Manual mouse control** - Move cursor, click, and scroll remotely
+- **Debug automation issues** - Test individual commands to isolate problems
+- **Learn BLE protocol** - Understand the command format using raw mode
+- **Integration testing** - Verify keyboard/mouse work before running automation
+
+### Configuration
+
+Uses the same `.env` configuration as other automation tools:
+
+```bash
+ESP32_DEVICE_NAME=BLE Mouse & Keyboard
+BLE_SERVICE_UUID=6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+BLE_RX_CHAR_UUID=6E400002-B5A3-F393-E0A9-E50E24DCCA9E
+BLE_TX_CHAR_UUID=6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+```
+
+### Troubleshooting
+
+**"Device not found"**
+- Make sure ESP32 is powered on and advertising
+- Check Bluetooth is enabled on your Mac
+- Verify device name matches `ESP32_DEVICE_NAME` in `.env`
+- Try the `scan` command to see available devices
+
+**"Not connected to BLE device"**
+- Run `connect` command first
+- Check that ESP32 is not connected to another device
+- Try disconnecting and reconnecting
+
+**"Failed to send command"**
+- Verify you're in the correct mode (keyboard/mouse)
+- Check ESP32 is still connected (`status` command)
+- Try reconnecting
 
 ---
 
 ## HDMI Capture Stream Monitor
 
-Real-time video streaming tool for HDMI capture devices with optional DocLayout-YOLO detection overlay.
+Real-time video streaming tool for HDMI capture devices with optional DocLayout-YOLO detection overlay. Runs independently from the chat interface.
 
 ### Quick Start
 
 ```bash
 # Basic streaming (5 FPS, raw mode)
-./scripts/run_monitor.sh
+./scripts/run_monitor_standalone.sh
 
 # With detection enabled from start
-./scripts/run_monitor.sh --detection-on
+./scripts/run_monitor_standalone.sh --detection-on
 
 # Custom frame rate
-./scripts/run_monitor.sh --fps 10
+./scripts/run_monitor_standalone.sh --fps 10
 
 # Custom confidence threshold
-./scripts/run_monitor.sh --confidence 0.3 --detection-on
+./scripts/run_monitor_standalone.sh --confidence 0.3 --detection-on
 ```
 
 ### Keyboard Controls
@@ -62,7 +214,7 @@ Real-time video streaming tool for HDMI capture devices with optional DocLayout-
 ### Command-Line Options
 
 ```bash
-python -m automation.monitor_stream \
+python -m automation.monitor_standalone \
   --device 0              # Video capture device index (default: 0)
   --fps 5                 # Target frame rate (default: 5.0)
   --detection-on          # Enable YOLO detection from start
@@ -94,13 +246,18 @@ Terminal-based chat assistant that controls a remote Windows PC's Chrome browser
 
 ```bash
 # Start interactive assistant
-./scripts/run_browser_assistant.sh
+./scripts/run_pc_controller.sh
 
 # With custom device
-./scripts/run_browser_assistant.sh --device 1
+./scripts/run_pc_controller.sh --device 1
 
 # Debug mode
-./scripts/run_browser_assistant.sh --debug
+./scripts/run_pc_controller.sh --debug
+```
+
+For HDMI capture monitor, use the standalone script:
+```bash
+./scripts/run_monitor_standalone.sh
 ```
 
 ### Features
@@ -110,6 +267,7 @@ Terminal-based chat assistant that controls a remote Windows PC's Chrome browser
 - **Browser Automation** - Open Chrome, navigate to URLs, click elements
 - **Screen Analysis** - Analyze current screen with either model
 - **Screenshot Capture** - Save frames for analysis
+- **HDMI Capture Monitor** - Real-time video streaming with detection overlay
 
 ### Chat Commands
 
@@ -167,6 +325,7 @@ Type 'help' for available commands.
 - Document layout detection
 - Tables, text blocks, figures, titles
 - Best for document analysis
+- Also used by standalone monitor for screen detection
 
 **YOLOv8 UI Detection** (`foduucom/web-form-ui-field-detection`):
 - Web form and UI field detection
@@ -431,10 +590,12 @@ Don't verify login success:
 
 - `config.py`: Configuration and .env loading
 - `ble_controller.py`: ESP32 BLE communication
+- `ble_test_cli.py`: Interactive BLE testing CLI tool
 - `screen_analyzer.py`: DocLayout-YOLO + EasyOCR integration
 - `model_manager.py`: Multi-model management (DocLayout-YOLO + YOLOv11)
 - `utils.py`: Logging, debugging, progress tracking
-- `monitor_stream.py`: HDMI capture stream monitor with YOLO detection
+- `monitor_stream.py`: Original HDMI capture stream monitor with YOLO detection (legacy)
+- `monitor_standalone.py`: Standalone HDMI capture monitor (recommended)
 - `windows_login.py`: Main automation pipeline
 - `browser_assistant.py`: Interactive browser automation chat tool
 
