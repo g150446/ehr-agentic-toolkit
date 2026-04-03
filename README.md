@@ -99,8 +99,8 @@ EHR AI Bridge Toolkit connects your existing on-premises EHR system with AI capa
 **Option 1: Automated Setup (Recommended)**
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ehr-ai-bridge-toolkit.git
-cd ehr-ai-bridge-toolkit
+git clone https://github.com/g150446/ehr-agentic-toolkit.git
+cd ehr-agentic-toolkit
 
 # Run setup script (installs everything)
 ./scripts/setup_automation.sh
@@ -113,8 +113,8 @@ nano .env  # Configure your settings
 **Option 2: Manual Setup**
 ```bash
 # Clone and enter directory
-git clone https://github.com/yourusername/ehr-ai-bridge-toolkit.git
-cd ehr-ai-bridge-toolkit
+git clone https://github.com/g150446/ehr-agentic-toolkit.git
+cd ehr-agentic-toolkit
 
 # Create virtual environment
 python3 -m venv venv
@@ -519,13 +519,13 @@ Don't see your EHR? Create a custom adapter using our [adapter development guide
 
 **Solution:** Make sure you're using the helper scripts from the project root:
 ```bash
-cd /path/to/ehr-ai-bridge-toolkit
+cd /path/to/ehr-agentic-toolkit
 ./scripts/run_monitor.sh
 ```
 
 Or set PYTHONPATH manually:
 ```bash
-export PYTHONPATH=/path/to/ehr-ai-bridge-toolkit:$PYTHONPATH
+export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 python -m automation.monitor_stream
 ```
 
@@ -605,7 +605,7 @@ rm -rf venv
 ### Getting Help
 
 - **Documentation:** Check [automation/README.md](automation/README.md) for detailed usage
-- **Issues:** Report bugs at [GitHub Issues](https://github.com/yourusername/ehr-ai-bridge-toolkit/issues)
+- **Issues:** Report bugs at [GitHub Issues](https://github.com/g150446/ehr-agentic-toolkit/issues)
 - **Logs:** Check `automation_outputs/logs/` for detailed error messages
 
 ## 🔒 Security & Privacy
@@ -669,7 +669,7 @@ This software is provided for research and development purposes. It is not a med
 
 ## 📧 Contact
 
-- Issues: [GitHub Issues](https://github.com/yourusername/ehr-ai-bridge-toolkit/issues)
+- Issues: [GitHub Issues](https://github.com/g150446/ehr-agentic-toolkit/issues)
 - Email: your.email@example.com
 
 ---

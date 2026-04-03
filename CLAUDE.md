@@ -53,7 +53,7 @@ pip install -e .
 cd ..
 
 # Verify PYTHONPATH for automation module
-export PYTHONPATH=/path/to/ehr-ai-bridge-toolkit:$PYTHONPATH
+export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 ```
 
 ### Why Virtual Environment?
@@ -147,7 +147,7 @@ The Windows login automation uses HDMI capture and ESP32 BLE keyboard/mouse emul
 
 **Manual usage** (if not using helper script):
 ```bash
-export PYTHONPATH=/Users/g150446/gitdir/ehr-ai-bridge-toolkit:$PYTHONPATH
+export PYTHONPATH=/Users/g150446/projects/ehr-agentic-toolkit:$PYTHONPATH
 python -m automation.windows_login --test-ble
 ```
 

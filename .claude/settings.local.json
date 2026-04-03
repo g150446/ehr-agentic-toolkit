@@ -5,7 +5,9 @@
       "Bash(git lfs install:*)",
       "Bash(git config:*)",
       "Bash(gh --version:*)",
-      "Bash(gh auth status:*)"
+      "Bash(gh auth status:*)",
+      "Bash(gh repo:*)",
+      "Bash(git remote:*)"
     ]
   }
 }

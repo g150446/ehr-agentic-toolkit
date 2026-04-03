@@ -137,7 +137,7 @@ If you prefer to run Python modules directly:
 source venv/bin/activate
 
 # Set PYTHONPATH
-export PYTHONPATH=/path/to/ehr-ai-bridge-toolkit:$PYTHONPATH
+export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 
 # Run module
 python -m automation.monitor_stream

@@ -448,7 +448,7 @@ If you prefer manual control:
 source venv/bin/activate
 
 # Set PYTHONPATH
-export PYTHONPATH=/Users/g150446/gitdir/ehr-ai-bridge-toolkit:$PYTHONPATH
+export PYTHONPATH=/Users/g150446/projects/ehr-agentic-toolkit:$PYTHONPATH
 
 # Run automation
 python -m automation.windows_login --test-capture
@@ -515,7 +515,7 @@ DocLayout-YOLO + EasyOCR
 
 Set PYTHONPATH:
 ```bash
-export PYTHONPATH=/Users/g150446/gitdir/ehr-ai-bridge-toolkit:$PYTHONPATH
+export PYTHONPATH=/Users/g150446/projects/ehr-agentic-toolkit:$PYTHONPATH
 ```
 
 Or use the helper script: `./scripts/run_automation.sh`
