@@ -124,38 +124,19 @@ python val.py --data <dataset> --model checkpoint.pt --device 0 --batch-size 64
 python format_docsynth300k.py
 ```
 
-### Windows Login Automation
-
-The Windows login automation uses HDMI capture and ESP32 BLE keyboard/mouse emulation.
+### ESP32 BLE and HDMI Capture Testing
 
 ```bash
 # Test BLE connection to ESP32
-./scripts/run_automation.sh --test-ble
+./scripts/run_ble_test.sh
 
-# Test HDMI screen capture
-./scripts/run_automation.sh --test-capture
-
-# Run full login automation (debug mode with step-by-step pauses)
-./scripts/run_automation.sh --password YOUR_PASSWORD --debug
-
-# Run in non-debug mode (automatic execution)
-./scripts/run_automation.sh --password YOUR_PASSWORD
-
-# Skip login verification
-./scripts/run_automation.sh --password YOUR_PASSWORD --no-verify
-```
-
-**Manual usage** (if not using helper script):
-```bash
-export PYTHONPATH=/Users/g150446/projects/ehr-agentic-toolkit:$PYTHONPATH
-python -m automation.windows_login --test-ble
+# Test HDMI screen capture (use monitor script)
+./scripts/run_monitor.sh
 ```
 
 **Configuration**: Edit `.env` file in project root:
 - `ESP32_DEVICE_NAME`: BLE device name (default: "BLE Mouse & Keyboard")
 - `CAPTURE_DEVICE_INDEX`: Video capture device index (default: 0)
-- `WINDOWS_LOGIN_PASSWORD`: Windows login password
-- `LOGIN_DEBUG_MODE`: Enable debug mode (default: true)
 
 ### Main EHR Bridge Commands
 

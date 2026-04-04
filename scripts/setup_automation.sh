@@ -45,7 +45,6 @@ if [ ! -f ".env" ]; then
     cp .env.example .env
     echo ""
     echo "⚠️  IMPORTANT: Edit .env file and set your configuration:"
-    echo "   - WINDOWS_LOGIN_PASSWORD"
     echo "   - ESP32_DEVICE_NAME (if different)"
     echo ""
 fi
@@ -85,8 +84,6 @@ echo "  1. Activate venv: source venv/bin/activate"
 echo "  2. Set PYTHONPATH: export PYTHONPATH=$PROJECT_ROOT:\$PYTHONPATH"
 echo "  3. Edit .env file with your settings"
 echo "  4. Run tests:"
-echo "     python -m automation.windows_login --test-ble"
-echo "     python -m automation.windows_login --test-capture"
-echo ""
-echo "Or use the helper script: ./run_automation.sh"
+echo "     ./scripts/run_ble_test.sh"
+echo "     ./scripts/run_monitor.sh"
 echo ""

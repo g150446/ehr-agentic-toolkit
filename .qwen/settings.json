@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push)",
+      "Bash(test *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(source *)",
+      "Bash(xxd)",
+      "Bash(rm *)"
+    ]
+  },
+  "$version": 3
+}

@@ -115,6 +115,7 @@ def load_yolo_model(model_path: str, device: str = "auto"):
             logger.info(f"Auto-selected device: {device}")
 
         model = YOLOv10(model_path)
+        model.to(device)  # Explicitly set device
         logger.info(f"YOLO model loaded successfully on {device}")
         return model
 
@@ -151,8 +152,7 @@ def analyze_layout(
     image: np.ndarray,
     model,
     confidence: float = 0.2,
-    image_size: int = 1024,
-    device: str = "cpu"
+    image_size: int = 1024
 ) -> List[DetectedRegion]:
     """
     Analyze image layout using YOLO detection.
@@ -162,7 +162,6 @@ def analyze_layout(
         model: Loaded YOLO model
         confidence: Confidence threshold for detection
         image_size: Input image size for YOLO
-        device: Device to use for inference
 
     Returns:
         List of detected regions
@@ -170,12 +169,11 @@ def analyze_layout(
     try:
         logger.debug(f"Running YOLO detection (conf={confidence}, imgsz={image_size})...")
 
-        # Perform prediction
+        # Perform prediction (model already loaded on correct device)
         det_res = model.predict(
             image,
             imgsz=image_size,
-            conf=confidence,
-            device=device
+            conf=confidence
         )
 
         # Extract detected regions

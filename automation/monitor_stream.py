@@ -163,8 +163,7 @@ class StreamMonitor:
                         frame,
                         model,
                         confidence=self.confidence,
-                        image_size=self.args.imgsz,
-                        device=self.config.detection_device
+                        image_size=self.args.imgsz
                     )
                     frame = visualize_detections(frame, regions)
                     self.total_detections += len(regions)

@@ -1,13 +1,12 @@
 # Automation Tools
 
-This directory contains automation tools for HDMI capture, screen analysis, and Windows PC control.
+This directory contains automation tools for HDMI capture, screen analysis, and ESP32 BLE control.
 
 ## Tools
 
 1. **HDMI Capture Stream Monitor** - Standalone real-time video monitoring with optional YOLO detection
-2. **Windows Login Automation** - Automated login using HDMI capture and ESP32 BLE control
-3. **Interactive Browser Assistant** - Terminal chat interface for remote Chrome browser control
-4. **BLE Test CLI** - Interactive testing tool for ESP32 BLE keyboard and mouse
+2. **GUI Image Analyzer** - Find text coordinates and textbox positions in screenshots
+3. **BLE Test CLI** - Interactive testing tool for ESP32 BLE keyboard and mouse
 
 ---
 
@@ -68,68 +67,14 @@ help [command]  - Show help for all commands or specific command
 quit / exit     - Exit the CLI
 ```
 
-### Example Session
-
-```
-$ ./scripts/run_ble_test.sh
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLE Keyboard & Mouse Test CLI
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Type 'help' for commands, 'quit' to exit
-
-(BLE Test) connect
-[INFO] Scanning for: BLE Mouse & Keyboard
-[SUCCESS] Connected to ESP32 at XX:XX:XX:XX:XX:XX
-
-(BLE Test) keyboard
-[SUCCESS] Switched to keyboard mode
-
-(BLE Test) type "Hello World"
-[SUCCESS] Typed: Hello World
-
-(BLE Test) press enter
-[SUCCESS] Pressed: Enter
-
-(BLE Test) mouse
-[SUCCESS] Switched to mouse mode
-
-(BLE Test) move 100 50
-[SUCCESS] Moved: right 100, down 50
-
-(BLE Test) click
-[SUCCESS] Clicked
-
-(BLE Test) status
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Connected:      Yes
-Device:         BLE Mouse & Keyboard
-Address:        XX:XX:XX:XX:XX:XX
-Current Mode:   Mouse
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-(BLE Test) quit
-Goodbye!
-```
-
 ### Features
 
 - **Interactive REPL interface** - Natural command-line interaction with history
 - **Colored output** - Visual feedback with success/error/info messages
 - **Connection status tracking** - Always know if you're connected and in what mode
 - **Comprehensive help** - Built-in help for all commands
-- **Error handling** - Clear error messages with helpful hints
 - **Tab completion** - Command history with up/down arrows
 - **Raw command mode** - Send any BLE UART command for debugging
-
-### Use Cases
-
-- **Test ESP32 BLE connection** - Verify ESP32 is advertising and accepting connections
-- **Manual keyboard control** - Type text and press keys remotely
-- **Manual mouse control** - Move cursor, click, and scroll remotely
-- **Debug automation issues** - Test individual commands to isolate problems
-- **Learn BLE protocol** - Understand the command format using raw mode
-- **Integration testing** - Verify keyboard/mouse work before running automation
 
 ### Configuration
 
@@ -162,6 +107,47 @@ BLE_TX_CHAR_UUID=6E400003-B5A3-F393-E0A9-E50E24DCCA9E
 
 ---
 
+## GUI Image Analyzer
+
+Analyze screenshots to find text coordinates and textbox positions for GUI automation.
+
+### Quick Start
+
+```bash
+# Find text coordinates
+python -m automation.gui_image_analyzer screenshot.png "患者検索"
+
+# Find textbox right to a label
+python -m automation.gui_image_analyzer screenshot.png --find-textbox "フリガナ"
+```
+
+### Features
+
+- **Text Search** - Find coordinates of any text in an image
+- **Textbox Detection** - Locate input fields next to labels using OCR + edge detection
+- **Visual Fallback** - Detects empty textboxes visually when OCR finds no text
+- **Japanese Support** - Works with Japanese and English text
+
+### How It Works
+
+1. **OCR Extraction** - EasyOCR extracts all text from the image
+2. **Label Matching** - Finds the label text (exact match preferred)
+3. **Textbox Search** - Looks for text to the right within vertical tolerance
+4. **Visual Detection** - If no text found, uses edge detection to find textbox borders
+5. **Coordinate Output** - Returns center (x, y) coordinates
+
+### Command-Line Options
+
+```bash
+python -m automation.gui_image_analyzer \
+  image.png "search text"              # Find text
+  image.png --find-textbox "label"     # Find textbox next to label
+  --env-file .env                      # Custom .env path
+  --debug                              # Enable debug logging
+```
+
+---
+
 ## HDMI Capture Stream Monitor
 
 Real-time video streaming tool for HDMI capture devices with optional DocLayout-YOLO detection overlay. Runs independently from the chat interface.
@@ -170,16 +156,16 @@ Real-time video streaming tool for HDMI capture devices with optional DocLayout-
 
 ```bash
 # Basic streaming (5 FPS, raw mode)
-./scripts/run_monitor_standalone.sh
+./scripts/run_monitor.sh
 
 # With detection enabled from start
-./scripts/run_monitor_standalone.sh --detection-on
+./scripts/run_monitor.sh --detection-on
 
 # Custom frame rate
-./scripts/run_monitor_standalone.sh --fps 10
+./scripts/run_monitor.sh --fps 10
 
 # Custom confidence threshold
-./scripts/run_monitor_standalone.sh --confidence 0.3 --detection-on
+./scripts/run_monitor.sh --confidence 0.3 --detection-on
 ```
 
 ### Keyboard Controls
@@ -203,27 +189,6 @@ Real-time video streaming tool for HDMI capture devices with optional DocLayout-
 - **Screenshot capture** - Save any frame with timestamp
 - **Dynamic confidence** - Adjust detection threshold in real-time with +/- keys
 
-### Use Cases
-
-- **Debug HDMI capture** - Verify MiraBox device is working and receiving video
-- **Monitor Windows login screen** - Live view of the screen being automated
-- **Test YOLO detection** - Visualize what the automation system sees
-- **Capture screenshots** - Save frames for analysis or debugging
-- **Performance testing** - Measure actual FPS and detection performance
-
-### Command-Line Options
-
-```bash
-python -m automation.monitor_standalone \
-  --device 0              # Video capture device index (default: 0)
-  --fps 5                 # Target frame rate (default: 5.0)
-  --detection-on          # Enable YOLO detection from start
-  --confidence 0.2        # Detection confidence threshold
-  --imgsz 1024           # YOLO image size
-  --output-dir ./outputs  # Screenshot directory
-  --debug                 # Enable debug logging
-```
-
 ### Output
 
 Screenshots are saved to `monitor_outputs/` with timestamps:
@@ -238,222 +203,6 @@ Logs are saved to `automation_outputs/logs/monitor_TIMESTAMP.log`
 
 ---
 
-## Interactive Browser Assistant
-
-Terminal-based chat assistant that controls a remote Windows PC's Chrome browser via HDMI capture and ESP32 BLE keyboard/mouse emulation.
-
-### Quick Start
-
-```bash
-# Start interactive assistant
-./scripts/run_pc_controller.sh
-
-# With custom device
-./scripts/run_pc_controller.sh --device 1
-
-# Debug mode
-./scripts/run_pc_controller.sh --debug
-```
-
-For HDMI capture monitor, use the standalone script:
-```bash
-./scripts/run_monitor_standalone.sh
-```
-
-### Features
-
-- **Terminal Chat Interface** - Natural language commands in your terminal
-- **Dual YOLO Models** - Switch between DocLayout-YOLO and YOLOv11 UI detection
-- **Browser Automation** - Open Chrome, navigate to URLs, click elements
-- **Screen Analysis** - Analyze current screen with either model
-- **Screenshot Capture** - Save frames for analysis
-- **HDMI Capture Monitor** - Real-time video streaming with detection overlay
-
-### Chat Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| **open chrome** | Launch Chrome browser | `open chrome` |
-| **goto <url>** | Navigate to URL | `goto google.com` |
-| **click address bar** | Click the address bar | `click address bar` |
-| **switch to doclayout** | Use DocLayout-YOLO model | `switch to doclayout` |
-| **switch to ui detection** | Use YOLOv11 UI model | `switch to ui detection` |
-| **analyze** | Analyze current screen | `analyze` |
-| **capture** | Save screenshot | `capture` |
-| **help** | Show all commands | `help` |
-| **quit** | Exit assistant | `quit` |
-
-### Chat Session Example
-
-```
-🤖 Interactive Browser Assistant
-Control remote Chrome browser via chat commands.
-Type 'help' for available commands.
-
-[doclayout] > open chrome
-✅ Chrome opened
-
-[doclayout] > switch to ui detection
-✅ Switched to ui-detection model
-
-[ui-detection] > goto google.com
-✅ Navigated to https://google.com
-
-[ui-detection] > analyze
-📊 Detected 8 elements:
-  1. text (confidence: 0.85)
-  2. button (confidence: 0.78)
-  3. input (confidence: 0.92)
-  ...
-
-[ui-detection] > quit
-✅ Goodbye!
-```
-
-### How It Works
-
-1. **Initialization** - Load models (DocLayout-YOLO default), connect to ESP32 BLE
-2. **Chat Loop** - Accept commands via terminal prompt
-3. **Command Parsing** - Parse natural language into structured commands
-4. **Model Switching** - Switch between DocLayout-YOLO and YOLOv11 on demand
-5. **Browser Control** - Detect UI elements (address bar) and send BLE commands
-6. **Navigation** - Click address bar, type URL, press Enter
-
-### YOLO Models
-
-**DocLayout-YOLO** (default):
-- Document layout detection
-- Tables, text blocks, figures, titles
-- Best for document analysis
-- Also used by standalone monitor for screen detection
-
-**YOLOv8 UI Detection** (`foduucom/web-form-ui-field-detection`):
-- Web form and UI field detection
-- Text inputs, buttons, radio buttons, checkboxes, email/password fields
-- Best for browser automation
-- Uses ultralyticsplus library
-
-### Output
-
-Screenshots are saved to `automation_outputs/chat_screenshots/` with timestamps:
-```
-automation_outputs/chat_screenshots/
-├── chat_capture_20260112_170530.jpg
-├── chat_capture_20260112_170545.jpg
-└── ...
-```
-
-Logs are saved to `automation_outputs/logs/browser_assistant_TIMESTAMP.log`
-
-### Prerequisites
-
-- Windows PC connected via HDMI to capture device
-- ESP32 running BLE keyboard/mouse firmware
-- MiraBox or compatible HDMI capture device
-- Chrome browser installed on remote PC
-
-### Troubleshooting
-
-**"Failed to load YOLOv8 UI detection model"**
-
-Install ultralyticsplus (required for web form UI detection):
-```bash
-source venv/bin/activate
-pip install ultralyticsplus>=0.0.28 ultralytics>=8.0.0
-```
-
-Or run the setup script again:
-```bash
-./scripts/setup_automation.sh
-```
-
-**"Address bar not detected"**
-
-Try switching to UI detection model first:
-```
-[doclayout] > switch to ui detection
-[ui-detection] > goto google.com
-```
-
----
-
-## Windows Login Automation
-
-Automates Windows PC login using HDMI screen capture and ESP32 BLE keyboard/mouse emulation.
-
-## Quick Start
-
-### 1. Setup (First Time)
-
-```bash
-# From project root
-./scripts/setup_automation.sh
-
-# Edit .env file with your password
-nano .env  # Set WINDOWS_LOGIN_PASSWORD
-```
-
-### 2. Run Tests
-
-```bash
-# Test screen capture
-./scripts/run_automation.sh --test-capture
-
-# Test ESP32 BLE connection
-./scripts/run_automation.sh --test-ble
-```
-
-### 3. Run Full Automation
-
-```bash
-# Debug mode (step-by-step with pauses)
-./scripts/run_automation.sh --password YOUR_PASSWORD --debug
-
-# Normal mode (automatic)
-./scripts/run_automation.sh --password YOUR_PASSWORD
-
-# With monitor window (see live video + automation progress) ⭐ NEW
-./scripts/run_automation.sh --password YOUR_PASSWORD --monitor-mode
-
-# Monitor mode + debug (best for testing/troubleshooting)
-./scripts/run_automation.sh --password YOUR_PASSWORD --monitor-mode --debug
-```
-
-### Monitor Mode
-
-The `--monitor-mode` flag displays a **live window** showing what the automation sees in real-time:
-
-**Features:**
-- 📺 **Real-time video** from HDMI capture device
-- 📊 **Status overlay** showing current phase and progress (Phase 1/5, 2/5, etc.)
-- 🎮 **Interactive controls**:
-  - Press **'q'** to quit automation early
-  - Press **'s'** to save screenshot manually
-- 🔄 **Live updates** as automation progresses through each phase
-
-**When to use:**
-- ✅ **Testing and debugging** - See exactly what the automation detects
-- ✅ **First-time setup** - Verify everything is working correctly
-- ✅ **Troubleshooting** - Watch the automation in action to identify issues
-- ❌ **Production use** - Not needed once automation is working reliably
-
-**Important:** Monitor mode and `run_monitor.sh` both access the same HDMI capture device - use only one at a time.
-
-## Manual Setup (Alternative)
-
-If you prefer manual control:
-
-```bash
-# Activate venv
-source venv/bin/activate
-
-# Set PYTHONPATH
-export PYTHONPATH=/Users/g150446/projects/ehr-agentic-toolkit:$PYTHONPATH
-
-# Run automation
-python -m automation.windows_login --test-capture
-```
-
 ## Configuration
 
 Edit `.env` file in project root:
@@ -467,46 +216,15 @@ CAPTURE_DEVICE_INDEX=0
 CAPTURE_WIDTH=1920
 CAPTURE_HEIGHT=1080
 
-# Windows Login
-WINDOWS_LOGIN_PASSWORD=your_password
-LOGIN_DEBUG_MODE=true
-LOGIN_AUTO_VERIFY=true
-
 # DocLayout-YOLO
-DOCLAYOUT_MODEL_PATH=./DocLayout-YOLO/models/doclayout.pt
+DOCLAYOUT_MODEL_PATH=./DocLayout-YOLO/models/doclayout_docstructbench.pt
 DETECTION_CONFIDENCE=0.2
 DETECTION_IMAGE_SIZE=1024
 DETECTION_DEVICE=auto
-```
 
-## How It Works
-
-### 5-Phase Pipeline
-
-1. **Initialization**: Load DocLayout-YOLO model, EasyOCR, connect to ESP32
-2. **Screen Capture**: Capture Windows login screen via HDMI
-3. **Screen Analysis**: Detect UI elements using YOLO + OCR
-4. **Input Control**: Send password via ESP32 BLE keyboard emulation
-5. **Verification**: Verify login success by screen change detection
-
-### Architecture
-
-```
-HDMI Capture (MiraBox)
-        ↓
-  Mac (Claude)
-        ↓
-DocLayout-YOLO + EasyOCR
-        ↓
-    Analysis
-        ↓
-  BLE Commands
-        ↓
-   ESP32 Module
-        ↓
-  USB HID (Keyboard/Mouse)
-        ↓
-   Windows PC
+# OCR
+OCR_LANGUAGES=ja,en
+OCR_USE_GPU=false
 ```
 
 ## Troubleshooting
@@ -515,10 +233,10 @@ DocLayout-YOLO + EasyOCR
 
 Set PYTHONPATH:
 ```bash
-export PYTHONPATH=/Users/g150446/projects/ehr-agentic-toolkit:$PYTHONPATH
+export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 ```
 
-Or use the helper script: `./scripts/run_automation.sh`
+Or use the helper scripts from project root.
 
 ### "No module named 'doclayout_yolo'"
 
@@ -537,7 +255,7 @@ Download model:
 python3 -c "
 from doclayout_yolo import YOLOv10
 model = YOLOv10.from_pretrained('juliozhao/DocLayout-YOLO-DocStructBench')
-model.save('DocLayout-YOLO/models/doclayout.pt')
+model.save('DocLayout-YOLO/models/doclayout_docstructbench.pt')
 "
 ```
 
@@ -546,14 +264,13 @@ model.save('DocLayout-YOLO/models/doclayout.pt')
 1. Check Bluetooth is enabled on Mac
 2. Verify ESP32 is powered and advertising
 3. Check device name in .env matches ESP32's advertised name
-4. Try: `./scripts/run_automation.sh --test-ble`
+4. Try: `./scripts/run_ble_test.sh`
 
 ### Screen Capture Not Working
 
-1. Check MiraBox is connected and powered
-2. Verify Windows PC HDMI output is connected to MiraBox
-3. Check device index (usually 0, try 1 or 2 if not working)
-4. Try: `./scripts/run_automation.sh --test-capture`
+1. Check capture device is connected and powered
+2. Check device index (usually 0, try 1 or 2 if not working)
+3. List video devices (macOS): `system_profiler SPCameraDataType`
 
 ## Output Files
 
@@ -561,28 +278,6 @@ All outputs are saved to `automation_outputs/`:
 
 - `screenshots/`: Captured screens and debug visualizations
 - `logs/`: Detailed logs with timestamps
-
-## Advanced Usage
-
-### Debug Mode
-
-Step-by-step execution with pauses:
-```bash
-./scripts/run_automation.sh --debug
-```
-
-### Skip Verification
-
-Don't verify login success:
-```bash
-./scripts/run_automation.sh --no-verify
-```
-
-### Custom .env Location
-
-```bash
-./scripts/run_automation.sh --env-file /path/to/.env
-```
 
 ## Development
 
@@ -593,11 +288,9 @@ Don't verify login success:
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
 - `screen_analyzer.py`: DocLayout-YOLO + EasyOCR integration
 - `model_manager.py`: Multi-model management (DocLayout-YOLO + YOLOv11)
+- `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding
 - `utils.py`: Logging, debugging, progress tracking
-- `monitor_stream.py`: Original HDMI capture stream monitor with YOLO detection (legacy)
-- `monitor_standalone.py`: Standalone HDMI capture monitor (recommended)
-- `windows_login.py`: Main automation pipeline
-- `browser_assistant.py`: Interactive browser automation chat tool
+- `monitor_stream.py`: HDMI capture stream monitor with YOLO detection
 
 ### Adding Features
 

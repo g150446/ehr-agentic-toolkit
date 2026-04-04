@@ -58,7 +58,7 @@ class ModelManager:
             config: AutomationConfig object containing model paths and settings
         """
         self.config = config
-        self.current_model_type = ModelType.DOCLAYOUT
+        self.current_model_type = ModelType.UI_DETECTION
         self.doclayout_model = None
         self.ui_detection_model = None
 

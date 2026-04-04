@@ -17,8 +17,8 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 - 🛡️ **Enterprise-Grade Security** - Encrypted storage, audit logging, HIPAA-conscious design
 - 🎯 **Zero EHR Modification** - No changes to existing systems required
 - 📹 **Real-time Stream Monitor** - Debug HDMI capture with YOLO detection visualization ✅ **Implemented**
-- 🎮 **Windows Automation** - Automated login via ESP32 BLE keyboard emulation ✅ **Implemented**
-- 💬 **Interactive Browser Assistant** - Terminal chat for remote Chrome control with dual YOLO models (DocLayout + YOLOv8) ✅ **Implemented**
+- 🎮 **ESP32 BLE Control** - Keyboard/mouse HID emulation over Bluetooth ✅ **Implemented**
+- 🖼️ **GUI Image Analyzer** - Find text coordinates and textbox positions in screenshots ✅ **Implemented**
 - 🧪 **BLE Test CLI** - Interactive testing tool for ESP32 keyboard/mouse control ✅ **Implemented**
 
 ## 📊 Project Status
@@ -29,10 +29,9 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 | **DocLayout-YOLO** | ✅ **Complete** | Document layout detection and UI element recognition |
 | **OCR (EasyOCR)** | ✅ **Complete** | Multi-language text extraction (Japanese, English) |
 | **Stream Monitor** | ✅ **Complete** | Interactive HDMI capture monitor with detection overlay |
-| **Windows Automation** | ✅ **Complete** | Automated login via BLE keyboard emulation |
 | **ESP32 BLE Control** | ✅ **Complete** | Keyboard/mouse HID emulation over Bluetooth |
 | **BLE Test CLI** | ✅ **Complete** | Interactive testing tool for ESP32 keyboard/mouse |
-| **Browser Assistant** | ✅ **Complete** | Interactive chat with DocLayout-YOLO + YOLOv8 UI detection |
+| **GUI Image Analyzer** | ✅ **Complete** | Text coordinate detection and textbox finding |
 | **EHR Adapters** | 🔄 **In Progress** | Fujitsu adapter framework implemented |
 | **Anonymization** | 📋 **Planned** | PHI removal and data anonymization |
 | **Encrypted Storage** | 📋 **Planned** | AES-256 encrypted PostgreSQL database |
@@ -174,286 +173,32 @@ Real-time video monitoring tool with optional YOLO detection overlay.
 
 ---
 
-### Windows Login Automation
+### GUI Image Analyzer
 
-Automated Windows PC login using HDMI capture and ESP32 BLE keyboard emulation.
+Analyze screenshots to find text coordinates and textbox positions for GUI automation.
 
-**Prerequisites:**
-- Windows PC connected via HDMI to capture device
-- ESP32 running BLE keyboard/mouse firmware
-- MiraBox or compatible HDMI capture device
-
-**Testing Components:**
+**Find Text Coordinates:**
 ```bash
-# Test HDMI capture
-./scripts/run_automation.sh --test-capture
-
-# Test ESP32 BLE connection
-./scripts/run_automation.sh --test-ble
+# Find coordinates of specific text
+python -m automation.gui_image_analyzer screenshot.png "患者検索"
+# Output: 📍 Text "患者検索" found at coordinates: (x=80, y=462)
 ```
 
-**Run Automation:**
+**Find Textbox Next to Label:**
 ```bash
-# Debug mode (step-by-step with pauses)
-./scripts/run_automation.sh --password YOUR_PASSWORD --debug
+# Find textbox to the right of a label
+python -m automation.gui_image_analyzer screenshot.png --find-textbox "フリガナ"
+# Output: 📍 Textbox right of "フリガナ" detected visually at: (x=333, y=684)
 
-# Automatic mode
-./scripts/run_automation.sh --password YOUR_PASSWORD
-
-# With live monitor window (NEW!)
-./scripts/run_automation.sh --password YOUR_PASSWORD --monitor-mode
-
-# Skip verification
-./scripts/run_automation.sh --password YOUR_PASSWORD --no-verify
+# Works for any form label
+python -m automation.gui_image_analyzer form.png --find-textbox "氏名"
+python -m automation.gui_image_analyzer form.png --find-textbox "生年月日"
 ```
 
-**How It Works:**
-1. **Initialization** - Load YOLO model, OCR, connect to ESP32
-2. **Screen Capture** - Capture Windows login screen via HDMI
-3. **Screen Analysis** - Detect UI elements using DocLayout-YOLO + EasyOCR
-4. **Input Control** - Send password via ESP32 BLE
-5. **Verification** - Verify login success
-
----
-
-### Interactive Browser Assistant
-
-Terminal-based chat assistant for remote Chrome browser control using dual YOLO models.
-
-#### Prerequisites
-
-**Hardware:**
-- Windows PC with Chrome installed
-- HDMI connection from Windows PC to MiraBox capture device
-- MiraBox (or compatible) HDMI capture device connected to Mac
-- ESP32 module running BLE keyboard/mouse firmware
-- ESP32 connected to Windows PC via USB (for HID emulation)
-
-**Software:**
-- Python virtual environment with dependencies installed
-- Chrome browser on Windows PC
-- ESP32 BLE device advertising as configured in `.env`
-
-#### Quick Start
-
-**1. First-time Setup**
-
-```bash
-# From project root
-./scripts/setup_automation.sh
-
-# Verify .env file has required settings
-cat .env | grep -E "ESP32_DEVICE_NAME|BLE_"
-```
-
-**2. Start the Assistant**
-
-```bash
-# Basic mode
-./scripts/run_pc_controller.sh
-
-# Debug mode (recommended for first time)
-./scripts/run_pc_controller.sh --debug
-
-# Custom video device
-./scripts/run_pc_controller.sh --device 1 --debug
-```
-
-**3. Interactive Chat Session**
-
-Once started, you'll see the chat prompt:
-
-```
-🤖 Interactive Browser Assistant
-Control remote Chrome browser via chat commands.
-Type 'help' for available commands.
-
-[doclayout] >
-```
-
-The prompt shows the currently active YOLO model (`doclayout` or `ui-detection`).
-
-#### Usage Examples
-
-**Example 1: Open Chrome and Navigate**
-
-```bash
-[doclayout] > open chrome
-✅ Chrome opened
-
-[doclayout] > switch to ui detection
-✅ Switched to ui-detection model
-
-[ui-detection] > goto google.com
-✅ Navigated to https://google.com
-```
-
-**Example 2: Analyze Screen with Different Models**
-
-```bash
-# With DocLayout-YOLO (documents)
-[doclayout] > analyze
-📊 Detected 5 elements:
-  1. text (confidence: 0.92)
-  2. title (confidence: 0.88)
-  3. figure (confidence: 0.85)
-  ...
-
-# Switch to UI detection model (web forms)
-[doclayout] > switch to ui detection
-✅ Switched to ui-detection model
-
-# Analyze again with UI model
-[ui-detection] > analyze
-📊 Detected 8 elements:
-  1. text (confidence: 0.85)
-  2. button (confidence: 0.78)
-  3. input (confidence: 0.92)
-  ...
-```
-
-**Example 3: Navigate Multiple Sites**
-
-```bash
-[ui-detection] > goto github.com
-✅ Navigated to https://github.com
-
-[ui-detection] > goto stackoverflow.com
-✅ Navigated to https://stackoverflow.com
-
-[ui-detection] > goto https://www.wikipedia.org
-✅ Navigated to https://www.wikipedia.org
-```
-
-**Example 4: Capture Screenshots**
-
-```bash
-[ui-detection] > capture
-✅ Saved: automation_outputs/chat_screenshots/chat_capture_20260112_170530.jpg
-
-[ui-detection] > analyze
-📊 Detected 12 elements:
-  ...
-
-[ui-detection] > capture
-✅ Saved: automation_outputs/chat_screenshots/chat_capture_20260112_170545.jpg
-```
-
-#### Available Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| **Browser Control** | | |
-| `open chrome` | Launch Chrome via Windows search | `open chrome` |
-| `goto <url>` | Navigate to URL (with or without https://) | `goto google.com` or `goto https://example.com` |
-| `click address bar` | Manually click address bar | `click address bar` |
-| **Model Control** | | |
-| `switch to doclayout` | Use DocLayout-YOLO (document analysis) | `switch to doclayout` |
-| `switch to ui detection` | Use YOLOv11 UI model (web forms) | `switch to ui detection` |
-| `use ui model` | Alternative way to switch to UI model | `use ui model` |
-| **Screen Analysis** | | |
-| `analyze` | Analyze current screen with active model | `analyze` |
-| `capture` | Save screenshot of current screen | `capture` |
-| **Utility** | | |
-| `help` | Show all available commands | `help` |
-| `quit` or `exit` | Exit the assistant | `quit` |
-
-#### How It Works
-
-**Opening Chrome:**
-1. Presses Windows key (opens Start menu)
-2. Types "chrome" (Windows search finds Chrome)
-3. Presses Enter (launches first result)
-
-**Navigating to URL:**
-1. Switches to UI detection model temporarily
-2. Captures screen via HDMI
-3. Detects address bar location (looks for text input in top 30% of screen)
-4. Moves mouse to address bar center
-5. Clicks address bar
-6. Clears existing content (Ctrl+A, Delete)
-7. Types URL
-8. Presses Enter
-9. Restores previous YOLO model
-
-**Model Switching:**
-- **DocLayout-YOLO**: Best for document layout (tables, text blocks, figures, titles)
-- **YOLOv8 UI Detection** (`foduucom/web-form-ui-field-detection`): Best for web form UI elements (text inputs, buttons, radio buttons, checkboxes, search bars)
-- Models are lazy-loaded (only loaded when first used)
-- Switching is instant after initial load
-- UI model detects: Name fields, Email fields, Password fields, Buttons, Radio buttons, Checkboxes, Text inputs
-
-#### Output Files
-
-**Screenshots:**
-```
-automation_outputs/chat_screenshots/
-├── chat_capture_20260112_170530.jpg
-├── chat_capture_20260112_170545.jpg
-└── ...
-```
-
-**Logs:**
-```
-automation_outputs/logs/
-└── browser_assistant_20260112_170000.log
-```
-
-#### Command-Line Options
-
-```bash
-python -m automation.browser_assistant \
-  --device 0                      # Video capture device index (default: 0)
-  --env-file .env                 # Path to .env file (default: .env)
-  --output-dir ./screenshots      # Screenshot directory (default: automation_outputs/chat_screenshots)
-  --debug                         # Enable debug logging
-```
-
-#### Troubleshooting
-
-**"Failed to load YOLOv8 UI detection model"**
-
-Install ultralyticsplus (required for web form UI detection):
-```bash
-source venv/bin/activate
-pip install ultralyticsplus>=0.0.28 ultralytics>=8.0.0
-```
-
-If you get an import error, the package might not be installed. Run setup again:
-```bash
-./scripts/setup_automation.sh
-```
-
-**"Address bar not detected"**
-
-- Make sure Chrome is open and visible
-- Try switching to UI detection model first: `switch to ui detection`
-- Ensure the address bar is in the top 30% of the screen
-- Check HDMI capture is showing Chrome window (not minimized)
-
-**"BLE connection failed"**
-
-- Check ESP32 is powered on and advertising
-- Verify Bluetooth is enabled on Mac
-- Check device name in `.env` matches ESP32's advertised name:
-  ```bash
-  grep ESP32_DEVICE_NAME .env
-  ```
-- Test BLE connection: `./scripts/run_automation.sh --test-ble`
-
-**"Failed to capture screen"**
-
-- Check MiraBox is connected and powered
-- Verify Windows PC HDMI is connected to MiraBox
-- Try different device index: `./scripts/run_pc_controller.sh --device 1`
-- Test capture: `./scripts/run_automation.sh --test-capture`
-
-**Chrome doesn't open**
-
-- Ensure Chrome is installed on Windows PC
-- Try typing "chrome" manually in Windows search to verify it appears
-- Check ESP32 BLE connection is working
-- Try running in debug mode to see detailed logs
+**Use Cases:**
+- Locate form fields before automated data entry
+- Find button positions for click automation
+- Analyze existing GUI layouts programmatically
 
 ---
 
@@ -562,15 +307,9 @@ model.save('DocLayout-YOLO/models/doclayout.pt')
 1. ✅ Bluetooth enabled on Mac/PC
 2. ✅ ESP32 powered and advertising
 3. ✅ Device name in `.env` matches ESP32's advertised name
-4. ✅ Test connection: `./scripts/run_automation.sh --test-ble`
+4. ✅ Test connection: `./scripts/run_ble_test.sh`
 
 #### Screen Capture Not Working
-
-**Checklist:**
-1. ✅ HDMI capture device (MiraBox) connected and powered
-2. ✅ Windows PC HDMI output connected to capture device
-3. ✅ Correct device index (usually 0, try 1-2 if issues)
-4. ✅ Test capture: `./scripts/run_automation.sh --test-capture`
 
 **Device Detection:**
 ```bash

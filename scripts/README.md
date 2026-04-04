@@ -26,31 +26,6 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 ---
 
-### `run_automation.sh`
-
-**Purpose**: Run Windows login automation
-
-**What it does:**
-- Activates virtual environment
-- Sets PYTHONPATH
-- Runs `automation.windows_login` module
-
-**Usage:**
-```bash
-# Test BLE connection
-./scripts/run_automation.sh --test-ble
-
-# Test screen capture
-./scripts/run_automation.sh --test-capture
-
-# Run full automation
-./scripts/run_automation.sh --password YOUR_PASSWORD --debug
-```
-
-**Options:** See `./scripts/run_automation.sh --help`
-
----
-
 ### `run_monitor.sh`
 
 **Purpose**: Run HDMI capture stream monitor
@@ -84,41 +59,6 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 ---
 
-### `run_browser_assistant.sh`
-
-**Purpose**: Run Interactive Browser Assistant
-
-**What it does:**
-- Activates virtual environment
-- Sets PYTHONPATH
-- Runs `automation.browser_assistant` module
-
-**Usage:**
-```bash
-# Basic mode
-./scripts/run_browser_assistant.sh
-
-# Debug mode (recommended for first time)
-./scripts/run_browser_assistant.sh --debug
-
-# Custom video device
-./scripts/run_browser_assistant.sh --device 1
-```
-
-**Chat Commands** (while running):
-- **open chrome** - Launch Chrome browser
-- **goto <url>** - Navigate to URL (e.g., `goto google.com`)
-- **switch to doclayout** - Use DocLayout-YOLO model
-- **switch to ui detection** - Use YOLOv11 UI detection model
-- **analyze** - Analyze current screen
-- **capture** - Save screenshot
-- **help** - Show all commands
-- **quit** - Exit assistant
-
-**Options:** See `./scripts/run_browser_assistant.sh --help`
-
----
-
 ## Why These Scripts?
 
 These helper scripts provide convenient wrappers around the Python modules:
@@ -141,6 +81,4 @@ export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 
 # Run module
 python -m automation.monitor_stream
-python -m automation.windows_login
-python -m automation.browser_assistant
 ```

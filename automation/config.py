@@ -23,13 +23,13 @@ class AutomationConfig:
         """
         # Load environment variables
         if env_file:
-            load_dotenv(env_file)
+            load_dotenv(env_file, override=True)
         else:
             # Search for .env in project root
             project_root = Path(__file__).parent.parent
             env_path = project_root / '.env'
             if env_path.exists():
-                load_dotenv(env_path)
+                load_dotenv(env_path, override=True)
 
         # ESP32 BLE Configuration
         self.esp32_device_name = os.getenv('ESP32_DEVICE_NAME', 'BLE Mouse & Keyboard')
@@ -74,16 +74,19 @@ class AutomationConfig:
         # Logging Configuration
         self.log_level = os.getenv('LOG_LEVEL', 'INFO')
 
-    def validate(self) -> tuple[bool, list[str]]:
+    def validate(self, skip_password: bool = False) -> tuple[bool, list[str]]:
         """
         Validate configuration settings.
+
+        Args:
+            skip_password: If True, skip password validation (for image analysis mode)
 
         Returns:
             Tuple of (is_valid, error_messages)
         """
         errors = []
 
-        if not self.password:
+        if not skip_password and not self.password:
             errors.append("WINDOWS_LOGIN_PASSWORD is not set")
 
         model_path = Path(self.doclayout_model_path)
@@ -115,12 +118,13 @@ class AutomationConfig:
         )
 
 
-def load_config(env_file: Optional[str] = None) -> AutomationConfig:
+def load_config(env_file: Optional[str] = None, skip_password: bool = False) -> AutomationConfig:
     """
     Load and validate configuration.
 
     Args:
         env_file: Path to .env file. If None, searches in standard locations.
+        skip_password: If True, skip password validation (for image analysis mode)
 
     Returns:
         AutomationConfig instance
@@ -129,7 +133,7 @@ def load_config(env_file: Optional[str] = None) -> AutomationConfig:
         ValueError: If configuration validation fails
     """
     config = AutomationConfig(env_file)
-    is_valid, errors = config.validate()
+    is_valid, errors = config.validate(skip_password=skip_password)
 
     if not is_valid:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
