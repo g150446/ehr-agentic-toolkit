@@ -60,7 +60,18 @@ class AutomationConfig:
         # OCR Configuration
         ocr_languages = os.getenv('OCR_LANGUAGES', 'ja,en')
         self.ocr_languages = [lang.strip() for lang in ocr_languages.split(',')]
-        self.ocr_use_gpu = os.getenv('OCR_USE_GPU', 'false').lower() == 'true'
+        # Default backend: rapidocr (ONNX-based, faster on CPU/M1). Set OCR_BACKEND=easyocr to use EasyOCR.
+        self.ocr_backend = os.getenv('OCR_BACKEND', 'rapidocr')
+        # Detection mode: 'yolo' (UI element detection first, then per-element OCR) or 'ocr' (full-image OCR only)
+        # yolo mode is more reliable for menus/tab bars where OCR merges adjacent items into one segment.
+        self.detection_mode = os.getenv('DETECTION_MODE', 'yolo')
+        # For EasyOCR: auto-enable MPS on Apple Silicon if not overridden via env var
+        try:
+            import torch
+            _mps_available = torch.backends.mps.is_available()
+        except Exception:
+            _mps_available = False
+        self.ocr_use_gpu = os.getenv('OCR_USE_GPU', 'true' if _mps_available else 'false').lower() == 'true'
 
         # Output Paths
         self.output_dir = Path(os.getenv('LOGIN_OUTPUT_DIR', './automation_outputs'))

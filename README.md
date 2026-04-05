@@ -27,7 +27,7 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 |-----------|--------|-------------|
 | **HDMI Capture** | ✅ **Complete** | Real-time video capture from MiraBox/compatible devices |
 | **DocLayout-YOLO** | ✅ **Complete** | Document layout detection and UI element recognition |
-| **OCR (EasyOCR)** | ✅ **Complete** | Multi-language text extraction (Japanese, English) |
+| **OCR (RapidOCR/EasyOCR)** | ✅ **Complete** | Multi-language text extraction (Japanese, English); RapidOCR default for M1 speed |
 | **Stream Monitor** | ✅ **Complete** | Interactive HDMI capture monitor with detection overlay |
 | **ESP32 BLE Control** | ✅ **Complete** | Keyboard/mouse HID emulation over Bluetooth |
 | **BLE Test CLI** | ✅ **Complete** | Interactive testing tool for ESP32 keyboard/mouse |

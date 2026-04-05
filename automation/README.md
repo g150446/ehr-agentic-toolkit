@@ -127,23 +127,78 @@ python -m automation.gui_image_analyzer screenshot.png --find-textbox "フリガ
 - **Textbox Detection** - Locate input fields next to labels using OCR + edge detection
 - **Visual Fallback** - Detects empty textboxes visually when OCR finds no text
 - **Japanese Support** - Works with Japanese and English text
+- **Fast OCR** - RapidOCR (ONNX Runtime) as default backend, 3–10× faster than EasyOCR on CPU/M1
+- **YOLO UI Detection** - Detects individual UI elements (buttons, tabs, inputs) before OCR to prevent menu items from being merged into one text segment
 
 ### How It Works
 
-1. **OCR Extraction** - EasyOCR extracts all text from the image
-2. **Label Matching** - Finds the label text (exact match preferred)
-3. **Textbox Search** - Looks for text to the right within vertical tolerance
-4. **Visual Detection** - If no text found, uses edge detection to find textbox borders
+**YOLO mode (default):**
+1. **UI Element Detection** - `foduucom/web-form-ui-field-detection` (YOLOv8) detects individual UI elements
+2. **Per-element OCR** - Each detected element is cropped and OCR'd separately
+3. **Label Matching** - Finds the label text among individually recognized elements
+4. **Textbox Search** - Looks for element to the right within vertical tolerance
 5. **Coordinate Output** - Returns center (x, y) coordinates
+
+**OCR mode (`--detection-mode ocr`):**
+1. RapidOCR / EasyOCR runs on the full image at once
+2. Adjacent UI elements (e.g. horizontal menu tabs) may be merged into one text segment
+
+Use `--detection-mode ocr` when elements are not standard UI widgets (e.g. custom-drawn regions).
+
+### Detection Modes
+
+| Mode | Method | Best For |
+|------|--------|----------|
+| `yolo` (default) | YOLO UI detection → word-split OCR fallback | Menu tabs, button bars, form fields |
+| `ocr` | Full-image OCR only | Free-form text, documents, non-standard UI |
+
+#### Why `yolo` mode is the default
+
+Standard OCR engines merge horizontally adjacent text into a single segment. For example, a Windows EHR menu bar like:
+
+```
+受付患者一覧  予約患者一覧  枠別予約患者一覧  全枠予約患者一覧  レセプトチェック一覧
+```
+
+is returned by full-image OCR as one segment:
+
+```
+"受付患者一覧　子約患者一覧　枠別子約患者一覧　全枠子約患者一覧　レセブトチェック一覧"  ← all merged, wrong coordinates
+```
+
+In `yolo` mode the pipeline is:
+
+1. **YOLO UI detection** (`foduucom/web-form-ui-field-detection`) — detects individual buttons, inputs, checkboxes. Effective for web-style UIs.
+2. **Word-split OCR fallback** — if YOLO finds no elements (e.g. Windows desktop apps), RapidOCR runs with character-level bounding boxes (`return_word_box=True`). Characters are then grouped into separate segments wherever the horizontal gap between them exceeds 1.5× the average character width of that line.
+
+Result with `yolo` mode:
+
+```
+"受付患者一覧"  → (464, 462)  ← correct, individual menu item
+"予約患者一覧"  → (654, 462)
+"枠別予約患者一覧" → ...
+```
+
+### OCR Backends
+
+Two OCR backends are supported, selectable via `OCR_BACKEND` in `.env`:
+
+| Backend | Library | Speed | Japanese Model |
+|---------|---------|-------|----------------|
+| `rapidocr` (default) | RapidOCR + ONNX Runtime | Fast (CPU/M1 optimized) | PP-OCRv4 Japan model |
+| `easyocr` | EasyOCR + PyTorch | Slower | Built-in ja+en model |
+
+RapidOCR downloads the Japanese model (~9 MB) on first run and caches it. Both backends cache the loaded reader in memory so subsequent calls within the same process have near-zero initialization overhead.
 
 ### Command-Line Options
 
 ```bash
 python -m automation.gui_image_analyzer \
-  image.png "search text"              # Find text
-  image.png --find-textbox "label"     # Find textbox next to label
-  --env-file .env                      # Custom .env path
-  --debug                              # Enable debug logging
+  image.png "search text"                      # Find text (YOLO mode)
+  image.png --find-textbox "label"             # Find textbox next to label
+  image.png "text" --detection-mode ocr        # Full-image OCR only
+  --env-file .env                              # Custom .env path
+  --debug                                      # Enable debug logging
 ```
 
 ---
@@ -223,8 +278,12 @@ DETECTION_IMAGE_SIZE=1024
 DETECTION_DEVICE=auto
 
 # OCR
-OCR_LANGUAGES=ja,en
-OCR_USE_GPU=false
+OCR_BACKEND=rapidocr      # rapidocr (default, faster) or easyocr
+OCR_LANGUAGES=ja,en       # Used by easyocr backend only
+OCR_USE_GPU=false         # easyocr only; auto-set to true on Apple Silicon (MPS)
+
+# Detection
+DETECTION_MODE=yolo       # yolo (default) or ocr
 ```
 
 ## Troubleshooting
@@ -286,7 +345,7 @@ All outputs are saved to `automation_outputs/`:
 - `config.py`: Configuration and .env loading
 - `ble_controller.py`: ESP32 BLE communication
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
-- `screen_analyzer.py`: DocLayout-YOLO + EasyOCR integration
+- `screen_analyzer.py`: DocLayout-YOLO + OCR integration (RapidOCR/EasyOCR with caching)
 - `model_manager.py`: Multi-model management (DocLayout-YOLO + YOLOv11)
 - `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding
 - `utils.py`: Logging, debugging, progress tracking

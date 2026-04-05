@@ -7,7 +7,7 @@ Uses EasyOCR for text extraction and edge detection for empty textbox finding.
 Usage:
     # Find text coordinates
     python -m automation.gui_image_analyzer screenshot.png "患者検索"
-    
+
     # Find textbox right to a label
     python -m automation.gui_image_analyzer screenshot.png --find-textbox "フリガナ"
 """
@@ -15,10 +15,71 @@ Usage:
 import argparse
 import cv2
 import sys
+import time
 from typing import Optional, Tuple
 
 from automation.config import AutomationConfig, load_config
-from automation.screen_analyzer import load_ocr_reader
+from automation.screen_analyzer import load_ocr_reader, load_rapidocr_reader, run_ocr, run_ocr_word_split
+
+
+def _load_ocr(config: AutomationConfig):
+    """Load the OCR reader selected by config.ocr_backend."""
+    if config.ocr_backend == 'rapidocr':
+        return load_rapidocr_reader()
+    return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
+
+
+def _run_yolo_ocr(image, config: AutomationConfig, ocr_reader) -> list:
+    """
+    Detect individual UI elements with YOLO, then OCR each element separately.
+
+    This avoids OCR merging adjacent menu items / tab labels into a single text segment.
+    Returns results in the same (bbox, text, confidence) format as run_ocr().
+    Coordinates in bbox are absolute (relative to the original image).
+
+    Falls back to full-image OCR if YOLO detects no elements.
+    """
+    from automation.model_manager import ModelManager, ModelType
+
+    mgr = ModelManager(config)
+    mgr.switch_model(ModelType.UI_DETECTION)
+
+    print("🔲 Running YOLO UI detection...")
+    yolo_start = time.time()
+    try:
+        elements = mgr.detect(image, confidence=0.25)
+    except Exception as e:
+        print(f"⚠️  YOLO UI detection failed ({e}), falling back to full-image OCR")
+        return run_ocr(ocr_reader, image)
+
+    print(f"🔲 Detected {len(elements)} UI elements [{time.time() - yolo_start:.2f}s]")
+
+    if not elements:
+        print("⚠️  No UI elements detected, falling back to word-split OCR")
+        return run_ocr_word_split(ocr_reader, image)
+
+    results = []
+    for elem in elements:
+        x1, y1, x2, y2 = elem.bbox
+        # Guard against out-of-bounds coords
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(image.shape[1], x2); y2 = min(image.shape[0], y2)
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        crop = image[y1:y2, x1:x2]
+        crop_results = run_ocr(ocr_reader, crop)
+
+        for bbox, text, conf in crop_results:
+            # Translate bbox coordinates from crop-local to image-absolute
+            abs_bbox = [[p[0] + x1, p[1] + y1] for p in bbox]
+            results.append((abs_bbox, text, conf))
+
+    if not results:
+        print("⚠️  YOLO elements yielded no OCR text, falling back to word-split OCR")
+        return run_ocr_word_split(ocr_reader, image)
+
+    return results
 
 
 def analyze_image_for_text(image_path: str, search_text: str, config: AutomationConfig) -> Optional[Tuple[int, int]]:
@@ -33,25 +94,38 @@ def analyze_image_for_text(image_path: str, search_text: str, config: Automation
     Returns:
         Tuple of (x, y) coordinates of text center, or None if not found
     """
+    start_time = time.time()
+    
     image = cv2.imread(image_path)
     if image is None:
         print(f"❌ Failed to load image: {image_path}")
         return None
 
-    print(f"📷 Loaded image: {image_path} ({image.shape[1]}x{image.shape[0]})")
+    load_time = time.time() - start_time
+    print(f"📷 Loaded image: {image_path} ({image.shape[1]}x{image.shape[0]}) [{load_time:.2f}s]")
 
-    print("🔍 Loading OCR model...")
+    print(f"🔍 Loading OCR model ({config.ocr_backend})...")
+    ocr_start = time.time()
     try:
-        ocr_reader = load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
+        ocr_reader = _load_ocr(config)
     except Exception as e:
         print(f"❌ Failed to load OCR: {e}")
         return None
 
-    print("🔍 Running OCR on full image...")
-    ocr_results = ocr_reader.readtext(image)
-    print(f"📝 Extracted {len(ocr_results)} text segments")
+    ocr_load_time = time.time() - ocr_start
+    print(f"✅ OCR model loaded [{ocr_load_time:.2f}s]")
+
+    print(f"🔍 Running {'YOLO + per-element OCR' if config.detection_mode == 'yolo' else 'full-image OCR'}...")
+    ocr_run_start = time.time()
+    if config.detection_mode == 'yolo':
+        ocr_results = _run_yolo_ocr(image, config, ocr_reader)
+    else:
+        ocr_results = run_ocr(ocr_reader, image)
+    ocr_run_time = time.time() - ocr_run_start
+    print(f"📝 Extracted {len(ocr_results)} text segments [{ocr_run_time:.2f}s]")
 
     search_lower = search_text.lower()
+    match_start = time.time()
     matches = []
 
     for bbox, text, conf in ocr_results:
@@ -75,14 +149,18 @@ def analyze_image_for_text(image_path: str, search_text: str, config: Automation
     center_x = int((min(xs) + max(xs)) / 2)
     center_y = int((min(ys) + max(ys)) / 2)
 
-    print(f"\n📍 Text \"{text}\" found at coordinates: (x={center_x}, y={center_y})")
+    match_time = time.time() - match_start
+    print(f"\n📍 Text \"{text}\" found at coordinates: (x={center_x}, y={center_y}) [{match_time:.2f}s]")
     print(f"   Confidence: {conf:.2f}")
     print(f"   Bounding box: [[{int(bbox[0][0])},{int(bbox[0][1])}], [{int(bbox[2][0])},{int(bbox[2][1])}]]")
+
+    total_time = time.time() - start_time
+    print(f"\n⏱️  Total processing time: {total_time:.2f}s")
 
     return (center_x, center_y)
 
 
-def find_textbox_right_of_label(image_path: str, label_text: str, config: AutomationConfig, 
+def find_textbox_right_of_label(image_path: str, label_text: str, config: AutomationConfig,
                                  y_tolerance: int = 30, max_distance: int = 300) -> Optional[Tuple[int, int]]:
     """
     Find the textbox to the right of a label text.
@@ -97,27 +175,40 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
     Returns:
         Tuple of (x, y) coordinates of textbox center, or None if not found
     """
+    start_time = time.time()
+    
     image = cv2.imread(image_path)
     if image is None:
         print(f"❌ Failed to load image: {image_path}")
         return None
 
-    print(f"📷 Loaded image: {image_path} ({image.shape[1]}x{image.shape[0]})")
+    load_time = time.time() - start_time
+    print(f"📷 Loaded image: {image_path} ({image.shape[1]}x{image.shape[0]}) [{load_time:.2f}s]")
     print(f"🔍 Finding textbox right of \"{label_text}\"...")
 
-    print("🔍 Loading OCR model...")
+    print(f"🔍 Loading OCR model ({config.ocr_backend})...")
+    ocr_start = time.time()
     try:
-        ocr_reader = load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
+        ocr_reader = _load_ocr(config)
     except Exception as e:
         print(f"❌ Failed to load OCR: {e}")
         return None
 
-    print("🔍 Running OCR on full image...")
-    ocr_results = ocr_reader.readtext(image)
-    print(f"📝 Extracted {len(ocr_results)} text segments")
+    ocr_load_time = time.time() - ocr_start
+    print(f"✅ OCR model loaded [{ocr_load_time:.2f}s]")
+
+    print(f"🔍 Running {'YOLO + per-element OCR' if config.detection_mode == 'yolo' else 'full-image OCR'}...")
+    ocr_run_start = time.time()
+    if config.detection_mode == 'yolo':
+        ocr_results = _run_yolo_ocr(image, config, ocr_reader)
+    else:
+        ocr_results = run_ocr(ocr_reader, image)
+    ocr_run_time = time.time() - ocr_run_start
+    print(f"📝 Extracted {len(ocr_results)} text segments [{ocr_run_time:.2f}s]")
 
     # Find the label (prefer exact match over partial)
     label_lower = label_text.lower()
+    match_start = time.time()
     exact_match = None
     partial_match = None
 
@@ -130,6 +221,7 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
             partial_match = (bbox, text, conf)
 
     label_match = exact_match or partial_match
+    match_time = time.time() - match_start
 
     if label_match is None:
         print(f"❌ Label \"{label_text}\" not found in image")
@@ -149,10 +241,11 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
     label_cx = (label_x1 + label_x2) // 2
     label_cy = (label_y1 + label_y2) // 2
 
-    print(f"📍 Label \"{label_text_found}\" found at ({label_cx}, {label_cy})")
+    print(f"📍 Label \"{label_text_found}\" found at ({label_cx}, {label_cy}) [{match_time:.2f}s]")
     print(f"   Label bbox: ({label_x1}, {label_y1}) -> ({label_x2}, {label_y2})")
 
     # Find textbox to the right
+    textbox_start = time.time()
     candidates = []
 
     for bbox, text, conf in ocr_results:
@@ -173,10 +266,10 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
             continue
 
         distance = x1 - label_x2
-        
+
         if distance > max_distance:
             continue
-            
+
         candidates.append((distance, bbox, text, conf, cx, cy))
 
     if candidates:
@@ -184,39 +277,44 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
         best = candidates[0]
         distance, bbox, text, conf, cx, cy = best
 
-        print(f"\n📍 Textbox right of \"{label_text_found}\" found at: (x={cx}, y={cy})")
+        textbox_time = time.time() - textbox_start
+        print(f"\n📍 Textbox right of \"{label_text_found}\" found at: (x={cx}, y={cy}) [{textbox_time:.2f}s]")
         print(f"   Text in textbox: \"{text}\" (conf={conf:.2f})")
         print(f"   Distance from label: {distance}px")
         print(f"   Bounding box: ({int(min(p[0] for p in bbox))}, {int(min(p[1] for p in bbox))}) -> ({int(max(p[0] for p in bbox))}, {int(max(p[1] for p in bbox))})")
 
+        total_time = time.time() - start_time
+        print(f"\n⏱️  Total processing time: {total_time:.2f}s")
+
         return (cx, cy)
     else:
         # Detect textbox visually using edge detection
+        edge_start = time.time()
         crop_y1 = max(0, label_y1 - 30)
         crop_y2 = min(image.shape[0], label_y2 + 50)
         crop_x1 = label_x2 + 5
         crop_x2 = min(image.shape[1], crop_x1 + max_distance + 100)
-        
+
         cropped = image[crop_y1:crop_y2, crop_x1:crop_x2]
-        
+
         if cropped.shape[0] > 0 and cropped.shape[1] > 0:
             gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-            binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                           cv2.THRESH_BINARY_INV, 11, 2)
-            
+
             contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
+
             best_box = None
             best_score = 0
-            
+
             for contour in contours:
                 epsilon = 0.02 * cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
-                
+
                 if len(approx) == 4:
                     x, y, w, h = cv2.boundingRect(contour)
                     area = w * h
-                    
+
                     if w > 50 and h > 15 and w > h:
                         aspect = w / h
                         if 2 < aspect < 12:
@@ -224,29 +322,34 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
                             if rect_score > best_score:
                                 best_score = rect_score
                                 best_box = (x + crop_x1, y + crop_y1, w, h)
-            
+
             if best_box:
                 bx, by, bw, bh = best_box
                 textbox_cx = bx + bw // 2
                 textbox_cy = by + bh // 2
-                
-                print(f"\n📍 Textbox right of \"{label_text_found}\" detected visually at: (x={textbox_cx}, y={textbox_cy})")
+
+                edge_time = time.time() - edge_start
+                total_time = time.time() - start_time
+                print(f"\n📍 Textbox right of \"{label_text_found}\" detected visually at: (x={textbox_cx}, y={textbox_cy}) [{edge_time:.2f}s]")
                 print(f"   Textbox area: ({bx}, {by}) -> ({bx + bw}, {by + bh})")
                 print(f"   Size: {bw}x{bh}px")
                 print(f"   Distance from label: {bx - label_x2}px")
-                
+                print(f"\n⏱️  Total processing time: {total_time:.2f}s")
+
                 return (textbox_cx, textbox_cy)
-        
+
         # Fallback: estimate textbox position
         textbox_width = 200
         textbox_start = label_x2 + 20
         textbox_center_x = textbox_start + textbox_width // 2
         textbox_center_y = label_cy
 
+        total_time = time.time() - start_time
         print(f"\n📍 No textbox detected right of \"{label_text_found}\" (within {max_distance}px)")
         print(f"   Estimated textbox center: (x={textbox_center_x}, y={textbox_center_y})")
         print(f"   Estimated textbox area: ({textbox_start}, {label_y1}) -> ({textbox_start + textbox_width}, {label_y2})")
         print(f"   (Textbox may be empty or visually indistinguishable)")
+        print(f"\n⏱️  Total processing time: {total_time:.2f}s")
 
         return (textbox_center_x, textbox_center_y)
 
@@ -286,6 +389,14 @@ Examples:
     )
 
     parser.add_argument(
+        "--detection-mode",
+        type=str,
+        choices=["yolo", "ocr"],
+        default=None,
+        help="Detection mode: 'yolo' (UI element detection + per-element OCR, default) or 'ocr' (full-image OCR only)"
+    )
+
+    parser.add_argument(
         "--env-file",
         type=str,
         default=".env",
@@ -302,6 +413,8 @@ Examples:
 
     # Load config
     config = load_config(args.env_file, skip_password=True)
+    if args.detection_mode is not None:
+        config.detection_mode = args.detection_mode
 
     print(f"\n🔍 GUI Image Analysis Mode")
     print(f"   Image: {args.image_path}\n")
