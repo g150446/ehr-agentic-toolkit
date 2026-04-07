@@ -196,6 +196,13 @@ class BLEController:
         """Perform left mouse click."""
         return await self.send_command("click")
 
+    async def double_click(self) -> bool:
+        """Perform double left mouse click."""
+        ok1 = await self.send_command("click")
+        await asyncio.sleep(0.1)
+        ok2 = await self.send_command("click")
+        return ok1 and ok2
+
     async def right_click(self) -> bool:
         """Perform right mouse click."""
         return await self.send_command("rclick")

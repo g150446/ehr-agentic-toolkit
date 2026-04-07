@@ -137,6 +137,10 @@ class AsyncBLERunner:
         """Perform left mouse click."""
         return self.run_async(self.ble.click())
 
+    def double_click(self) -> bool:
+        """Perform double left mouse click."""
+        return self.run_async(self.ble.double_click())
+
     def right_click(self) -> bool:
         """Perform right mouse click."""
         return self.run_async(self.ble.right_click())

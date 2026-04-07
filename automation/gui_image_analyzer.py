@@ -361,6 +361,123 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
         return (textbox_center_x, textbox_center_y)
 
 
+def find_first_patient_row(image_path: str, config: AutomationConfig) -> Optional[Tuple[int, int]]:
+    """
+    患者一覧画面から先頭の患者行の中心座標を返す。
+
+    手順:
+    1. 全画面 OCR を実行
+    2. OCR 結果を Y 座標でクラスタリングして「行」に分割
+    3. 患者一覧のヘッダー行（患者番号・氏名・生年月日 などのキーワードを含む行）を特定
+    4. ヘッダー行より下にある最初のデータ行の中心を返す
+
+    ヘッダーが見つからない場合は、画面上部から2番目の行（最初の行はタブ/メニューバーが多い）を
+    先頭患者行とみなしてフォールバックする。
+
+    Args:
+        image_path: スクリーンショット画像のパス
+        config: AutomationConfig インスタンス
+
+    Returns:
+        先頭患者行の (x, y) 中心座標。検出失敗時は None
+    """
+    # ヘッダー行を識別するキーワード
+    HEADER_KEYWORDS = ['患者番号', '患者id', '氏名', 'フリガナ', '生年月日', '性別', '年齢', '診察']
+
+    start_time = time.time()
+
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"❌ Failed to load image: {image_path}")
+        return None
+
+    img_h, img_w = image.shape[:2]
+    print(f"📷 Loaded image: {image_path} ({img_w}x{img_h})")
+
+    print(f"🔍 Loading OCR model ({config.ocr_backend})...")
+    try:
+        ocr_reader = _load_ocr(config)
+    except Exception as e:
+        print(f"❌ Failed to load OCR: {e}")
+        return None
+
+    print("🔍 Running full-image OCR...")
+    ocr_results = run_ocr(ocr_reader, image)
+    print(f"📝 Extracted {len(ocr_results)} text segments [{time.time() - start_time:.2f}s]")
+
+    if not ocr_results:
+        print("❌ OCR returned no results")
+        return None
+
+    # --- Y クラスタリング: 近い Y 座標のセグメントを同一行にまとめる ---
+    ROW_TOLERANCE = 12  # px
+
+    def _center(bbox):
+        xs = [p[0] for p in bbox]
+        ys = [p[1] for p in bbox]
+        return (int((min(xs) + max(xs)) / 2), int((min(ys) + max(ys)) / 2))
+
+    # (cy, cx, text) のリストを Y でソート
+    segments = []
+    for bbox, text, conf in ocr_results:
+        cx, cy = _center(bbox)
+        segments.append((cy, cx, text))
+    segments.sort(key=lambda s: s[0])
+
+    # 近い Y のものを同じ行グループにまとめる
+    rows = []  # list of (mean_y, min_x, max_x, [text, ...])
+    for cy, cx, text in segments:
+        if rows and abs(cy - rows[-1][0]) <= ROW_TOLERANCE:
+            prev_y, prev_x1, prev_x2, texts = rows[-1]
+            new_y = (prev_y + cy) // 2
+            rows[-1] = (new_y, min(prev_x1, cx), max(prev_x2, cx), texts + [text])
+        else:
+            rows.append((cy, cx, cx, [text]))
+
+    print(f"📊 Clustered into {len(rows)} rows")
+    for i, (ry, rx1, rx2, texts) in enumerate(rows):
+        print(f"  行 {i+1} (y={ry}): {' | '.join(texts)}")
+
+    # --- ヘッダー行を探す ---
+    header_row_idx = None
+    for i, (ry, rx1, rx2, texts) in enumerate(rows):
+        combined = ' '.join(texts).lower()
+        hits = sum(1 for kw in HEADER_KEYWORDS if kw in combined)
+        if hits >= 2:  # 2つ以上のヘッダーキーワードが一致したらヘッダー行とみなす
+            header_row_idx = i
+            print(f"📋 ヘッダー行を検出: 行 {i + 1} (y={ry}) — キーワード {hits}個一致")
+            break
+
+    if header_row_idx is None:
+        print("⚠️  ヘッダー行が見つかりません。2行目をデータ行とみなします（フォールバック）")
+        # メニューバー等を避けるため Y が全体の上 1/3 より下の最初の行を選ぶ
+        threshold_y = img_h // 3
+        data_rows = [r for r in rows if r[0] > threshold_y]
+        if not data_rows:
+            data_rows = rows[1:] if len(rows) > 1 else rows
+        if not data_rows:
+            print("❌ データ行が見つかりませんでした")
+            return None
+        first_data = data_rows[0]
+    else:
+        # ヘッダー行の次の行をデータ行とする
+        next_idx = header_row_idx + 1
+        if next_idx >= len(rows):
+            print("❌ ヘッダーの次の行が存在しません（患者データなし）")
+            return None
+        first_data = rows[next_idx]
+
+    ry, rx1, rx2, texts = first_data
+    cx = (rx1 + rx2) // 2
+    cy = ry
+
+    print(f"\n📍 先頭患者行: (x={cx}, y={cy})")
+    print(f"   テキスト: {' | '.join(texts)}")
+    print(f"\n⏱️  Total: {time.time() - start_time:.2f}s")
+
+    return (cx, cy)
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(

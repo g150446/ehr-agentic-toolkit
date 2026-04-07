@@ -56,6 +56,9 @@ class BLEClient:
     def click(self) -> bool:
         return self._send({"cmd": "click"})["ok"]
 
+    def double_click(self) -> bool:
+        return self._send({"cmd": "double_click"})["ok"]
+
     def right_click(self) -> bool:
         return self._send({"cmd": "right_click"})["ok"]
 

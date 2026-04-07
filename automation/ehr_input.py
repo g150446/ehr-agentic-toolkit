@@ -14,7 +14,7 @@ import os
 
 from automation.config import load_config
 from automation.screen_analyzer import capture_screen
-from automation.gui_image_analyzer import find_textbox_right_of_label
+from automation.gui_image_analyzer import find_textbox_right_of_label, find_first_patient_row
 from automation.ble_client import BLEClient
 
 
@@ -95,5 +95,60 @@ def input_text_to_field(
     print("完了")
 
 
+def select_first_patient() -> None:
+    """
+    患者一覧画面で先頭の患者行をダブルクリックして選択する。
+
+    ble_server.py が事前に起動済みであること。
+    """
+    config = load_config(skip_password=True)
+    config.detection_mode = 'ocr'
+
+    # 1. スクリーンキャプチャ
+    print(f"HDMIデバイス (index={config.capture_device_index}) からキャプチャ中...")
+    frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height
+    )
+    if frame is None:
+        raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
+
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+        tmp_path = f.name
+    cv2.imwrite(tmp_path, frame)
+    print(f"スクリーンショット保存: {tmp_path}")
+
+    try:
+        # 2. 先頭患者行の座標を取得
+        coords = find_first_patient_row(tmp_path, config)
+        if coords is None:
+            raise RuntimeError("患者一覧の先頭行が見つかりませんでした")
+    finally:
+        os.unlink(tmp_path)
+
+    x, y = coords
+    print(f"先頭患者行の座標: ({x}, {y})")
+
+    # 3. BLE サーバー経由でダブルクリック
+    client = BLEClient()
+    if not client.is_server_running():
+        raise RuntimeError(
+            "BLE サーバーが起動していません。\n"
+            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
+        )
+
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
+    ok = client.move_mouse_to_position(x, y)
+    print(f"moveto ({x}, {y}) -> {'OK' if ok else 'NG'}")
+
+    ok = client.double_click()
+    print(f"double_click -> {'OK' if ok else 'NG'}")
+
+    print("完了")
+
+
 if __name__ == '__main__':
-    input_text_to_field(input_text="tesuto")
+    select_first_patient()
