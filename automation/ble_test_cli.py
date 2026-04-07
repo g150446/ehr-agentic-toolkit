@@ -548,7 +548,7 @@ class BLETestShell(cmd.Cmd):
             return
 
         try:
-            if self.runner.send_command("rclick"):
+            if self.runner.right_click():
                 print(ColoredOutput.success("Clicked (right)"))
             else:
                 print(ColoredOutput.error("Failed to right-click"))

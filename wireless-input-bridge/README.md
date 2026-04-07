@@ -25,6 +25,7 @@ BLE UART経由で以下のコマンドを送信してUSBマウスとキーボー
 | `moveto:X,Y` | カーソルを**絶対座標**に移動（HID単位 0〜32767） | `moveto:16383,16383` |
 | `move:DX,DY` | カーソルを**現在位置から相対移動**（HID単位） | `move:1706,0` |
 | `click` | 左クリックを実行 | `click` |
+| `rclick` | 右クリックを実行 | `rclick` |
 | `scroll:N` | スクロール（正の値で下、負の値で上） | `scroll:3` |
 
 #### moveto — 絶対座標移動
@@ -143,7 +144,8 @@ mouse
 moveto 960 540       # 画面中央へ（絶対座標）
 move 100 0           # 右へ100px（相対移動）
 move -100 50         # 左100px・下50px（相対移動）
-click
+click                # 左クリック
+rclick               # 右クリック
 keyboard
 type hello
 key:enter
