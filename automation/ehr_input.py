@@ -96,20 +96,43 @@ def input_text_to_field(
     print("完了")
 
 
-if __name__ == '__main__':
+def open_test_patient_chart() -> None:
+    """
+    テスト患者のカルテを開く。
+
+    以下の手順を自動実行する:
+    1. フリガナ欄に「tesuto」と入力して Enter → 患者一覧を表示
+    2. 0.5 秒待ってから Enter → 先頭患者を選択してカルテを開く
+    3. 1 秒待ってから Enter → 表示直後のダイアログを閉じる
+
+    ble_server.py が事前に起動済みであること。
+    """
     # Step 1: フリガナ欄に「tesuto」と入力して Enter → 患者一覧を表示させる
     input_text_to_field(input_text="tesuto", label="フリガナ")
+
+    client = BLEClient()
+    if not client.is_server_running():
+        raise RuntimeError(
+            "BLE サーバーが起動していません。\n"
+            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
+        )
+    ok = client.switch_to_keyboard_mode()
+    print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+
     # Step 2: 患者一覧が表示されるまで待ってから Enter で先頭患者を選択
     print("患者一覧の表示を待機中 (0.5秒)...")
     time.sleep(0.5)
-    client = BLEClient()
-    ok = client.switch_to_keyboard_mode()
-    print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
     ok = client.press_key("enter")
-    print(f"key:enter -> {'OK' if ok else 'NG'}")
+    print(f"key:enter (select patient) -> {'OK' if ok else 'NG'}")
+
     # Step 3: ダイアログを閉じるため 1 秒待って Enter
     print("ダイアログの表示を待機中 (1秒)...")
     time.sleep(1.0)
     ok = client.press_key("enter")
     print(f"key:enter (dialog close) -> {'OK' if ok else 'NG'}")
+
     print("完了")
+
+
+if __name__ == '__main__':
+    open_test_patient_chart()

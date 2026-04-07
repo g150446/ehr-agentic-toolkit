@@ -10,6 +10,46 @@ This directory contains automation tools for HDMI capture, screen analysis, and 
 
 ---
 
+## EHR Input Automation
+
+Automated EHR field input and patient chart opening via HDMI screen capture, OCR, and BLE mouse/keyboard control.
+
+> **Prerequisites**: `ble_server.py` must be running before executing any of these functions.
+> Start it with `./scripts/start_ble_server.sh` in a separate terminal.
+
+### open_test_patient_chart
+
+Opens the test patient's chart in one call. Performs the following steps automatically:
+
+1. Captures the HDMI screen and locates the フリガナ field via OCR
+2. Clicks the field, types `tesuto`, and presses Enter → patient list appears
+3. Waits 0.5 s, presses Enter → selects the top patient and opens the chart
+4. Waits 1 s, presses Enter → closes the post-open dialog
+
+```bash
+python -m automation.ehr_input
+```
+
+Or call it from Python:
+
+```python
+from automation.ehr_input import open_test_patient_chart
+open_test_patient_chart()
+```
+
+### input_text_to_field
+
+Lower-level function. Finds a labeled input field on screen by OCR and types text into it.
+
+```python
+from automation.ehr_input import input_text_to_field
+
+# Type "tesuto" into the field next to the "フリガナ" label
+input_text_to_field(input_text="tesuto", label="フリガナ")
+```
+
+---
+
 ## BLE Test CLI
 
 Interactive command-line tool for manually testing BLE keyboard and mouse commands with the ESP32 wireless input bridge. Provides a REPL-style interface for sending individual commands to test the BLE connection and input control.
@@ -344,7 +384,10 @@ All outputs are saved to `automation_outputs/`:
 
 - `config.py`: Configuration and .env loading
 - `ble_controller.py`: ESP32 BLE communication
+- `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost)
+- `ble_client.py`: Sync client for `ble_server.py`
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
+- `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `input_text_to_field`)
 - `screen_analyzer.py`: DocLayout-YOLO + OCR integration (RapidOCR/EasyOCR with caching)
 - `model_manager.py`: Multi-model management (DocLayout-YOLO + YOLOv11)
 - `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding
