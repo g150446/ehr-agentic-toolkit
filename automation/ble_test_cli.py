@@ -219,6 +219,22 @@ class BLETestShell(cmd.Cmd):
                 elif arg_part == 'mouse':
                     self.do_mouse('')
                 return
+            if cmd_part == 'move':
+                # move:DX,DY — pass as "DX DY" to do_move
+                self.do_move(arg_part.replace(',', ' '))
+                return
+            if cmd_part == 'up':
+                self.do_move(f"0 -{arg_part}")
+                return
+            if cmd_part == 'down':
+                self.do_move(f"0 {arg_part}")
+                return
+            if cmd_part == 'left':
+                self.do_move(f"-{arg_part} 0")
+                return
+            if cmd_part == 'right':
+                self.do_move(f"{arg_part} 0")
+                return
         # Fall back to default error message
         print(f"*** Unknown syntax: {line}")
         print("Type 'help' for available commands, or 'raw <cmd>' to send a raw BLE command.")
