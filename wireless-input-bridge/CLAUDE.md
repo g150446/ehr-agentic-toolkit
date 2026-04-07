@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with this Arduino sketch.
+This file provides guidance to AI coding assistants (Claude Code, GitHub Copilot CLI, etc.) when working with this Arduino sketch.
 
 ## Project Overview
 
@@ -69,3 +69,8 @@ Mac
 - `wifi_config.h` is gitignored. After cloning, copy the example and fill in credentials.
 - USB serial (`Serial.print`) has no output when CDCOnBoot is disabled. Use BLE TX characteristic
   or WiFi serial for debugging if needed.
+- **`type:` command uses per-character 30ms delay**: `Keyboard.print(text)` sends all characters
+  without delay, which breaks Windows Japanese IME romaji-to-kana conversion (e.g., "tesuto"
+  becomes "テsウtオ" instead of "テスト"). The firmware instead calls `Keyboard.write()` per
+  character with `delay(30)` so the IME has time to process each romaji pair. Do NOT revert to
+  `Keyboard.print()` or remove the delay.

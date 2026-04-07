@@ -147,7 +147,10 @@ void processCommand(String command) {
 
   } else if (command.startsWith("type:")) {
     String text = command.substring(5);
-    Keyboard.print(text);
+    for (int i = 0; i < (int)text.length(); i++) {
+      Keyboard.write((uint8_t)text[i]);
+      delay(30);
+    }
     Serial.print("-> type: "); Serial.println(text);
 
   } else if (command.startsWith("key:")) {
