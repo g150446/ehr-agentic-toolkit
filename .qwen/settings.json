@@ -10,7 +10,8 @@
       "Bash(python3 *)",
       "Bash(source *)",
       "Bash(xxd)",
-      "Bash(rm *)"
+      "Bash(rm *)",
+      "Bash(time *)"
     ]
   },
   "$version": 3

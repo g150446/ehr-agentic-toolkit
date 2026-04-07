@@ -13,7 +13,25 @@
       "Bash(git push:*)",
       "Bash(system_profiler SPUSBDataType)",
       "Bash(ioreg -p IOUSB -l -w 0)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:rapidai.github.io)",
+      "Bash(pip index:*)",
+      "WebSearch",
+      "Bash(arduino-cli version:*)",
+      "Bash(arduino-cli board:*)",
+      "Bash(arduino-cli core:*)",
+      "Bash(arduino-cli config:*)",
+      "Bash(arduino-cli compile:*)",
+      "Bash(chmod +x:*)",
+      "Bash(git commit:*)",
+      "Bash(bash:*)",
+      "Bash(ping -c1 -t3 ble-hid-bridge.local)",
+      "Bash(arduino-cli upload:*)",
+      "Bash(./scripts/upload_firmware_ota.sh:*)",
+      "Bash(xargs cat:*)",
+      "Bash(mkdir -p .github)",
+      "Bash(ln -s ../CLAUDE.md .github/copilot-instructions.md)"
     ]
   }
 }
