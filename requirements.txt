@@ -15,6 +15,7 @@ ultralytics>=8.0.0
 ultralyticsplus>=0.0.28
 
 # OCR
+pykakasi>=2.2.0  # Japanese kanji/kana to romaji conversion
 easyocr>=1.7.0
 pillow>=9.0.0
 rapidocr>=3.5.0  # Fast ONNX-based OCR with Japanese support (alternative to EasyOCR)

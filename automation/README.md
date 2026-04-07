@@ -17,34 +17,63 @@ Automated EHR field input and patient chart opening via HDMI screen capture, OCR
 > **Prerequisites**: `ble_server.py` must be running before executing any of these functions.
 > Start it with `./scripts/start_ble_server.sh` in a separate terminal.
 
-### open_test_patient_chart
+### コマンドライン使い方
 
-Opens the test patient's chart in one call. Performs the following steps automatically:
-
-1. Captures the HDMI screen and locates the フリガナ field via OCR
-2. Clicks the field, types `tesuto`, and presses Enter → patient list appears
-3. Waits 0.5 s, presses Enter → selects the top patient and opens the chart
-4. Waits 1 s, presses Enter → closes the post-open dialog
+`automation.ehr_input` はコマンドライン引数によって動作を切り替えます。
 
 ```bash
+# 引数なし: テスト患者カルテを開く
 python -m automation.ehr_input
+
+# 第一引数が日本語: IME変換のみ実行（カルテは開かない）
+python -m automation.ehr_input 肺炎
+
+# 第一引数が "open test"、第二引数が日本語: カルテを開いてからIME変換
+python -m automation.ehr_input "open test" 肺炎
 ```
 
-Or call it from Python:
+日本語テキストを渡すと、`pykakasi` で自動的にローマ字変換してから IME 入力します（例: `肺炎` → `haien`）。
+
+### open_test_patient_chart
+
+テスト患者のカルテを自動で開く。以下の手順を実行:
+
+1. HDMIスクリーンをキャプチャしてフリガナ欄をOCRで検索
+2. 欄をクリックして `tesuto` を入力し Enter → 患者一覧を表示
+3. 0.5秒待って Enter → 先頭患者を選択してカルテを開く
+4. 1秒待って Enter → 表示直後のダイアログを閉じる
 
 ```python
 from automation.ehr_input import open_test_patient_chart
 open_test_patient_chart()
 ```
 
+### type_kanji_via_ime
+
+ローマ字をIMEで変換し、HDMIキャプチャ＋OCRで候補を確認してから Enter で確定する。
+
+**IME候補の検出方法**: 画面全体のOCRではなく、Windowsが変換候補を**黒背景・白文字**で反転表示する特徴をOpenCVで検出し、その領域だけをOCRすることで元々画面に存在する同じ漢字との誤検知を防ぐ。
+
+```python
+from automation.ehr_input import type_kanji_via_ime
+
+# "haien" と入力し、IME候補で "肺炎" を確認してEnterで確定
+type_kanji_via_ime("haien", "肺炎")
+
+# ローマ字を自動変換して実行することも可能
+from automation.ehr_input import _kanji_to_romaji
+romaji = _kanji_to_romaji("肺炎")  # → "haien"
+type_kanji_via_ime(romaji, "肺炎")
+```
+
 ### input_text_to_field
 
-Lower-level function. Finds a labeled input field on screen by OCR and types text into it.
+ラベル付き入力欄をOCRで検索してテキストを入力する低レベル関数。
 
 ```python
 from automation.ehr_input import input_text_to_field
 
-# Type "tesuto" into the field next to the "フリガナ" label
+# フリガナ欄に "tesuto" を入力
 input_text_to_field(input_text="tesuto", label="フリガナ")
 ```
 
@@ -387,7 +416,7 @@ All outputs are saved to `automation_outputs/`:
 - `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost)
 - `ble_client.py`: Sync client for `ble_server.py`
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
-- `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `input_text_to_field`)
+- `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `input_text_to_field`, `type_kanji_via_ime`)
 - `screen_analyzer.py`: DocLayout-YOLO + OCR integration (RapidOCR/EasyOCR with caching)
 - `model_manager.py`: Multi-model management (DocLayout-YOLO + YOLOv11)
 - `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding

@@ -170,6 +170,9 @@ void processCommand(String command) {
     } else if (keyName == "esc") {
       Keyboard.write(KEY_ESC);
       Serial.println("-> key: Esc");
+    } else if (keyName == "space") {
+      Keyboard.write(' ');
+      Serial.println("-> key: Space");
     } else {
       Serial.print("-> unknown key: "); Serial.println(keyName);
     }
