@@ -193,13 +193,12 @@ class BLEController:
         return await self.send_command(f"key:{key}")
 
     async def click(self) -> bool:
-        """
-        Perform left mouse click.
-
-        Returns:
-            True if successful, False otherwise
-        """
+        """Perform left mouse click."""
         return await self.send_command("click")
+
+    async def right_click(self) -> bool:
+        """Perform right mouse click."""
+        return await self.send_command("rclick")
 
     async def move_mouse(self, x: int = 0, y: int = 0,
                          screen_width: int = 1920, screen_height: int = 1080) -> bool:

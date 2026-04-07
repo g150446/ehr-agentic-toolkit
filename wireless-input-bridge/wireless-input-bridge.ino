@@ -104,6 +104,10 @@ void processCommand(String command) {
     AbsMouse.click(MOUSE_LEFT);
     Serial.println("-> click");
 
+  } else if (command == "rclick") {
+    AbsMouse.click(MOUSE_RIGHT);
+    Serial.println("-> rclick");
+
   } else if (command.startsWith("moveto:")) {
     // moveto:X,Y  — absolute HID coordinates (0-32767)
     String coords = command.substring(7);

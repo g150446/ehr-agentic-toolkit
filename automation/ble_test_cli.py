@@ -137,6 +137,10 @@ class AsyncBLERunner:
         """Perform left mouse click."""
         return self.run_async(self.ble.click())
 
+    def right_click(self) -> bool:
+        """Perform right mouse click."""
+        return self.run_async(self.ble.right_click())
+
     def move_mouse(self, x: int, y: int) -> bool:
         """Move mouse cursor relatively."""
         return self.run_async(self.ble.move_mouse(x, y))
@@ -526,7 +530,7 @@ class BLETestShell(cmd.Cmd):
 
         try:
             if self.runner.click():
-                print(ColoredOutput.success("Clicked"))
+                print(ColoredOutput.success("Clicked (left)"))
             else:
                 print(ColoredOutput.error("Failed to click"))
         except Exception as e:
@@ -536,6 +540,25 @@ class BLETestShell(cmd.Cmd):
         """Help for click command."""
         print("\nPerform left mouse click")
         print("Usage: click")
+        print("\nNote: Must be in mouse mode first (use 'mouse' command)")
+
+    def do_rclick(self, arg):
+        """Perform right mouse click."""
+        if not self._check_connection():
+            return
+
+        try:
+            if self.runner.send_command("rclick"):
+                print(ColoredOutput.success("Clicked (right)"))
+            else:
+                print(ColoredOutput.error("Failed to right-click"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Right-click error: {e}"))
+
+    def help_rclick(self):
+        """Help for rclick command."""
+        print("\nPerform right mouse click")
+        print("Usage: rclick")
         print("\nNote: Must be in mouse mode first (use 'mouse' command)")
 
     def do_scroll(self, arg):
