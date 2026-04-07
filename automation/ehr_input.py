@@ -151,4 +151,7 @@ def select_first_patient() -> None:
 
 
 if __name__ == '__main__':
+    # Step 1: フリガナ欄に「テスト」と入力して Enter → 患者一覧を表示させる
+    input_text_to_field(input_text="テスト", label="フリガナ")
+    # Step 2: 先頭患者行をダブルクリックして選択
     select_first_patient()
