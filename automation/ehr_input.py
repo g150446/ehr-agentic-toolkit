@@ -15,7 +15,7 @@ import os
 from automation.config import load_config
 from automation.screen_analyzer import capture_screen
 from automation.gui_image_analyzer import find_textbox_right_of_label
-from automation.ble_test_cli import AsyncBLERunner
+from automation.ble_client import BLEClient
 
 
 def input_text_to_field(
@@ -66,42 +66,31 @@ def input_text_to_field(
     finally:
         os.unlink(tmp_path)
 
-    # 4. BLE operations — use AsyncBLERunner (same event-loop pattern as ble_test_cli.py)
-    runner = AsyncBLERunner(config)
-
-    print(f"BLEデバイス \"{config.esp32_device_name}\" に接続中...")
-    connected = runner.connect(timeout=15.0)
-    if not connected:
-        runner.cleanup()
+    # 4. BLE operations — delegate to ble_server.py (must be running beforehand)
+    client = BLEClient()
+    if not client.is_server_running():
         raise RuntimeError(
-            f"BLEデバイス \"{config.esp32_device_name}\" に接続できませんでした。\n"
-            "  - ESP32の電源が入っているか確認してください\n"
-            "  - Bluetoothが有効か確認してください\n"
-            "  - デバイス名が .env の ESP32_DEVICE_NAME と一致しているか確認してください"
+            "BLE サーバーが起動していません。\n"
+            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
         )
-    print(f"接続成功: {runner.get_device_address()}")
 
-    try:
-        ok = runner.switch_to_mouse_mode()
-        print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
 
-        ok = runner.move_mouse_to_position(x, y)
-        print(f"moveto ({x}, {y}) -> {'OK' if ok else 'NG'}")
+    ok = client.move_mouse_to_position(x, y)
+    print(f"moveto ({x}, {y}) -> {'OK' if ok else 'NG'}")
 
-        ok = runner.click()
-        print(f"click -> {'OK' if ok else 'NG'}")
+    ok = client.click()
+    print(f"click -> {'OK' if ok else 'NG'}")
 
-        ok = runner.switch_to_keyboard_mode()
-        print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+    ok = client.switch_to_keyboard_mode()
+    print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
 
-        ok = runner.type_text(input_text)
-        print(f"type:{input_text} -> {'OK' if ok else 'NG'}")
+    ok = client.type_text(input_text)
+    print(f"type:{input_text} -> {'OK' if ok else 'NG'}")
 
-        ok = runner.press_key("enter")
-        print(f"key:enter -> {'OK' if ok else 'NG'}")
-
-    finally:
-        runner.cleanup()
+    ok = client.press_key("enter")
+    print(f"key:enter -> {'OK' if ok else 'NG'}")
 
     print("完了")
 
