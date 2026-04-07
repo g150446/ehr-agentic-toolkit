@@ -11,6 +11,7 @@ identical BLE event-loop behaviour on macOS CoreBluetooth.
 import cv2
 import tempfile
 import os
+import time
 
 from automation.config import load_config
 from automation.screen_analyzer import capture_screen
@@ -98,7 +99,9 @@ def input_text_to_field(
 if __name__ == '__main__':
     # Step 1: フリガナ欄に「tesuto」と入力して Enter → 患者一覧を表示させる
     input_text_to_field(input_text="tesuto", label="フリガナ")
-    # Step 2: 患者一覧が表示されたら Enter で先頭患者を選択
+    # Step 2: 患者一覧が表示されるまで待ってから Enter で先頭患者を選択
+    print("患者一覧の表示を待機中 (0.5秒)...")
+    time.sleep(0.5)
     client = BLEClient()
     ok = client.switch_to_keyboard_mode()
     print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
