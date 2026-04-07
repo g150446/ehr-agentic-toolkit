@@ -107,4 +107,9 @@ if __name__ == '__main__':
     print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
     ok = client.press_key("enter")
     print(f"key:enter -> {'OK' if ok else 'NG'}")
+    # Step 3: ダイアログを閉じるため 1 秒待って Enter
+    print("ダイアログの表示を待機中 (1秒)...")
+    time.sleep(1.0)
+    ok = client.press_key("enter")
+    print(f"key:enter (dialog close) -> {'OK' if ok else 'NG'}")
     print("完了")
