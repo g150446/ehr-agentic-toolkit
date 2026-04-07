@@ -237,7 +237,7 @@ void setup() {
   USB.productName("BLE HID Bridge");
   USB.serialNumber("00000002");
   USB.VID(0x303A);
-  USB.PID(0x4004);
+  USB.PID(0x4005);
 
   AbsMouse.begin();
   Keyboard.begin();

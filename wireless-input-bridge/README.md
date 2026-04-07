@@ -194,14 +194,17 @@ Mac
 **解決手順:**
 
 1. Arduino IDE の設定を確認する
-   - `Tools → USB CDC On Boot → Enabled`
+   - `Tools → USB CDC On Boot → **Disabled**`（重要：Enabled にしない）
    - `Tools → USB Mode → USB-OTG (TinyUSB)`
 2. 正しい設定でファームウェアを**再ビルド・再書き込み**する
 3. Windows のデバイスマネージャーで当該デバイスを**アンインストール**する
    - 右クリック → 「デバイスのアンインストール」
-   - 「このデバイスのドライバーソフトウェアを削除する」にチェック
 4. ESP32 を USB から**抜いて再接続**する
 5. 「HID準拠マウス」「HID準拠キーボード」として表示されれば成功
+
+> **注意**: `USB CDC On Boot = Enabled` にすると Windows が USB Composite Device として列挙し、
+> HID インターフェースが正しく認識されなくなります。OTA アップデート後にリブートした場合も同様です。
+> 必ず **Disabled** を使用してください。
 
 ### OTA接続が見つからない場合
 

@@ -1,78 +1,71 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with this Arduino sketch.
 
 ## Project Overview
 
-This is an Arduino sketch for ESP32-S2/S3 that creates a USB HID mouse controlled via Bluetooth Low Energy (BLE) UART. The device advertises as "BLE Mouse Control" and accepts text commands over BLE to perform mouse operations (clicks, movement, scrolling) on the connected computer.
-
-## Hardware Requirements
-
-- ESP32-S2 or ESP32-S3 with Native USB support
-- Arduino IDE with ESP32 board support installed
-- Must be configured with USB in standard mode (not OTG mode)
+ESP32-S3 (M5AtomS3U) sketch that bridges BLE UART commands to USB HID mouse and keyboard actions.
+A Mac sends BLE UART commands → ESP32 → USB HID → Windows PC.
 
 ## Build and Upload
 
-This project uses Arduino IDE. To build and upload:
+### FQBN (Critical Settings)
 
-1. Open `BLE_UART_MouseControl.ino` in Arduino IDE
-2. Select the appropriate ESP32-S2 or ESP32-S3 board from Tools > Board
-3. Ensure USB Mode is set to "USB-OTG (TinyUSB)" or similar (NOT "Hardware CDC and JTAG")
-4. Select the correct port from Tools > Port
-5. Click Upload button or use Sketch > Upload
+```
+esp32:esp32:m5stack_atoms3:USBMode=default,CDCOnBoot=default
+```
 
-Serial Monitor (115200 baud) shows connection status and received commands.
+**`CDCOnBoot=default` (Disabled) is mandatory.** Do NOT change to `CDCOnBoot=cdc`.
+
+> **Why**: `CDCOnBoot=cdc` (Enabled) adds a USB CDC serial interface, making the device a USB
+> Composite Device. Windows then fails to enumerate the HID mouse/keyboard interfaces, especially
+> after OTA reboots. This was confirmed to break HID recognition; disabling CDC fixes it.
+> OTA (WiFi) still works without CDC. The only loss is USB serial output.
+
+### OTA Update (normal workflow)
+
+```bash
+./scripts/upload_firmware_ota.sh           # auto-discover via mDNS
+./scripts/upload_firmware_ota.sh <ip>      # specify IP directly
+```
+
+### USB Flash (recovery only)
+
+1. Put device into bootloader mode: hold BOOT button, press+release RESET, release BOOT
+2. Port changes to `/dev/cu.usbmodem*`
+3. Run:
+   ```bash
+   arduino-cli compile --fqbn "esp32:esp32:m5stack_atoms3:USBMode=default,CDCOnBoot=default" \
+     --output-dir /tmp/ble-hid-bridge-build wireless-input-bridge
+   arduino-cli upload --fqbn "esp32:esp32:m5stack_atoms3:USBMode=default,CDCOnBoot=default" \
+     --port /dev/cu.usbmodem<XXXX> --input-dir /tmp/ble-hid-bridge-build wireless-input-bridge
+   ```
 
 ## Architecture
 
-### Single-File Design
+```
+Mac
+ └─(BLE UART)─► ESP32 M5AtomS3U ─(USB HID)─► Windows PC
+                      │
+                      └─(WiFi OTA)─► Firmware update
+```
 
-The entire application is contained in `BLE_UART_MouseControl.ino`. There are no separate header or source files.
+- `USBHIDAbsoluteMouse` only (no relative mouse). Absolute and relative mouse share a
+  `static bool initialized` in the base class; only one can be registered.
+- Firmware tracks cursor position (`g_abs_x`, `g_abs_y`) in HID units (0–32767).
+- `moveto:X,Y` sets absolute HID position; `move:DX,DY` adds delta to tracked position.
 
-### Key Components
+## Key Files
 
-1. **BLE UART Service**: Uses standard Nordic UART Service UUIDs
-   - Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
-   - RX Characteristic (WRITE): `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` - receives commands
-   - TX Characteristic (NOTIFY): `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` - unused but required for standard UART service
+- `wireless-input-bridge.ino` — main sketch
+- `wifi_config.h` — WiFi credentials (gitignored); copy from `wifi_config.h.example`
+- `../scripts/upload_firmware_ota.sh` — OTA upload script (use this for all normal updates)
 
-2. **USB HID Mouse Emulation**: Uses ESP32's native USB to emulate a standard USB mouse
-   - `USBHIDMouse` library provides `Mouse.click()`, `Mouse.move(x, y, scroll)` functions
-   - The ESP32 appears to the computer as a physical USB mouse
+## Known Issues / Constraints
 
-3. **Command Processing**: `processCommand()` function at BLE_UART_MouseControl.ino:62
-   - Parses text commands received via BLE
-   - Supported formats: `click`, `up:N`, `down:N`, `left:N`, `right:N`, `scroll:N`
-   - Commands are case-sensitive and use colon-delimited parameters
-
-### Control Flow
-
-1. `setup()`: Initializes USB mouse, creates BLE server, service, and characteristics, starts advertising
-2. `MyCallbacks::onWrite()`: Triggered when BLE client writes to RX characteristic, calls `processCommand()`
-3. `processCommand()`: Parses command string and executes corresponding mouse action
-4. `loop()`: Handles BLE connection state changes and restarts advertising when disconnected
-
-## Command Protocol
-
-Commands are sent as ASCII strings via BLE UART:
-- `click` - Left mouse button click
-- `up:10` - Move cursor up 10 pixels (negative Y)
-- `down:10` - Move cursor down 10 pixels (positive Y)
-- `left:10` - Move cursor left 10 pixels (negative X)
-- `right:10` - Move cursor right 10 pixels (positive X)
-- `scroll:5` - Scroll down 5 units (positive = down, negative = up)
-
-The third parameter of `Mouse.move(x, y, scroll)` controls scroll wheel.
-
-## Testing
-
-Connect via BLE UART apps:
-- Android: Serial Bluetooth Terminal, nRF Connect
-- iOS: LightBlue, nRF Connect
-
-Commands can be tested through Serial Monitor during development, but actual mouse control requires BLE connection.
-
-## Platform Constraints
-
-The code uses preprocessor directives (BLE_UART_MouseControl.ino:22-28) to ensure compilation only occurs on ESP32 boards with native USB in the correct mode. If `ARDUINO_USB_MODE` is not defined or equals 1 (OTG mode), the sketch compiles to empty `setup()`/`loop()` functions with warnings/errors.
+- **CDCOnBoot must be Disabled**: See FQBN section above.
+- Only one mouse instance can be registered (static initializer limitation). Current firmware
+  uses `USBHIDAbsoluteMouse` exclusively.
+- `wifi_config.h` is gitignored. After cloning, copy the example and fill in credentials.
+- USB serial (`Serial.print`) has no output when CDCOnBoot is disabled. Use BLE TX characteristic
+  or WiFi serial for debugging if needed.
