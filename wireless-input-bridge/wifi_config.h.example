@@ -1,0 +1,9 @@
+// wifi_config.h.example — WiFi credentials template for OTA update support
+//
+// Copy this file to wifi_config.h and fill in your network details:
+//   cp wifi_config.h.example wifi_config.h
+//
+// wifi_config.h is gitignored and will never be committed.
+#pragma once
+#define WIFI_SSID     "your-wifi-ssid"
+#define WIFI_PASSWORD "your-wifi-password"

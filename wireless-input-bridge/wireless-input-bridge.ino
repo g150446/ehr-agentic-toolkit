@@ -1,66 +1,75 @@
 /*
-  BLE UART Mouse and Keyboard Control
+  BLE UART + USB HID Bridge
 
-  Controls USB HID Mouse and Keyboard via BLE UART commands.
+  Receives commands via BLE UART (Nordic UART Service) from Mac and translates
+  them to USB HID mouse/keyboard actions on the connected Windows PC.
 
-  Mode Switching Commands:
-  - "mode:mouse"     : Switch to mouse mode
-  - "mode:keyboard"  : Switch to keyboard mode
+  Uses USBHIDAbsoluteMouse for precise pixel-accurate cursor positioning.
+  USBHIDAbsoluteMouse and USBHIDMouse (relative) share a static initializer in
+  the base class, so only one can be active — we use absolute only.
 
   Mouse Commands:
-  - "click"       : Click left mouse button
-  - "up:10"       : Move cursor up 10 pixels
-  - "down:10"     : Move cursor down 10 pixels
-  - "left:10"     : Move cursor left 10 pixels
-  - "right:10"    : Move cursor right 10 pixels
-  - "scroll:5"    : Scroll by 5 units
+  - "moveto:X,Y"  : Move to absolute HID position (X,Y in 0-32767)
+  - "move:DX,DY"  : Move relative to current tracked position (DX,DY in HID units)
+  - "click"       : Left click at current position
+  - "scroll:N"    : Scroll wheel N units (positive=down, negative=up)
 
   Keyboard Commands:
-  - "type:Hello"  : Type text string
-  - "key:enter"   : Press Enter key
-  - "key:tab"     : Press Tab key
-  - "key:backspace" : Press Backspace key
-  - "key:esc"     : Press Escape key
+  - "mode:mouse"    : (no-op, kept for protocol compatibility)
+  - "mode:keyboard" : (no-op, kept for protocol compatibility)
+  - "type:TEXT"   : Type text string
+  - "key:enter"   : Press Enter
+  - "key:tab"     : Press Tab
+  - "key:backspace": Press Backspace
+  - "key:esc"     : Press Escape
+  - "key:delete"  : Press Delete
+
+  OTA Update:
+  - Connect to WiFi defined in wifi_config.h
+  - Use Arduino IDE "Upload via Network" or arduino-cli with --protocol network
+  - Hostname: ble-hid-bridge
 
   Hardware:
-  - ESP32-S2 or ESP32-S3 with Native USB support
-  - M5AtomS3U tested and working
+  - M5AtomS3U (ESP32-S3, Native USB)
 
-  IMPORTANT: In Arduino IDE, set Tools > USB Mode > "USB-OTG (TinyUSB)"
-
-  Based on:
-  - ButtonMouseControl example
-  - KeyboardMessage example
-  - BLE UART example
+  Arduino IDE settings:
+  - Tools > USB Mode       > "USB-OTG (TinyUSB)"
+  - Tools > USB CDC On Boot> "Enabled"
 */
 
 #if !defined(ARDUINO_USB_MODE)
 #error This ESP32 SoC has no Native USB interface
 #elif ARDUINO_USB_MODE == 1
-#error Wrong USB Mode! Please set Tools > USB Mode > "USB-OTG (TinyUSB)" in Arduino IDE
+#error Wrong USB Mode! Set Tools > USB Mode > "USB-OTG (TinyUSB)" in Arduino IDE
 #else
 
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <WiFi.h>
+#include <ArduinoOTA.h>
 #include "USB.h"
-#include "USBHIDMouse.h"
+#include "USBHIDMouse.h"      // defines both USBHIDAbsoluteMouse and USBHIDMouse
 #include "USBHIDKeyboard.h"
+#include "wifi_config.h"      // #define WIFI_SSID / WIFI_PASSWORD  (gitignored)
 
-USBHIDMouse Mouse;
-USBHIDKeyboard Keyboard;
+// Use absolute mouse only — sharing the base-class static initializer with
+// USBHIDMouse means only one can be registered; absolute is what we need.
+USBHIDAbsoluteMouse AbsMouse;
+USBHIDKeyboard      Keyboard;
 
-// Mode tracking
-enum Mode { MOUSE_MODE, KEYBOARD_MODE };
-Mode currentMode = MOUSE_MODE;
+// Tracked absolute position (0-32767 HID range).
+// moveto:X,Y sets this; move:DX,DY adds to it.
+// Initialized to screen center so relative moves work before first moveto.
+static int16_t g_abs_x = 16383;
+static int16_t g_abs_y = 16383;
 
-BLEServer *pServer = NULL;
-BLECharacteristic *pTxCharacteristic;
-bool deviceConnected = false;
+BLEServer           *pServer = NULL;
+BLECharacteristic   *pTxCharacteristic;
+bool deviceConnected    = false;
 bool oldDeviceConnected = false;
 
-// BLE UART Service UUIDs
 #define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
@@ -68,153 +77,177 @@ bool oldDeviceConnected = false;
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *pServer) {
     deviceConnected = true;
-    Serial.println("Device connected");
-  };
-
+    Serial.println("BLE client connected");
+  }
   void onDisconnect(BLEServer *pServer) {
     deviceConnected = false;
-    Serial.println("Device disconnected");
+    Serial.println("BLE client disconnected");
   }
 };
 
-// Parse command and control mouse
+// Scroll in int8_t chunks (scroll wheel is still relative)
+void mouseScroll(int amount) {
+  while (amount != 0) {
+    int8_t chunk = (amount > 127) ? 127 : (amount < -128) ? -128 : (int8_t)amount;
+    AbsMouse.move(g_abs_x, g_abs_y, chunk);
+    amount -= chunk;
+    delay(5);
+  }
+}
+
 void processCommand(String command) {
   command.trim();
-  Serial.print("Processing command: ");
+  Serial.print("CMD: ");
   Serial.println(command);
 
   if (command == "click") {
-    // Click left mouse button
-    Mouse.click(MOUSE_LEFT);
-    Serial.println("Click executed");
-  }
-  else if (command.startsWith("up:")) {
-    int value = command.substring(3).toInt();
-    Mouse.move(0, -value, 0);
-    Serial.print("Move up: ");
-    Serial.println(value);
-  }
-  else if (command.startsWith("down:")) {
-    int value = command.substring(5).toInt();
-    Mouse.move(0, value, 0);
-    Serial.print("Move down: ");
-    Serial.println(value);
-  }
-  else if (command.startsWith("left:")) {
-    int value = command.substring(5).toInt();
-    Mouse.move(-value, 0, 0);
-    Serial.print("Move left: ");
-    Serial.println(value);
-  }
-  else if (command.startsWith("right:")) {
-    int value = command.substring(6).toInt();
-    Mouse.move(value, 0, 0);
-    Serial.print("Move right: ");
-    Serial.println(value);
-  }
-  else if (command.startsWith("scroll:")) {
+    AbsMouse.click(MOUSE_LEFT);
+    Serial.println("-> click");
+
+  } else if (command.startsWith("moveto:")) {
+    // moveto:X,Y  — absolute HID coordinates (0-32767)
+    String coords = command.substring(7);
+    int comma = coords.indexOf(',');
+    if (comma > 0) {
+      int16_t ax = (int16_t)coords.substring(0, comma).toInt();
+      int16_t ay = (int16_t)coords.substring(comma + 1).toInt();
+      g_abs_x = constrain(ax, 0, 32767);
+      g_abs_y = constrain(ay, 0, 32767);
+      AbsMouse.move(g_abs_x, g_abs_y);
+      Serial.print("-> moveto "); Serial.print(g_abs_x); Serial.print(","); Serial.println(g_abs_y);
+    }
+
+  } else if (command.startsWith("move:")) {
+    // move:DX,DY  — relative HID delta added to current tracked position
+    String coords = command.substring(5);
+    int comma = coords.indexOf(',');
+    if (comma >= 0) {
+      int dx = coords.substring(0, comma).toInt();
+      int dy = coords.substring(comma + 1).toInt();
+      g_abs_x = (int16_t)constrain((int)g_abs_x + dx, 0, 32767);
+      g_abs_y = (int16_t)constrain((int)g_abs_y + dy, 0, 32767);
+      AbsMouse.move(g_abs_x, g_abs_y);
+      Serial.print("-> move dx="); Serial.print(dx);
+      Serial.print(" dy="); Serial.print(dy);
+      Serial.print(" -> ("); Serial.print(g_abs_x); Serial.print(","); Serial.print(g_abs_y); Serial.println(")");
+    }
+
+  } else if (command.startsWith("scroll:")) {
     int value = command.substring(7).toInt();
-    Mouse.move(0, 0, value);
-    Serial.print("Scroll: ");
-    Serial.println(value);
-  }
-  else if (command.startsWith("mode:")) {
-    String mode = command.substring(5);
-    if (mode == "mouse") {
-      currentMode = MOUSE_MODE;
-      Serial.println("Switched to MOUSE mode");
-    }
-    else if (mode == "keyboard") {
-      currentMode = KEYBOARD_MODE;
-      Serial.println("Switched to KEYBOARD mode");
-    }
-    else {
-      Serial.println("Unknown mode. Use 'mode:mouse' or 'mode:keyboard'");
-    }
-  }
-  else if (command.startsWith("type:")) {
+    mouseScroll(value);
+    Serial.print("-> scroll "); Serial.println(value);
+
+  } else if (command.startsWith("mode:")) {
+    // Protocol compatibility — no action needed
+    Serial.print("-> mode: "); Serial.println(command.substring(5));
+
+  } else if (command.startsWith("type:")) {
     String text = command.substring(5);
     Keyboard.print(text);
-    Serial.print("Typed: ");
-    Serial.println(text);
-  }
-  else if (command.startsWith("key:")) {
+    Serial.print("-> type: "); Serial.println(text);
+
+  } else if (command.startsWith("key:")) {
     String keyName = command.substring(4);
     if (keyName == "enter" || keyName == "return") {
       Keyboard.write(KEY_RETURN);
-      Serial.println("Pressed: Enter");
-    }
-    else if (keyName == "tab") {
+      Serial.println("-> key: Enter");
+    } else if (keyName == "tab") {
       Keyboard.write(KEY_TAB);
-      Serial.println("Pressed: Tab");
-    }
-    else if (keyName == "backspace") {
+      Serial.println("-> key: Tab");
+    } else if (keyName == "backspace") {
       Keyboard.write(KEY_BACKSPACE);
-      Serial.println("Pressed: Backspace");
-    }
-    else if (keyName == "delete") {
+      Serial.println("-> key: Backspace");
+    } else if (keyName == "delete") {
       Keyboard.write(KEY_DELETE);
-      Serial.println("Pressed: Delete");
-    }
-    else if (keyName == "esc") {
+      Serial.println("-> key: Delete");
+    } else if (keyName == "esc") {
       Keyboard.write(KEY_ESC);
-      Serial.println("Pressed: Esc");
+      Serial.println("-> key: Esc");
+    } else {
+      Serial.print("-> unknown key: "); Serial.println(keyName);
     }
-    else {
-      Serial.print("Unknown key: ");
-      Serial.println(keyName);
-    }
-  }
-  else {
-    Serial.println("Unknown command");
+
+  } else {
+    Serial.println("-> unknown command");
   }
 }
 
 class MyCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) {
     String rxValue = pCharacteristic->getValue();
-
     if (rxValue.length() > 0) {
-      Serial.println("*********");
-      Serial.print("Received Value: ");
-      Serial.println(rxValue);
-      Serial.println("*********");
-
-      // Process the received command
       processCommand(rxValue);
     }
   }
 };
 
+void setupWiFiOTA() {
+  Serial.print("Connecting to WiFi: "); Serial.println(WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nWiFi not connected — OTA unavailable");
+    return;
+  }
+
+  Serial.print("\nWiFi connected, IP: ");
+  Serial.println(WiFi.localIP());
+
+  ArduinoOTA.setHostname("ble-hid-bridge");
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("OTA update starting...");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nOTA update complete. Rebooting...");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("OTA: %u%%\r", (progress * 100) / total);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA Error[%u]: ", error);
+    if      (error == OTA_AUTH_ERROR)    Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR)   Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR)     Serial.println("End Failed");
+  });
+
+  ArduinoOTA.begin();
+  Serial.println("OTA ready — hostname: ble-hid-bridge");
+}
+
 void setup() {
   Serial.begin(115200);
-  delay(1000); // Wait for serial to be ready
-  Serial.println("\n\n=================================");
-  Serial.println("BLE UART Mouse & Keyboard Control");
-  Serial.println("=================================");
-  Serial.println("Board: M5AtomS3U / ESP32-S3");
+  delay(1000);
+  Serial.println("\n=== BLE UART + USB HID Bridge ===");
 
-  // Initialize USB HID Mouse and Keyboard
-  Serial.println("Initializing USB Mouse and Keyboard...");
-  Mouse.begin();
+  USB.manufacturerName("ESP32");
+  USB.productName("BLE HID Bridge");
+  USB.serialNumber("00000002");
+  USB.VID(0x303A);
+  USB.PID(0x4004);
+
+  AbsMouse.begin();
   Keyboard.begin();
   USB.begin();
-  Serial.println("USB Mouse initialized - OK");
-  Serial.println("USB Keyboard initialized - OK");
+  Serial.println("USB HID initialized");
 
-  // Create the BLE Device
-  Serial.println("Initializing BLE...");
+  setupWiFiOTA();
+
   BLEDevice::init("BLE Mouse & Keyboard");
-
-  // Create the BLE Server
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
-  // Create the BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID);
-  Serial.println("BLE Server created - OK");
 
-  // Create BLE Characteristics
   pTxCharacteristic = pService->createCharacteristic(
     CHARACTERISTIC_UUID_TX,
     BLECharacteristic::PROPERTY_NOTIFY
@@ -227,51 +260,26 @@ void setup() {
   );
   pRxCharacteristic->setCallbacks(new MyCallbacks());
 
-  // Start the service
   pService->start();
-
-  // Start advertising
   pServer->getAdvertising()->start();
-  Serial.println("BLE Advertising started - OK");
-  Serial.println("=================================");
-  Serial.println("Device Name: BLE Mouse & Keyboard");
-  Serial.println("Status: Waiting for connection...");
-  Serial.println("=================================");
-  Serial.println("\nAvailable commands:");
-  Serial.println("Mode switching:");
-  Serial.println("  mode:mouse     - Switch to mouse mode");
-  Serial.println("  mode:keyboard  - Switch to keyboard mode");
-  Serial.println("\nMouse commands:");
-  Serial.println("  click          - Click left mouse button");
-  Serial.println("  up:N           - Move up N pixels");
-  Serial.println("  down:N         - Move down N pixels");
-  Serial.println("  left:N         - Move left N pixels");
-  Serial.println("  right:N        - Move right N pixels");
-  Serial.println("  scroll:N       - Scroll by N units");
-  Serial.println("\nKeyboard commands:");
-  Serial.println("  type:TEXT      - Type text string");
-  Serial.println("  key:enter      - Press Enter key");
-  Serial.println("  key:tab        - Press Tab key");
-  Serial.println("  key:backspace  - Press Backspace key");
-  Serial.println("  key:esc        - Press Escape key");
-  Serial.println("\nCurrent mode: MOUSE");
-  Serial.println("=================================\n");
+
+  Serial.println("BLE advertising started");
+  Serial.println("Device: BLE Mouse & Keyboard");
+  Serial.println("================================\n");
 }
 
 void loop() {
-  // Handle BLE disconnection/reconnection
+  ArduinoOTA.handle();
+
   if (!deviceConnected && oldDeviceConnected) {
     delay(500);
     pServer->startAdvertising();
-    Serial.println("Start advertising");
+    Serial.println("Restarted BLE advertising");
     oldDeviceConnected = deviceConnected;
   }
-
   if (deviceConnected && !oldDeviceConnected) {
     oldDeviceConnected = deviceConnected;
-    Serial.println("Client connected");
   }
-
   delay(10);
 }
 

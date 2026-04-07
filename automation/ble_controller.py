@@ -47,6 +47,10 @@ class BLEController:
         self.device_address: Optional[str] = None
         self.current_mode: str = "mouse"  # Default mode on ESP32 is mouse
 
+        # Tracked pixel position for relative moves (updated by move_mouse_absolute)
+        self._current_x: int = 0
+        self._current_y: int = 0
+
     async def scan_and_find_device(self, timeout: float = 10.0) -> Optional[str]:
         """
         Scan for BLE devices and find the target ESP32 device.
@@ -197,69 +201,74 @@ class BLEController:
         """
         return await self.send_command("click")
 
-    async def move_mouse(self, x: int = 0, y: int = 0) -> bool:
+    async def move_mouse(self, x: int = 0, y: int = 0,
+                         screen_width: int = 1920, screen_height: int = 1080) -> bool:
         """
-        Move mouse cursor relatively.
+        Move mouse cursor by a relative pixel amount.
+
+        Converts pixel delta to HID units and sends ``move:DX,DY`` to the
+        firmware, which adds the delta to its own tracked absolute position.
+        This is a true relative move independent of the Python-side tracker.
 
         Args:
-            x: Horizontal movement (positive = right, negative = left)
-            y: Vertical movement (positive = down, negative = up)
+            x: Horizontal pixel delta (positive = right, negative = left)
+            y: Vertical pixel delta (positive = down, negative = up)
 
         Returns:
             True if successful, False otherwise
         """
-        if x > 0:
-            return await self.send_command(f"right:{x}")
-        elif x < 0:
-            return await self.send_command(f"left:{abs(x)}")
-        elif y > 0:
-            return await self.send_command(f"down:{y}")
-        elif y < 0:
-            return await self.send_command(f"up:{abs(y)}")
-        else:
-            return True  # No movement
+        hid_dx = int(x * 32767 / screen_width)
+        hid_dy = int(y * 32767 / screen_height)
+        logger.debug(f"Relative mouse move: pixel ({x},{y}) -> HID delta ({hid_dx},{hid_dy})")
+        ok = await self.send_command(f"move:{hid_dx},{hid_dy}")
+        await asyncio.sleep(0.05)
+        return ok
 
-    async def reset_mouse_to_origin(self) -> bool:
+    async def move_mouse_absolute(self, x: int, y: int,
+                                   screen_width: int = 1920,
+                                   screen_height: int = 1080) -> bool:
         """
-        Reset mouse cursor to top-left corner (0,0).
+        Move mouse to an absolute pixel position using USBHIDAbsoluteMouse.
 
-        Moves mouse left and up by large amount to ensure it reaches screen edge.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        logger.debug("Resetting mouse to top-left corner...")
-        success1 = await self.send_command("left:5000")
-        await asyncio.sleep(0.1)
-        success2 = await self.send_command("up:5000")
-        await asyncio.sleep(0.5)  # Wait for movement to complete
-        logger.debug("Mouse reset to origin (0,0)")
-        return success1 and success2
-
-    async def move_mouse_to_position(self, x: int, y: int) -> bool:
-        """
-        Move mouse to absolute position from top-left origin.
-
-        First resets mouse to (0,0), then moves to target position.
+        Converts pixel coordinates to the 0-32767 range used by the HID
+        absolute mouse descriptor and sends a single ``moveto:X,Y`` command.
+        Also updates the tracked position so subsequent move_mouse() calls
+        use the correct origin.
 
         Args:
-            x: Target X coordinate from left edge
-            y: Target Y coordinate from top edge
+            x: Target pixel X coordinate (0 = left edge)
+            y: Target pixel Y coordinate (0 = top edge)
+            screen_width: Captured screen width in pixels (default 1920)
+            screen_height: Captured screen height in pixels (default 1080)
 
         Returns:
             True if successful, False otherwise
         """
-        # Reset to origin
-        await self.reset_mouse_to_origin()
-
-        # Move to target position
-        logger.debug(f"Moving mouse to position ({x}, {y})")
-        success1 = await self.send_command(f"right:{x}")
+        self._current_x = max(0, min(screen_width, x))
+        self._current_y = max(0, min(screen_height, y))
+        hid_x = int(self._current_x * 32767 / screen_width)
+        hid_y = int(self._current_y * 32767 / screen_height)
+        logger.debug(f"Absolute mouse move: pixel ({self._current_x},{self._current_y}) -> HID ({hid_x},{hid_y})")
+        ok = await self.send_command(f"moveto:{hid_x},{hid_y}")
         await asyncio.sleep(0.1)
-        success2 = await self.send_command(f"down:{y}")
-        await asyncio.sleep(0.3)  # Wait for movement to complete
+        return ok
 
-        return success1 and success2
+    async def move_mouse_to_position(self, x: int, y: int,
+                                      screen_width: int = 1920,
+                                      screen_height: int = 1080) -> bool:
+        """
+        Move mouse to absolute pixel position using USBHIDAbsoluteMouse.
+
+        Args:
+            x: Target pixel X from left edge
+            y: Target pixel Y from top edge
+            screen_width: Captured screen width in pixels
+            screen_height: Captured screen height in pixels
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return await self.move_mouse_absolute(x, y, screen_width, screen_height)
 
     async def scroll(self, amount: int) -> bool:
         """

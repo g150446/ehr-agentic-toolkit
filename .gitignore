@@ -6,6 +6,7 @@
 
 # Environment and configuration
 .env
+wireless-input-bridge/wifi_config.h
 .env.local
 .env.*.local
 config/local.yaml

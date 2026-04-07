@@ -141,13 +141,15 @@ class AsyncBLERunner:
         """Move mouse cursor relatively."""
         return self.run_async(self.ble.move_mouse(x, y))
 
-    def reset_mouse_to_origin(self) -> bool:
-        """Reset mouse to origin (0, 0)."""
-        return self.run_async(self.ble.reset_mouse_to_origin())
+    def move_mouse_absolute(self, x: int, y: int,
+                             screen_width: int = 1920, screen_height: int = 1080) -> bool:
+        """Move mouse to absolute pixel position via USBHIDAbsoluteMouse."""
+        return self.run_async(self.ble.move_mouse_absolute(x, y, screen_width, screen_height))
 
-    def move_mouse_to_position(self, x: int, y: int) -> bool:
-        """Move mouse to absolute position."""
-        return self.run_async(self.ble.move_mouse_to_position(x, y))
+    def move_mouse_to_position(self, x: int, y: int,
+                                screen_width: int = 1920, screen_height: int = 1080) -> bool:
+        """Move mouse to absolute pixel position."""
+        return self.run_async(self.ble.move_mouse_to_position(x, y, screen_width, screen_height))
 
     def scroll(self, amount: int) -> bool:
         """Scroll mouse wheel."""
@@ -185,6 +187,41 @@ class BLETestShell(cmd.Cmd):
         super().__init__()
         self.config = config
         self.runner = AsyncBLERunner(config)
+
+    def default(self, line):
+        """
+        Handle firmware-protocol syntax typed directly (e.g. key:enter, type:hello).
+
+        cmd.Cmd splits on whitespace, so "key:enter" arrives here as an unknown
+        command.  We detect the colon pattern and route it to the correct handler
+        so users can type firmware commands directly without the `raw` prefix.
+        """
+        line = line.strip()
+        if ':' in line:
+            cmd_part, _, arg_part = line.partition(':')
+            cmd_part = cmd_part.lower()
+            if cmd_part == 'key':
+                self.do_press(arg_part)
+                return
+            if cmd_part == 'type':
+                self.do_type(arg_part)
+                return
+            if cmd_part == 'moveto':
+                # firmware uses "moveto:X,Y"; CLI do_moveto expects "X Y"
+                self.do_moveto(arg_part.replace(',', ' '))
+                return
+            if cmd_part == 'scroll':
+                self.do_scroll(arg_part)
+                return
+            if cmd_part == 'mode':
+                if arg_part == 'keyboard':
+                    self.do_keyboard('')
+                elif arg_part == 'mouse':
+                    self.do_mouse('')
+                return
+        # Fall back to default error message
+        print(f"*** Unknown syntax: {line}")
+        print("Type 'help' for available commands, or 'raw <cmd>' to send a raw BLE command.")
 
     # ========== Connection Management ==========
 
@@ -443,9 +480,9 @@ class BLETestShell(cmd.Cmd):
                 print(ColoredOutput.error("Coordinates must be non-negative"))
                 return
 
-            print(ColoredOutput.info(f"Moving to absolute position ({x}, {y})..."))
+            print(ColoredOutput.info(f"Moving to absolute position ({x}, {y}) [pixel coords on 1920x1080]..."))
 
-            if self.runner.move_mouse_to_position(x, y):
+            if self.runner.move_mouse_absolute(x, y):
                 print(ColoredOutput.success(f"Moved to position: ({x}, {y})"))
             else:
                 print(ColoredOutput.error("Failed to move mouse"))
@@ -457,11 +494,12 @@ class BLETestShell(cmd.Cmd):
 
     def help_moveto(self):
         """Help for moveto command."""
-        print("\nMove mouse to absolute position from top-left corner")
+        print("\nMove mouse to absolute pixel position (uses USBHIDAbsoluteMouse)")
         print("Usage: moveto <x> <y>")
-        print("  x: Distance from left edge")
-        print("  y: Distance from top edge")
-        print("Example: moveto 500 300")
+        print("  x: Pixel X from left edge (0-1919 for 1920px wide screen)")
+        print("  y: Pixel Y from top edge  (0-1079 for 1080px tall screen)")
+        print("Example: moveto 960 540  (center of 1920x1080 screen)")
+        print("\nNote: Requires firmware with USBHIDAbsoluteMouse support")
         print("\nNote: Resets cursor to origin first, then moves to target")
         print("Note: Must be in mouse mode first (use 'mouse' command)")
 
@@ -519,23 +557,23 @@ class BLETestShell(cmd.Cmd):
         print("\nNote: Must be in mouse mode first (use 'mouse' command)")
 
     def do_reset(self, arg):
-        """Reset mouse cursor to top-left corner (0, 0)."""
+        """Reset tracked position to (0,0) and move cursor to top-left."""
         if not self._check_connection():
             return
 
         try:
-            print(ColoredOutput.info("Resetting mouse to origin..."))
+            print(ColoredOutput.info("Moving cursor to top-left (0, 0)..."))
 
-            if self.runner.reset_mouse_to_origin():
-                print(ColoredOutput.success("Reset to origin (0, 0)"))
+            if self.runner.move_mouse_absolute(0, 0):
+                print(ColoredOutput.success("Moved to (0, 0)"))
             else:
-                print(ColoredOutput.error("Failed to reset mouse"))
+                print(ColoredOutput.error("Failed to move mouse"))
         except Exception as e:
             print(ColoredOutput.error(f"Reset error: {e}"))
 
     def help_reset(self):
         """Help for reset command."""
-        print("\nReset mouse cursor to top-left corner (0, 0)")
+        print("\nMove cursor to top-left corner (0, 0)")
         print("Usage: reset")
         print("\nNote: Must be in mouse mode first (use 'mouse' command)")
 

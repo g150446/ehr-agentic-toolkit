@@ -292,8 +292,10 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
         edge_start = time.time()
         crop_y1 = max(0, label_y1 - 30)
         crop_y2 = min(image.shape[0], label_y2 + 50)
-        crop_x1 = label_x2 + 5
-        crop_x2 = min(image.shape[1], crop_x1 + max_distance + 100)
+        # Start crop at label_x1 (not label_x2) so input fields starting just after
+        # the label are fully within the crop and produce complete quadrilateral contours.
+        crop_x1 = max(0, label_x1)
+        crop_x2 = min(image.shape[1], label_x2 + max_distance + 100)
 
         cropped = image[crop_y1:crop_y2, crop_x1:crop_x2]
 
@@ -314,14 +316,19 @@ def find_textbox_right_of_label(image_path: str, label_text: str, config: Automa
                 if len(approx) == 4:
                     x, y, w, h = cv2.boundingRect(contour)
                     area = w * h
+                    img_x = x + crop_x1  # convert to image coordinates
+
+                    # Only consider boxes whose left edge is to the right of the label
+                    if img_x <= label_x2:
+                        continue
 
                     if w > 50 and h > 15 and w > h:
                         aspect = w / h
-                        if 2 < aspect < 12:
-                            rect_score = area * (1.0 / (1.0 + abs(aspect - 5)))
+                        if 2 < aspect < 30:
+                            rect_score = area  # 面積優先（幅広の入力フィールドを選ぶ）
                             if rect_score > best_score:
                                 best_score = rect_score
-                                best_box = (x + crop_x1, y + crop_y1, w, h)
+                                best_box = (img_x, y + crop_y1, w, h)
 
             if best_box:
                 bx, by, bw, bh = best_box
