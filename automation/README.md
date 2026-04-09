@@ -32,71 +32,47 @@ python -m automation.ehr_input 肺炎
 python -m automation.ehr_input "open test" 肺炎
 ```
 
-日本語テキストを渡すと、`pykakasi` で自動的にローマ字変換してから IME 入力します（例: `肺炎` → `haien`）。
+日本語テキストを渡すと、**sudachipy + pykakasi** で文節分割・ローマ字変換してから IME 入力します。辞書ベースの決定論的変換なので長母音（例: `治療` → `chiryou`）も正確です。
 
-4文字を超える文章や助詞を含む文では、`gemma4:e2b` を使ってローカル Ollama に文節分割を依頼してから IME 入力します。Ollama がタイムアウトしたり不正な応答を返した場合は、ローカル分割へフォールバックせず、明確なエラーメッセージを出して終了します。
+4文字を超える文章や助詞を含む文は `type_japanese_sentence()` で文節単位に分割して入力します。句読点（`、` → `,` / `。` → `.` + Enter）も自動処理します。
 
-### Ollama 文節分割プローブ
+### ローカル文節分割プローブ（推奨）
 
-BLE や EHR 操作とは独立に、Ollama が対象文を適切に文節分割できるかだけを試したい場合は、以下を使います。
-
-```bash
-python -m automation.ollama_segment_probe "肺炎に対して抗菌薬による治療を行う"
-```
-
-このコマンドは以下を表示します。
-
-- 使用する Ollama の `endpoint`、`model`、`timeout`
-- Ollama の生応答
-- 解析済みの文節リスト
-
-必要に応じて以下の環境変数で接続先を変更できます。
+**sudachipy + pykakasi** を使ったローカル文節分割の動作確認ツールです。外部サービス不要・長母音も正確です。
 
 ```bash
-OLLAMA_SEGMENTATION_URL=http://localhost:11434/api/generate
-OLLAMA_SEGMENTATION_MODEL=gemma4:e2b
-OLLAMA_SEGMENTATION_TIMEOUT=60
-```
-
-### mlx_vlm 文節分割プローブ
-
-Ollama の代わりに Apple Silicon ネイティブの **mlx_vlm** サーバーを使って文節分割する実装です。`mlx-community/gemma-4-e2b-it-4bit` モデルを使用し、OpenAI 互換 API (`/v1/chat/completions`) 経由で呼び出します。
-
-**サーバー起動:**
-
-```bash
-bash scripts/start_mlx_vlm_server.sh
-```
-
-ポート **8181** で起動します（ポート 8080 は nginx との競合を避けるため）。初回はモデルロードに数秒かかります。
-
-**文節分割プローブ:**
-
-```bash
-python -m automation.mlx_vlm_segment_probe "肺炎に対して抗菌薬による治療を行う"
+python -m automation.local_segment_probe "肺炎に対して、抗菌薬による治療を行う。"
 ```
 
 出力例:
 
 ```
-対象文: '肺炎に対して抗菌薬による治療を行う'
-endpoint: http://localhost:8181/v1/chat/completions
-model: mlx-community/gemma-4-e2b-it-4bit
-timeout: 120秒
-mlx_vlm応答: '...'
+対象文: '肺炎に対して、抗菌薬による治療を行う。'
+エンジン: sudachipy (SplitMode.C) + pykakasi (hepburn)
+分割サマリ: 肺炎(haien) / に(ni) / 対して(taishite) / 、(,) / 抗菌薬(koukinyaku) / に(ni) / よる(yoru) / 治療(chiryou) / を(wo) / 行う(okonau) / 。(.)
 分割結果:
   1. '肺炎' (haien)
   2. 'に' (ni)
   3. '対して' (taishite)
+  4. '、' (,)
+  5. '抗菌薬' (koukinyaku)
   ...
 ```
 
-必要に応じて以下の環境変数で接続先を変更できます。
+### mlx_vlm 文節分割プローブ（参考実装）
+
+`mlx-community/gemma-4-e2b-it-4bit` を使った LLM ベースの実装です。`ehr_input.py` では使用していませんが、LLM の出力比較などに利用できます。事前に `bash scripts/start_mlx_vlm_server.sh` でサーバーを起動してください。
 
 ```bash
-MLX_VLM_SEGMENTATION_URL=http://localhost:8181/v1/chat/completions
-MLX_VLM_SEGMENTATION_MODEL=mlx-community/gemma-4-e2b-it-4bit
-MLX_VLM_SEGMENTATION_TIMEOUT=120
+python -m automation.mlx_vlm_segment_probe "肺炎に対して抗菌薬による治療を行う"
+```
+
+### Ollama 文節分割プローブ（参考実装）
+
+Ollama (`gemma4:e2b`) を使った実装です。`ehr_input.py` では使用していませんが、Ollama の動作確認に利用できます。
+
+```bash
+python -m automation.ollama_segment_probe "肺炎に対して抗菌薬による治療を行う"
 ```
 
 ### open_test_patient_chart
@@ -487,10 +463,12 @@ All outputs are saved to `automation_outputs/`:
 - `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding
 - `utils.py`: Logging, debugging, progress tracking
 - `monitor_stream.py`: HDMI capture stream monitor with YOLO detection
-- `ollama_segmentation.py`: Ollama を使った日本語文節分割ヘルパー
-- `ollama_segment_probe.py`: Ollama 文節分割 CLI プローブ
-- `mlx_vlm_segmentation.py`: mlx_vlm サーバーを使った日本語文節分割ヘルパー (OpenAI 互換 API)
+- `local_segmentation.py`: **sudachipy + pykakasi** による日本語文節分割（`ehr_input.py` が使用するメイン実装）
+- `local_segment_probe.py`: ローカル文節分割 CLI プローブ
+- `mlx_vlm_segmentation.py`: mlx_vlm サーバーを使った日本語文節分割ヘルパー (参考実装)
 - `mlx_vlm_segment_probe.py`: mlx_vlm 文節分割 CLI プローブ
+- `ollama_segmentation.py`: Ollama を使った日本語文節分割ヘルパー (参考実装)
+- `ollama_segment_probe.py`: Ollama 文節分割 CLI プローブ
 
 ### Adding Features
 
