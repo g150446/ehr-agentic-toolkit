@@ -20,9 +20,9 @@ from automation.config import load_config
 from automation.screen_analyzer import capture_screen, load_rapidocr_reader, run_ocr
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
-from automation.ollama_segmentation import (
-    OllamaSegmentationError,
-    segment_japanese_text_with_ollama,
+from automation.mlx_vlm_segmentation import (
+    MlxVlmSegmentationError,
+    segment_japanese_text_with_mlx_vlm,
 )
 
 
@@ -339,15 +339,15 @@ def _has_kanji(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
-def _segment_japanese_with_ollama(text: str) -> list:
+def _segment_japanese_with_mlx_vlm(text: str) -> list:
     """
-    ollama gemma4:e2b を使って日本語テキストをIME変換単位（文節）に分割する。
+    mlx_vlm gemma-4-e2b-it-4bit を使って日本語テキストをIME変換単位（文節）に分割する。
 
     Returns:
         [{"text": "肺炎", "romaji": "haien"}, {"text": "に対して", "romaji": "nitaishite"}, ...]
     """
-    content, segments = segment_japanese_text_with_ollama(text)
-    print(f"ollama応答: {content!r}")
+    content, segments = segment_japanese_text_with_mlx_vlm(text)
+    print(f"mlx_vlm応答: {content!r}")
     return segments
 
 
@@ -355,15 +355,15 @@ def type_japanese_sentence(text: str) -> None:
     """
     日本語文をIMEを使って文節単位で入力する。
 
-    ollama gemma4:e2b で文節分割し、各文節を個別に IME 変換・確定する。
+    mlx_vlm gemma-4-e2b-it-4bit で文節分割し、各文節を個別に IME 変換・確定する。
     漢字を含む文節は type_kanji_via_ime()、ひらがな・カタカナのみの文節は
     直接入力（ローマ字 + Enter）で処理する。
 
     Args:
         text: 入力する日本語文（例: "肺炎に対して抗菌薬による治療を行う"）
     """
-    print(f"文節分割中 (ollama gemma4:e2b): {text!r}")
-    segments = _segment_japanese_with_ollama(text)
+    print(f"文節分割中 (mlx_vlm gemma-4-e2b-it-4bit): {text!r}")
+    segments = _segment_japanese_with_mlx_vlm(text)
     print(f"分割結果: {segments}")
 
     client = BLEClient()
@@ -439,17 +439,17 @@ def _run_cli(args: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the CLI and convert Ollama failures into user-facing errors."""
+    """Run the CLI and convert mlx_vlm failures into user-facing errors."""
     import sys
 
     args = sys.argv[1:] if argv is None else argv
     try:
         return _run_cli(args)
-    except OllamaSegmentationError as exc:
-        print(f"Ollama文節分割エラー: {exc}")
+    except MlxVlmSegmentationError as exc:
+        print(f"mlx_vlm文節分割エラー: {exc}")
         print(
-            "まず `python -m automation.ollama_segment_probe \"対象文\"` で "
-            "Ollama の応答を確認してください。"
+            "まず `bash scripts/start_mlx_vlm_server.sh` でサーバーを起動してから\n"
+            "`python -m automation.mlx_vlm_segment_probe \"対象文\"` で応答を確認してください。"
         )
         return 1
 
