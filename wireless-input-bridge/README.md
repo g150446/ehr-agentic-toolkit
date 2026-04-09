@@ -77,6 +77,7 @@ CLI は以下の入力を `move:DX,DY`（HID単位）に自動変換して送信
 | `key:backspace` | Backspaceキーを押す | `key:backspace` |
 | `key:delete` | Deleteキーを押す | `key:delete` |
 | `key:esc` | Escキーを押す | `key:esc` |
+| `key:zenkaku` | 半角/全角キーを押す（IMEひらがな⇔英数字切替） | `key:zenkaku` |
 
 ---
 

@@ -31,7 +31,8 @@
       "Bash(./scripts/upload_firmware_ota.sh:*)",
       "Bash(xargs cat:*)",
       "Bash(mkdir -p .github)",
-      "Bash(ln -s ../CLAUDE.md .github/copilot-instructions.md)"
+      "Bash(ln -s ../CLAUDE.md .github/copilot-instructions.md)",
+      "Bash(ping:*)"
     ]
   }
 }

@@ -23,6 +23,7 @@
   - "key:backspace": Press Backspace
   - "key:esc"     : Press Escape
   - "key:delete"  : Press Delete
+  - "key:zenkaku" : Press 半角/全角 IME toggle key (HID 0x35, JP keyboard layout)
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -173,6 +174,12 @@ void processCommand(String command) {
     } else if (keyName == "space") {
       Keyboard.write(' ');
       Serial.println("-> key: Space");
+    } else if (keyName == "zenkaku") {
+      // ASCII 0x60 (backtick) maps to HID keycode 0x35 via en_US layout table.
+      // On Windows with Japanese 106/109 keyboard layout, HID 0x35 = 半角/全角 key,
+      // which toggles the IME between hiragana and alphanumeric input mode.
+      Keyboard.write('`');
+      Serial.println("-> key: zenkaku (半角/全角)");
     } else {
       Serial.print("-> unknown key: "); Serial.println(keyName);
     }

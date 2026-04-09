@@ -25,16 +25,25 @@ Automated EHR field input and patient chart opening via HDMI screen capture, OCR
 # 引数なし: テスト患者カルテを開く
 python -m automation.ehr_input
 
-# 第一引数が日本語: IME変換のみ実行（カルテは開かない）
+# 日本語テキスト: IME変換のみ実行（カルテは開かない）
 python -m automation.ehr_input 肺炎
 
-# 第一引数が "open test"、第二引数が日本語: カルテを開いてからIME変換
+# 英語テキスト: 英数字モードで直接入力
+python -m automation.ehr_input tesuto
+
+# 日英混在テキスト: 文節ごとに IME モードを自動切替
+python -m automation.ehr_input "COVID-19の感染を確認した"
+
+# 第一引数が "open test"、第二引数がテキスト: カルテを開いてから入力
 python -m automation.ehr_input "open test" 肺炎
+python -m automation.ehr_input "open test" "MRI所見"
 ```
 
 日本語テキストを渡すと、**sudachipy + pykakasi** で文節分割・ローマ字変換してから IME 入力します。辞書ベースの決定論的変換なので長母音（例: `治療` → `chiryou`）も正確です。
 
 4文字を超える文章や助詞を含む文は `type_japanese_sentence()` で文節単位に分割して入力します。句読点（`、` → `,` / `。` → `.` + Enter）も自動処理します。
+
+日英混在テキスト（例: `"COVID-19の感染を確認した"`）では、ASCII のみの文節は英数字モード、日本語文節はひらがなモードで入力するよう IME を自動切替します。
 
 ### ローカル文節分割プローブ（推奨）
 
@@ -105,6 +114,25 @@ type_kanji_via_ime("haien", "肺炎")
 from automation.ehr_input import _kanji_to_romaji
 romaji = _kanji_to_romaji("肺炎")  # → "haien"
 type_kanji_via_ime(romaji, "肺炎")
+```
+
+### detect_ime_mode / ensure_ime_mode
+
+Windows IME の現在入力モードをスクリーンキャプチャから判定し、必要に応じて切替える。
+
+**`detect_ime_mode(frame)`**: 画面下部（タスクバー）を OCR し、「あ」が検出されれば `'japanese'`、「A」/「Ａ」が検出されれば `'english'`、判定不能なら `None` を返す。
+
+**`ensure_ime_mode(target_mode, client, current_mode)`**: 現在モードが目標と異なる場合のみ `key:zenkaku`（半角/全角キー）を送信してトグルし、新しいモード文字列を返す。画面再キャプチャはしない設計で、呼び出し元がモードをトラッキングする。
+
+```python
+from automation.ehr_input import detect_ime_mode, ensure_ime_mode
+from automation.screen_analyzer import capture_screen
+from automation.ble_client import BLEClient
+
+frame = capture_screen(0)
+current = detect_ime_mode(frame)       # 'japanese' / 'english' / None
+client = BLEClient()
+current = ensure_ime_mode("english", client, current)  # 必要なら半角/全角を送信
 ```
 
 ### input_text_to_field
@@ -457,7 +485,7 @@ All outputs are saved to `automation_outputs/`:
 - `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost)
 - `ble_client.py`: Sync client for `ble_server.py`
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
-- `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `input_text_to_field`, `type_kanji_via_ime`)
+- `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `input_text_to_field`, `type_kanji_via_ime`, `type_japanese_sentence`, `detect_ime_mode`, `ensure_ime_mode`)
 - `screen_analyzer.py`: DocLayout-YOLO + OCR integration (RapidOCR/EasyOCR with caching)
 - `model_manager.py`: Multi-model management (DocLayout-YOLO + YOLOv11)
 - `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding

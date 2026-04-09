@@ -354,6 +354,84 @@ def _ime_candidate_matches(target: str, combined: str, attempt: int) -> bool:
     return False
 
 
+def _is_ascii_only(text: str) -> bool:
+    """文字列が ASCII 文字のみで構成されているか判定する。"""
+    return all(ord(ch) < 128 for ch in text)
+
+
+def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
+    """
+    スクリーン右下の IME フローティングウィンドウを OCR して現在の入力モードを判定する。
+
+    Windows IME は画面右下（タスクバー付近）に現在のモードを示す小さなインジケーターを
+    表示する。ひらがなモードでは「あ」、英数字モードでは「A」が表示される。
+
+    Args:
+        frame: HDMI キャプチャフレーム（BGR numpy 配列）
+        config: AppConfig。None の場合はデフォルト設定を使用。
+
+    Returns:
+        'japanese': ひらがな入力モード（「あ」が検出された）
+        'english':  英数字入力モード（「A」が検出され日本語文字なし）
+        None:       判定不能
+    """
+    h, w = frame.shape[:2]
+    # IME インジケーターは画面下部に存在する（タスクバー高さ 80px、全幅でスキャン）
+    roi = frame[max(0, h - 80):h, :]
+
+    ocr_reader = load_rapidocr_reader()
+    results = run_ocr(ocr_reader, roi)
+    texts = "".join(text for (_, text, _) in results)
+    print(f"  [IME検出] OCR結果: {texts!r}")
+
+    # ひらがな「あ」が検出されればひらがなモード（最優先）
+    if "あ" in texts:
+        return "japanese"
+    # 英数字モードのインジケーター: 半角「A」または全角「Ａ」（U+FF21）
+    # 否定フィルターは使わない — 時計・日付の OCR ノイズに CJK 文字が混入するため
+    if "A" in texts or "\uff21" in texts:
+        return "english"
+    return None
+
+
+def toggle_ime(client: "BLEClient") -> None:
+    """半角/全角キーを送って IME モードをトグルする。"""
+    print("  [IME切替] 半角/全角 を送信")
+    client.press_key("zenkaku")
+    time.sleep(0.3)  # IME 切替の反映を待つ
+
+
+def ensure_ime_mode(
+    target_mode: str,
+    client: "BLEClient",
+    current_mode: Optional[str],
+) -> Optional[str]:
+    """
+    current_mode が target_mode と異なる場合に半角/全角でトグルし、新しいモードを返す。
+
+    画面キャプチャは行わない。呼び出し元が開始時に1回だけ detect_ime_mode() で
+    モードを取得し、以降はこの関数の戻り値でトラッキングする設計。
+
+    Args:
+        target_mode: 目標モード ('japanese' または 'english')
+        client: BLEClient インスタンス
+        current_mode: 現在の IME モード。None の場合は判定不能として扱う。
+
+    Returns:
+        切替後の（または変更なしの）IME モード文字列。
+        current_mode が None の場合は None を返す（トグルしない）。
+    """
+    if current_mode is None:
+        print(f"  [IME切替] モード不明 → 切替をスキップ（{target_mode} を期待）")
+        return None
+    if current_mode == target_mode:
+        print(f"  [IME切替] {current_mode} → 変更不要")
+        return current_mode
+    toggle_ime(client)
+    print(f"  [IME切替] {current_mode} → {target_mode}")
+    return target_mode
+
+
 def _kanji_to_romaji(text: str) -> str:
     """漢字・かな文字列をヘボン式ローマ字に変換する。"""
     import pykakasi
@@ -388,18 +466,25 @@ def _segment_japanese_locally(text: str) -> list:
 
 def type_japanese_sentence(text: str) -> None:
     """
-    日本語文をIMEを使って文節単位で入力する。
+    日本語・英語混在文を文節単位で入力する。
 
-    sudachipy + pykakasi で文節分割し、各文節を個別に IME 変換・確定する。
-    漢字を含む文節は type_kanji_via_ime()、ひらがな・カタカナのみの文節は
-    直接入力（ローマ字 + Enter）で処理する。
+    sudachipy + pykakasi で文節分割し、各文節の種類に応じて処理する:
+    - ASCII のみ（英単語・数字・記号）: 英数字モードで直接入力
+    - 漢字を含む: ひらがなモードで IME 変換（type_kanji_via_ime）
+    - ひらがな・カタカナのみ: ひらがなモードでローマ字 + Enter
+    - 句読点（、。）: ひらがなモードで IME 変換キー送信
+
+    IME モードの切替には半角/全角キー（key:zenkaku）を使用する。
+    各文節の前にスクリーンキャプチャで現在のモードを確認し、必要な場合のみ切替える。
 
     Args:
-        text: 入力する日本語文（例: "肺炎に対して抗菌薬による治療を行う"）
+        text: 入力するテキスト（日本語・英語混在可）
     """
     print(f"文節分割中 (sudachipy + pykakasi): {text!r}")
     segments = _segment_japanese_locally(text)
     print(f"分割結果: {segments}")
+
+    config = load_config(skip_password=True)
 
     client = BLEClient()
     if not client.is_server_running():
@@ -408,37 +493,92 @@ def type_japanese_sentence(text: str) -> None:
             "  python -m automation.ble_server  を先に別ターミナルで実行してください"
         )
 
+    # 開始時に1回だけ IME モードを検出し、以降は内部変数でトラッキングする
+    print("現在の IME モードを検出中...")
+    init_frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    current_mode: Optional[str] = None
+    if init_frame is not None:
+        current_mode = detect_ime_mode(init_frame, config)
+    print(f"初期 IME モード: {current_mode!r}")
+
     for seg in segments:
         seg_text = seg["text"]
         seg_romaji = seg["romaji"]
         print(f"\n--- 文節: {seg_text!r} ({seg_romaji}) ---")
 
         if seg_text in ("、", "。"):
-            # 句読点: IMEが自動変換するキー（,/.）を送る。
+            # 句読点: ひらがなモードで IME が自動変換するキー（,/.）を送る。
             # 「。」はIMEの変換バッファに残るため Enter で確定が必要。
-            # 「、」は直接挿入されるため Enter 不要。
+            current_mode = ensure_ime_mode("japanese", client, current_mode)
             print(f"  句読点入力: {seg_romaji!r}")
-            ok = client.switch_to_keyboard_mode()
-            print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
             if seg_text == "。":
                 ok = client.press_key("enter")
                 print(f"key:enter -> {'OK' if ok else 'NG'}")
+
+        elif _is_ascii_only(seg_text):
+            # ASCII のみ（英単語・数字・記号）: 英数字モードで直接入力（IME 変換不要）
+            current_mode = ensure_ime_mode("english", client, current_mode)
+            print(f"  英数字直接入力: {seg_text!r}")
+            ok = client.type_text(seg_text)
+            print(f"type:{seg_text} -> {'OK' if ok else 'NG'}")
+
         elif _has_kanji(seg_text):
-            # 漢字を含む文節: IME変換候補を確認してから確定
+            # 漢字を含む文節: ひらがなモードで IME 変換候補を確認してから確定
+            current_mode = ensure_ime_mode("japanese", client, current_mode)
             type_kanji_via_ime(seg_romaji, seg_text)
+
         else:
-            # ひらがな・カタカナのみ: ローマ字を直接入力してEnterで確定
-            print(f"  直接入力: {seg_romaji!r}")
-            ok = client.switch_to_keyboard_mode()
-            print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+            # ひらがな・カタカナのみ: ひらがなモードでローマ字を直接入力して Enter で確定
+            current_mode = ensure_ime_mode("japanese", client, current_mode)
+            print(f"  ひらがな直接入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
 
     print("\n文章入力完了")
+
+
+def _type_english_text(text: str) -> None:
+    """
+    英語テキストを英数字モードで直接入力する。
+
+    IME を英数字モードに切替えてからテキストを送信する。
+    Enter は送らない（呼び出し元がフィールド確定を制御する）。
+
+    Args:
+        text: 入力する英数字文字列
+    """
+    config = load_config(skip_password=True)
+
+    client = BLEClient()
+    if not client.is_server_running():
+        raise RuntimeError(
+            "BLE サーバーが起動していません。\n"
+            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
+        )
+
+    frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if frame is None:
+        raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
+
+    current_mode = detect_ime_mode(frame, config)
+    ensure_ime_mode("english", client, current_mode)
+
+    print(f"英語入力: {text!r}")
+    ok = client.type_text(text)
+    print(f"type:{text} -> {'OK' if ok else 'NG'}")
+    print("完了")
 
 
 def _run_cli(args: list[str]) -> int:
@@ -453,35 +593,46 @@ def _run_cli(args: list[str]) -> int:
         open_test_patient_chart()
         return 0
 
-    if len(args) == 1 and _is_japanese(args[0]):
-        # 第一引数が日本語 → IME 変換
+    if len(args) == 1:
         text = args[0]
-        # 短い単語（4文字以下かつ助詞なし）は単一変換、長い文章は文節分割
-        if len(text) <= 4 and not any(ch in text for ch in "をにはがでも"):
-            romaji = _kanji_to_romaji(text)
-            print(f"IME変換: {romaji} → {text}")
-            type_kanji_via_ime(romaji, text)
+        if _is_japanese(text):
+            # 日本語または混在テキスト → 文節分割して IME 変換
+            # 短い純日本語単語（4文字以下かつ助詞なし）は単一変換で高速化
+            if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
+                romaji = _kanji_to_romaji(text)
+                print(f"IME変換: {romaji} → {text}")
+                type_kanji_via_ime(romaji, text)
+            else:
+                type_japanese_sentence(text)
         else:
-            type_japanese_sentence(text)
+            # 英数字のみ → 英数字モードで直接入力
+            print(f"英語入力: {text!r}")
+            _type_english_text(text)
         return 0
 
-    if len(args) >= 2 and args[0] == "open test" and _is_japanese(args[1]):
-        # 第一引数が "open test"、第二引数が日本語 → カルテ開いてから IME 変換
+    if len(args) >= 2 and args[0] == "open test":
+        # 第一引数が "open test"、第二引数がテキスト → カルテ開いてから入力
         text = args[1]
-        print(f"テスト患者カルテを開いてから文章入力: {text!r}")
+        print(f"テスト患者カルテを開いてから入力: {text!r}")
         open_test_patient_chart()
-        if len(text) <= 4 and not any(ch in text for ch in "をにはがでも"):
-            romaji = _kanji_to_romaji(text)
-            type_kanji_via_ime(romaji, text)
+        if _is_japanese(text):
+            if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
+                romaji = _kanji_to_romaji(text)
+                type_kanji_via_ime(romaji, text)
+            else:
+                type_japanese_sentence(text)
         else:
-            type_japanese_sentence(text)
+            _type_english_text(text)
         return 0
 
     print("使い方:")
-    print('  python -m automation.ehr_input                     # テスト患者カルテを開く')
-    print('  python -m automation.ehr_input "open test"         # テスト患者カルテを開く')
-    print('  python -m automation.ehr_input 肺炎                # IME変換のみ')
-    print('  python -m automation.ehr_input "open test" 肺炎   # カルテを開いてからIME変換')
+    print('  python -m automation.ehr_input                         # テスト患者カルテを開く')
+    print('  python -m automation.ehr_input "open test"             # テスト患者カルテを開く')
+    print('  python -m automation.ehr_input 肺炎                    # IME変換のみ')
+    print('  python -m automation.ehr_input "COVID-19の検査"        # 日英混在入力')
+    print('  python -m automation.ehr_input tesuto                  # 英語直接入力')
+    print('  python -m automation.ehr_input "open test" 肺炎        # カルテを開いてからIME変換')
+    print('  python -m automation.ehr_input "open test" "MRI所見"   # カルテを開いてから混在入力')
     return 1
 
 

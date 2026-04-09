@@ -71,5 +71,9 @@ class BLEClient:
     def press_key(self, key: str) -> bool:
         return self._send({"cmd": "press_key", "key": key})["ok"]
 
+    def press_ime_toggle(self) -> bool:
+        """IME 半角/全角トグルキーを送る"""
+        return self.press_key("zenkaku")
+
     def send_command(self, command: str) -> bool:
         return self._send({"cmd": "send_command", "command": command})["ok"]
