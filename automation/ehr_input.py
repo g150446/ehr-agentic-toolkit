@@ -20,10 +20,7 @@ from automation.config import load_config
 from automation.screen_analyzer import capture_screen, load_rapidocr_reader, run_ocr
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
-from automation.mlx_vlm_segmentation import (
-    MlxVlmSegmentationError,
-    segment_japanese_text_with_mlx_vlm,
-)
+from automation.local_segmentation import segment_japanese_text_locally
 
 
 def input_text_to_field(
@@ -269,12 +266,15 @@ def type_kanji_via_ime(
     print(f"type:{romaji} -> {'OK' if ok else 'NG'}")
     time.sleep(0.3)  # IMEがローマ字処理するまで待機
 
-    for attempt in range(1, max_attempts + 1):
-        print(f"[試行 {attempt}/{max_attempts}] Space キーで変換候補を表示...")
-        ok = client.press_key("space")
-        print(f"key:space -> {'OK' if ok else 'NG'}")
-        time.sleep(wait_sec)
+    # Space を1回だけ押して最初の変換候補を表示する。
+    # その後は候補を進めず、OCR を複数回試みて確認する。
+    # OCR で確認できなくても最初の候補を信頼して Enter で確定する。
+    print("[Space] 変換候補を表示...")
+    ok = client.press_key("space")
+    print(f"key:space -> {'OK' if ok else 'NG'}")
+    time.sleep(wait_sec)
 
+    for attempt in range(1, max_attempts + 1):
         # フレームキャプチャ
         frame = capture_screen(
             device_index=config.capture_device_index,
@@ -287,36 +287,71 @@ def type_kanji_via_ime(
         # IME 反転ブロック（黒背景白文字）を検出して OCR
         roi = _find_ime_candidate_region(frame)
         source = "IME反転ブロック"
+        ocr_results = []
+        combined = ""
+
+        if roi is not None:
+            ocr_results = run_ocr(ocr_reader, roi)
+            texts = [text for (_, text, _) in ocr_results]
+            combined = "".join(texts)
+            # 日本語文字（漢字・ひらがな・カタカナ）が含まれない場合は誤検出とみなす
+            if not any("\u3040" <= ch <= "\u9fff" for ch in combined):
+                print(f"  [試行{attempt}] IME反転ブロック OCR結果に日本語なし ({combined!r}) → フレーム差分でフォールバック")
+                roi = None
 
         if roi is None:
-            print("  IME反転ブロック未検出 → フレーム差分でフォールバック")
             roi = _find_changed_region(base_frame, frame)
             source = "差分領域"
+            if roi is not None:
+                ocr_results = run_ocr(ocr_reader, roi)
+                texts = [text for (_, text, _) in ocr_results]
+                combined = "".join(texts)
 
         if roi is None:
-            print("  変化領域も未検出。候補がまだ表示されていない可能性があります")
+            print(f"  [試行{attempt}] 変化領域も未検出。少し待って再試行...")
+            time.sleep(0.3)
             continue
 
-        # OCR 実行
-        ocr_results = run_ocr(ocr_reader, roi)
         texts = [text for (_, text, _) in ocr_results]
-        combined = "".join(texts)
-        print(f"  {source} OCR結果: {texts!r} → 結合: {combined!r}")
+        print(f"  [試行{attempt}] {source} OCR結果: {texts!r} → 結合: {combined!r}")
 
-        if target_kanji in combined:
+        if _ime_candidate_matches(target_kanji, combined, attempt):
             print(f"  「{target_kanji}」を確認 → Enter で確定")
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
             print("完了")
             return
 
-        print(f"  「{target_kanji}」は未確認（候補: {combined!r}）")
+        print(f"  「{target_kanji}」は未確認。再キャプチャして再試行...")
+        time.sleep(0.3)
 
-    # 全試行失敗
-    raise ValueError(
-        f"{max_attempts} 回試行しましたが「{target_kanji}」の変換候補が確認できませんでした。"
-        " IME設定や変換候補を確認してください。"
-    )
+    # OCR で確認できなかったが、最初の候補（Space 1回）を信頼して Enter で確定
+    print(f"  OCR確認できませんでしたが、最初の候補を信頼して Enter で確定します")
+    ok = client.press_key("enter")
+    print(f"key:enter -> {'OK' if ok else 'NG'}")
+    print("完了（確認なし）")
+
+
+def _ime_candidate_matches(target: str, combined: str, attempt: int) -> bool:
+    """IME候補テキストにターゲット文字列が含まれているか確認する。
+
+    試行1（最初のSpace直後）は最初の候補がハイライトされている状態。
+    OCRが差分領域を部分的にしか読めないことが多いため、ターゲットの
+    先頭漢字が含まれていれば一致とみなして即確定する。
+
+    試行2以降はSpaceでカーソルが次候補へ進んでいるため完全一致のみ許容する。
+    これにより「対して」→「大して」への誤移動を防ぐ。
+    """
+    if target in combined:
+        return True
+    # 試行1のみ: OCRが先頭の漢字文字だけ読めていれば最初の候補として確定
+    if attempt == 1:
+        first_kanji = next(
+            (ch for ch in target if "\u4e00" <= ch <= "\u9fff"), None
+        )
+        if first_kanji and first_kanji in combined:
+            return True
+    return False
 
 
 def _kanji_to_romaji(text: str) -> str:
@@ -339,15 +374,15 @@ def _has_kanji(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
-def _segment_japanese_with_mlx_vlm(text: str) -> list:
+def _segment_japanese_locally(text: str) -> list:
     """
-    mlx_vlm gemma-4-e2b-it-4bit を使って日本語テキストをIME変換単位（文節）に分割する。
+    sudachipy + pykakasi を使って日本語テキストを IME 変換単位（文節）に分割する。
 
     Returns:
-        [{"text": "肺炎", "romaji": "haien"}, {"text": "に対して", "romaji": "nitaishite"}, ...]
+        [{"text": "肺炎", "romaji": "haien"}, {"text": "に", "romaji": "ni"}, ...]
     """
-    content, segments = segment_japanese_text_with_mlx_vlm(text)
-    print(f"mlx_vlm応答: {content!r}")
+    summary, segments = segment_japanese_text_locally(text)
+    print(f"分割サマリ: {summary}")
     return segments
 
 
@@ -355,15 +390,15 @@ def type_japanese_sentence(text: str) -> None:
     """
     日本語文をIMEを使って文節単位で入力する。
 
-    mlx_vlm gemma-4-e2b-it-4bit で文節分割し、各文節を個別に IME 変換・確定する。
+    sudachipy + pykakasi で文節分割し、各文節を個別に IME 変換・確定する。
     漢字を含む文節は type_kanji_via_ime()、ひらがな・カタカナのみの文節は
     直接入力（ローマ字 + Enter）で処理する。
 
     Args:
         text: 入力する日本語文（例: "肺炎に対して抗菌薬による治療を行う"）
     """
-    print(f"文節分割中 (mlx_vlm gemma-4-e2b-it-4bit): {text!r}")
-    segments = _segment_japanese_with_mlx_vlm(text)
+    print(f"文節分割中 (sudachipy + pykakasi): {text!r}")
+    segments = _segment_japanese_locally(text)
     print(f"分割結果: {segments}")
 
     client = BLEClient()
@@ -378,7 +413,14 @@ def type_japanese_sentence(text: str) -> None:
         seg_romaji = seg["romaji"]
         print(f"\n--- 文節: {seg_text!r} ({seg_romaji}) ---")
 
-        if _has_kanji(seg_text):
+        if seg_text in ("、", "。"):
+            # 句読点: IMEが自動変換するキー（,/.）を直接送るだけ（Enterは不要）
+            print(f"  句読点入力: {seg_romaji!r}")
+            ok = client.switch_to_keyboard_mode()
+            print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+            ok = client.type_text(seg_romaji)
+            print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
+        elif _has_kanji(seg_text):
             # 漢字を含む文節: IME変換候補を確認してから確定
             type_kanji_via_ime(seg_romaji, seg_text)
         else:
@@ -439,19 +481,11 @@ def _run_cli(args: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the CLI and convert mlx_vlm failures into user-facing errors."""
+    """Run the CLI."""
     import sys
 
     args = sys.argv[1:] if argv is None else argv
-    try:
-        return _run_cli(args)
-    except MlxVlmSegmentationError as exc:
-        print(f"mlx_vlm文節分割エラー: {exc}")
-        print(
-            "まず `bash scripts/start_mlx_vlm_server.sh` でサーバーを起動してから\n"
-            "`python -m automation.mlx_vlm_segment_probe \"対象文\"` で応答を確認してください。"
-        )
-        return 1
+    return _run_cli(args)
 
 
 if __name__ == '__main__':

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -27,9 +29,13 @@ class MlxVlmSegmentationError(RuntimeError):
 def build_segmentation_prompt(text: str) -> str:
     """Build the prompt used to split Japanese text into IME-sized segments."""
     return (
-        "以下の日本語文を、WindowsのIMEで1回のEnterで確定できる文節単位のリストに分割してください。\n"
-        "各文節について元のテキストとヘボン式ローマ字読みをJSONで出力してください。\n"
-        '出力形式（JSONのみ、余分な説明不要）: [{"text": "文節", "romaji": "ローマ字"}]\n\n'
+        "以下の日本語文を、WindowsのIMEで1回のEnterで確定できる最小の文節単位に分割してください。\n"
+        "ルール:\n"
+        "- 助詞（に、で、が、を、は、も、へ、から、まで、と、の、より、や）は必ず独立した文節にする\n"
+        "- 句読点（。、）や記号は文節リストに含めない\n"
+        "- romaji はスペースなしのヘボン式（長音は重ねる: おう→ou, こう→ko u）\n"
+        "- 1文節は最大4〜5文字程度にする\n"
+        '出力形式（JSONのみ、余分な説明・コードブロック不要）: [{"text": "文節", "romaji": "ローマ字"}]\n\n'
         f"入力: {text}"
     )
 
@@ -71,9 +77,35 @@ def parse_segment_response(content: str) -> list[dict[str, str]]:
             raise MlxVlmSegmentationError(
                 f"mlx_vlm応答の要素 {index} に有効な romaji がありません: {item!r}"
             )
-        normalized.append({"text": text, "romaji": romaji})
+        normalized.append({"text": text, "romaji": _normalize_romaji(romaji)})
 
     return normalized
+
+
+def _normalize_romaji(romaji: str) -> str:
+    """ローマ字を IME 入力可能な ASCII 文字列に正規化する。
+
+    - スペースを除去
+    - 長音符（ō ū ā等）を ASCII に展開
+    - NFKDで合成文字を分解してから非ASCII文字を除去
+    """
+    # 長音符の明示的な置換（NFKDより先に行う）
+    _long_vowel_map = str.maketrans({
+        "ā": "a", "Ā": "A",
+        "ī": "i", "Ī": "I",
+        "ū": "u", "Ū": "U",
+        "ē": "e", "Ē": "E",
+        "ō": "o", "Ō": "O",
+    })
+    romaji = romaji.translate(_long_vowel_map)
+    # NFKDで分解して残った結合文字（アクセント等）を除去
+    romaji = "".join(
+        ch for ch in unicodedata.normalize("NFKD", romaji)
+        if unicodedata.category(ch) != "Mn"
+    )
+    # スペースと記号を除去、小文字化
+    romaji = re.sub(r"[^a-zA-Z]", "", romaji).lower()
+    return romaji
 
 
 def segment_japanese_text_with_mlx_vlm(
