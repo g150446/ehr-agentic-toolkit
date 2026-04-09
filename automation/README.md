@@ -34,6 +34,30 @@ python -m automation.ehr_input "open test" 肺炎
 
 日本語テキストを渡すと、`pykakasi` で自動的にローマ字変換してから IME 入力します（例: `肺炎` → `haien`）。
 
+4文字を超える文章や助詞を含む文では、`gemma4:e2b` を使ってローカル Ollama に文節分割を依頼してから IME 入力します。Ollama がタイムアウトしたり不正な応答を返した場合は、ローカル分割へフォールバックせず、明確なエラーメッセージを出して終了します。
+
+### Ollama 文節分割プローブ
+
+BLE や EHR 操作とは独立に、Ollama が対象文を適切に文節分割できるかだけを試したい場合は、以下を使います。
+
+```bash
+python -m automation.ollama_segment_probe "肺炎に対して抗菌薬による治療を行う"
+```
+
+このコマンドは以下を表示します。
+
+- 使用する Ollama の `endpoint`、`model`、`timeout`
+- Ollama の生応答
+- 解析済みの文節リスト
+
+必要に応じて以下の環境変数で接続先を変更できます。
+
+```bash
+OLLAMA_SEGMENTATION_URL=http://localhost:11434/api/generate
+OLLAMA_SEGMENTATION_MODEL=gemma4:e2b
+OLLAMA_SEGMENTATION_TIMEOUT=60
+```
+
 ### open_test_patient_chart
 
 テスト患者のカルテを自動で開く。以下の手順を実行:

@@ -20,6 +20,10 @@ from automation.config import load_config
 from automation.screen_analyzer import capture_screen, load_rapidocr_reader, run_ocr
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
+from automation.ollama_segmentation import (
+    OllamaSegmentationError,
+    segment_japanese_text_with_ollama,
+)
 
 
 def input_text_to_field(
@@ -330,30 +334,127 @@ def _is_japanese(text: str) -> bool:
     )
 
 
-if __name__ == '__main__':
-    import sys
+def _has_kanji(text: str) -> bool:
+    """文字列に漢字（CJK統合漢字）が含まれるか判定する。"""
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
-    args = sys.argv[1:]
 
+def _segment_japanese_with_ollama(text: str) -> list:
+    """
+    ollama gemma4:e2b を使って日本語テキストをIME変換単位（文節）に分割する。
+
+    Returns:
+        [{"text": "肺炎", "romaji": "haien"}, {"text": "に対して", "romaji": "nitaishite"}, ...]
+    """
+    content, segments = segment_japanese_text_with_ollama(text)
+    print(f"ollama応答: {content!r}")
+    return segments
+
+
+def type_japanese_sentence(text: str) -> None:
+    """
+    日本語文をIMEを使って文節単位で入力する。
+
+    ollama gemma4:e2b で文節分割し、各文節を個別に IME 変換・確定する。
+    漢字を含む文節は type_kanji_via_ime()、ひらがな・カタカナのみの文節は
+    直接入力（ローマ字 + Enter）で処理する。
+
+    Args:
+        text: 入力する日本語文（例: "肺炎に対して抗菌薬による治療を行う"）
+    """
+    print(f"文節分割中 (ollama gemma4:e2b): {text!r}")
+    segments = _segment_japanese_with_ollama(text)
+    print(f"分割結果: {segments}")
+
+    client = BLEClient()
+    if not client.is_server_running():
+        raise RuntimeError(
+            "BLE サーバーが起動していません。\n"
+            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
+        )
+
+    for seg in segments:
+        seg_text = seg["text"]
+        seg_romaji = seg["romaji"]
+        print(f"\n--- 文節: {seg_text!r} ({seg_romaji}) ---")
+
+        if _has_kanji(seg_text):
+            # 漢字を含む文節: IME変換候補を確認してから確定
+            type_kanji_via_ime(seg_romaji, seg_text)
+        else:
+            # ひらがな・カタカナのみ: ローマ字を直接入力してEnterで確定
+            print(f"  直接入力: {seg_romaji!r}")
+            ok = client.switch_to_keyboard_mode()
+            print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+            ok = client.type_text(seg_romaji)
+            print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
+
+    print("\n文章入力完了")
+
+
+def _run_cli(args: list[str]) -> int:
+    """CLI entry point for manual EHR input automation."""
     if not args:
         # 引数なし: デフォルト動作（後方互換）
         open_test_patient_chart()
-    elif len(args) == 1 and _is_japanese(args[0]):
-        # 第一引数が日本語 → IME 変換のみ
-        kanji = args[0]
-        romaji = _kanji_to_romaji(kanji)
-        print(f"IME変換: {romaji} → {kanji}")
-        type_kanji_via_ime(romaji, kanji)
-    elif len(args) >= 2 and args[0] == "open test" and _is_japanese(args[1]):
-        # 第一引数が "open test"、第二引数が日本語 → カルテ開いてから IME 変換
-        kanji = args[1]
-        romaji = _kanji_to_romaji(kanji)
-        print(f"テスト患者カルテを開いてから IME変換: {romaji} → {kanji}")
+        return 0
+
+    if len(args) == 1 and args[0] == "open test":
+        # "open test" のみ → テスト患者カルテを開く
         open_test_patient_chart()
-        type_kanji_via_ime(romaji, kanji)
-    else:
-        print("使い方:")
-        print("  python -m automation.ehr_input                     # テスト患者カルテを開く")
-        print("  python -m automation.ehr_input 肺炎                # IME変換のみ")
-        print('  python -m automation.ehr_input "open test" 肺炎   # カルテを開いてからIME変換')
-        sys.exit(1)
+        return 0
+
+    if len(args) == 1 and _is_japanese(args[0]):
+        # 第一引数が日本語 → IME 変換
+        text = args[0]
+        # 短い単語（4文字以下かつ助詞なし）は単一変換、長い文章は文節分割
+        if len(text) <= 4 and not any(ch in text for ch in "をにはがでも"):
+            romaji = _kanji_to_romaji(text)
+            print(f"IME変換: {romaji} → {text}")
+            type_kanji_via_ime(romaji, text)
+        else:
+            type_japanese_sentence(text)
+        return 0
+
+    if len(args) >= 2 and args[0] == "open test" and _is_japanese(args[1]):
+        # 第一引数が "open test"、第二引数が日本語 → カルテ開いてから IME 変換
+        text = args[1]
+        print(f"テスト患者カルテを開いてから文章入力: {text!r}")
+        open_test_patient_chart()
+        if len(text) <= 4 and not any(ch in text for ch in "をにはがでも"):
+            romaji = _kanji_to_romaji(text)
+            type_kanji_via_ime(romaji, text)
+        else:
+            type_japanese_sentence(text)
+        return 0
+
+    print("使い方:")
+    print('  python -m automation.ehr_input                     # テスト患者カルテを開く')
+    print('  python -m automation.ehr_input "open test"         # テスト患者カルテを開く')
+    print('  python -m automation.ehr_input 肺炎                # IME変換のみ')
+    print('  python -m automation.ehr_input "open test" 肺炎   # カルテを開いてからIME変換')
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the CLI and convert Ollama failures into user-facing errors."""
+    import sys
+
+    args = sys.argv[1:] if argv is None else argv
+    try:
+        return _run_cli(args)
+    except OllamaSegmentationError as exc:
+        print(f"Ollama文節分割エラー: {exc}")
+        print(
+            "まず `python -m automation.ollama_segment_probe \"対象文\"` で "
+            "Ollama の応答を確認してください。"
+        )
+        return 1
+
+
+if __name__ == '__main__':
+    import sys
+
+    sys.exit(main())
