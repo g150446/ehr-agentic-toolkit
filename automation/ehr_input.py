@@ -414,12 +414,17 @@ def type_japanese_sentence(text: str) -> None:
         print(f"\n--- 文節: {seg_text!r} ({seg_romaji}) ---")
 
         if seg_text in ("、", "。"):
-            # 句読点: IMEが自動変換するキー（,/.）を直接送るだけ（Enterは不要）
+            # 句読点: IMEが自動変換するキー（,/.）を送る。
+            # 「。」はIMEの変換バッファに残るため Enter で確定が必要。
+            # 「、」は直接挿入されるため Enter 不要。
             print(f"  句読点入力: {seg_romaji!r}")
             ok = client.switch_to_keyboard_mode()
             print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
+            if seg_text == "。":
+                ok = client.press_key("enter")
+                print(f"key:enter -> {'OK' if ok else 'NG'}")
         elif _has_kanji(seg_text):
             # 漢字を含む文節: IME変換候補を確認してから確定
             type_kanji_via_ime(seg_romaji, seg_text)
