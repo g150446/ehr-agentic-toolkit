@@ -58,6 +58,47 @@ OLLAMA_SEGMENTATION_MODEL=gemma4:e2b
 OLLAMA_SEGMENTATION_TIMEOUT=60
 ```
 
+### mlx_vlm 文節分割プローブ
+
+Ollama の代わりに Apple Silicon ネイティブの **mlx_vlm** サーバーを使って文節分割する実装です。`mlx-community/gemma-4-e2b-it-4bit` モデルを使用し、OpenAI 互換 API (`/v1/chat/completions`) 経由で呼び出します。
+
+**サーバー起動:**
+
+```bash
+bash scripts/start_mlx_vlm_server.sh
+```
+
+ポート **8181** で起動します（ポート 8080 は nginx との競合を避けるため）。初回はモデルロードに数秒かかります。
+
+**文節分割プローブ:**
+
+```bash
+python -m automation.mlx_vlm_segment_probe "肺炎に対して抗菌薬による治療を行う"
+```
+
+出力例:
+
+```
+対象文: '肺炎に対して抗菌薬による治療を行う'
+endpoint: http://localhost:8181/v1/chat/completions
+model: mlx-community/gemma-4-e2b-it-4bit
+timeout: 120秒
+mlx_vlm応答: '...'
+分割結果:
+  1. '肺炎' (haien)
+  2. 'に' (ni)
+  3. '対して' (taishite)
+  ...
+```
+
+必要に応じて以下の環境変数で接続先を変更できます。
+
+```bash
+MLX_VLM_SEGMENTATION_URL=http://localhost:8181/v1/chat/completions
+MLX_VLM_SEGMENTATION_MODEL=mlx-community/gemma-4-e2b-it-4bit
+MLX_VLM_SEGMENTATION_TIMEOUT=120
+```
+
 ### open_test_patient_chart
 
 テスト患者のカルテを自動で開く。以下の手順を実行:
@@ -446,6 +487,10 @@ All outputs are saved to `automation_outputs/`:
 - `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding
 - `utils.py`: Logging, debugging, progress tracking
 - `monitor_stream.py`: HDMI capture stream monitor with YOLO detection
+- `ollama_segmentation.py`: Ollama を使った日本語文節分割ヘルパー
+- `ollama_segment_probe.py`: Ollama 文節分割 CLI プローブ
+- `mlx_vlm_segmentation.py`: mlx_vlm サーバーを使った日本語文節分割ヘルパー (OpenAI 互換 API)
+- `mlx_vlm_segment_probe.py`: mlx_vlm 文節分割 CLI プローブ
 
 ### Adding Features
 

@@ -59,6 +59,42 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 ---
 
+---
+
+### `start_mlx_vlm_server.sh`
+
+**Purpose**: Start mlx_vlm inference server for Japanese text segmentation
+
+**What it does:**
+- Activates virtual environment
+- Starts `mlx_vlm.server` on port **8181** with `mlx-community/gemma-4-e2b-it-4bit`
+- Provides an OpenAI-compatible API (`/v1/chat/completions`) for local LLM inference on Apple Silicon
+
+**Usage:**
+```bash
+bash scripts/start_mlx_vlm_server.sh
+```
+
+Keep this running in a separate terminal before using `automation.mlx_vlm_segment_probe`.
+
+**Verify server is up:**
+```bash
+curl -s http://127.0.0.1:8181/v1/models
+```
+
+---
+
+### `run_ble_test.sh`
+
+**Purpose**: Run interactive BLE test CLI for ESP32 keyboard/mouse control
+
+**Usage:**
+```bash
+./scripts/run_ble_test.sh
+```
+
+---
+
 ## Why These Scripts?
 
 These helper scripts provide convenient wrappers around the Python modules:
