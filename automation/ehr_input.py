@@ -129,9 +129,9 @@ def open_test_patient_chart() -> None:
     ok = client.press_key("enter")
     print(f"key:enter (select patient) -> {'OK' if ok else 'NG'}")
 
-    # Step 3: ダイアログを閉じるため 1 秒待って Enter
-    print("ダイアログの表示を待機中 (1秒)...")
-    time.sleep(1.0)
+    # Step 3: ダイアログを閉じるため 2 秒待って Enter
+    print("ダイアログの表示を待機中 (2秒)...")
+    time.sleep(2.0)
     ok = client.press_key("enter")
     print(f"key:enter (dialog close) -> {'OK' if ok else 'NG'}")
 
