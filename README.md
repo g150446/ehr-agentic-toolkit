@@ -173,6 +173,25 @@ Real-time video monitoring tool with optional YOLO detection overlay.
 
 ---
 
+### HDMI スナップショットキャプチャ
+
+HDMIキャプチャデバイスから1枚の静止画を保存するシンプルなキャプチャツール。
+
+```bash
+# タイムスタンプ付きファイル名で保存（captures/windows_capture_YYYYMMDD_HHMMSS.jpg）
+python scripts/capture_windows.py
+
+# ファイル名を指定して保存（captures/ に保存）
+python scripts/capture_windows.py myshot.jpg
+
+# 拡張子を省略しても .jpg が自動付与される
+python scripts/capture_windows.py myshot
+```
+
+**出力先:** すべての画像は `captures/` ディレクトリに保存されます。
+
+---
+
 ### GUI Image Analyzer
 
 Analyze screenshots to find text coordinates and textbox positions for GUI automation.

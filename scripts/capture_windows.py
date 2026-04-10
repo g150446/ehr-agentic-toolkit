@@ -1,5 +1,6 @@
 import cv2
 import os
+import sys
 import time
 from datetime import datetime
 
@@ -61,7 +62,7 @@ def scan_video_devices(max_devices=10):
 
     return available_devices
 
-def capture_from_device(device_index, num_warmup_frames=5):
+def capture_from_device(device_index, num_warmup_frames=5, output_filename=None):
     """指定したデバイスからキャプチャ"""
     print(f"\nデバイス {device_index} からキャプチャを開始...")
 
@@ -126,9 +127,14 @@ def capture_from_device(device_index, num_warmup_frames=5):
         print(f"⚠ 警告: フレームが真っ黒です（輝度 < 1.0）")
         print(f"  デバイスが正しく接続されているか確認してください")
 
-    # タイムスタンプ付きファイル名
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(CAPTURE_DIR, f"windows_capture_{timestamp}.jpg")
+    # ファイル名の決定
+    if output_filename:
+        if not output_filename.lower().endswith('.jpg'):
+            output_filename += '.jpg'
+        filename = os.path.join(CAPTURE_DIR, output_filename)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join(CAPTURE_DIR, f"windows_capture_{timestamp}.jpg")
 
     # 画像を保存
     cv2.imwrite(filename, frame)
@@ -141,6 +147,8 @@ def main():
     print("\n" + "=" * 60)
     print("Windows HDMI キャプチャツール (MiraBox)")
     print("=" * 60)
+
+    custom_name = sys.argv[1] if len(sys.argv) > 1 else None
 
     # ステップ1: デバイススキャン
     devices = scan_video_devices(max_devices=5)
@@ -161,7 +169,7 @@ def main():
 
         # それでも最初のデバイスで試行
         print("\nデバイス 0 で再試行します...")
-        capture_from_device(0, num_warmup_frames=10)
+        capture_from_device(0, num_warmup_frames=10, output_filename=custom_name)
         return
 
     # 最初の動作デバイスを使用
@@ -169,7 +177,7 @@ def main():
     print(f"\n使用するデバイス: {target_device}")
 
     # ステップ2: キャプチャ実行
-    success = capture_from_device(target_device, num_warmup_frames=5)
+    success = capture_from_device(target_device, num_warmup_frames=5, output_filename=custom_name)
 
     if success:
         print("\n" + "=" * 60)
