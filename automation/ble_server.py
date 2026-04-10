@@ -95,38 +95,20 @@ async def handle_client(ble: BLEController, reader: asyncio.StreamReader,
             pass
 
 
-async def reconnect_loop(
-    ble: BLEController,
+async def disconnect_and_exit_loop(
     disconnect_event: asyncio.Event,
     stop_event: asyncio.Event,
-    on_disconnect_cb,
 ) -> None:
-    """切断イベントを待ち、60秒後に再接続を試みる。失敗時は繰り返す。"""
-    while not stop_event.is_set():
-        await disconnect_event.wait()
-        if stop_event.is_set():
-            break
-        disconnect_event.clear()
+    """BLE 切断イベントを待ち、stop_event をセットしてサーバーをシャットダウンする。
 
-        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE 切断を検知。60秒後に再接続を試みます...")
-
-        # 60秒待つ（stop_event が来たら即終了）
-        try:
-            await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=60.0)
-            break  # stop_event がセットされた
-        except asyncio.TimeoutError:
-            pass
-
-        if stop_event.is_set():
-            break
-
-        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 再接続中...")
-        connected = await ble.connect(timeout=15.0, disconnected_callback=on_disconnect_cb)
-        if connected:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 再接続成功: {ble.device_address}")
-        else:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 再接続失敗。再度60秒後に試みます...")
-            disconnect_event.set()  # ループを継続させる
+    再接続は start_ble_server.sh の再起動ループに委ねる。
+    プロセスを再起動することで毎回クリーンな BLE 接続状態を確保する。
+    """
+    await disconnect_event.wait()
+    if stop_event.is_set():
+        return
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE 切断を検知。サーバーをシャットダウンします（start_ble_server.sh が再起動します）...")
+    stop_event.set()
 
 
 async def main() -> None:
@@ -150,8 +132,8 @@ async def main() -> None:
     if connected:
         print(f"接続成功: {ble.device_address}")
     else:
-        print("接続失敗。サーバーは起動しますが BLE コマンドは失敗します。")
-        print("再接続するには {'cmd': 'connect'} を送信してください。")
+        print("接続失敗。start_ble_server.sh が自動で再起動します。")
+        sys.exit(1)
 
     if os.path.exists(SOCKET_PATH):
         os.unlink(SOCKET_PATH)
@@ -172,13 +154,13 @@ async def main() -> None:
         loop.add_signal_handler(sig, _shutdown)
 
     async with server:
-        reconnect_task = asyncio.create_task(
-            reconnect_loop(ble, disconnect_event, stop_event, on_ble_disconnect)
+        disconnect_task = asyncio.create_task(
+            disconnect_and_exit_loop(disconnect_event, stop_event)
         )
         await stop_event.wait()
-        reconnect_task.cancel()
+        disconnect_task.cancel()
         try:
-            await reconnect_task
+            await disconnect_task
         except asyncio.CancelledError:
             pass
 

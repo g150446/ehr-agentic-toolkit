@@ -103,10 +103,10 @@ close_record()
 
 テスト患者のカルテを自動で開く。以下の手順を実行:
 
-1. HDMIスクリーンをキャプチャしてフリガナ欄をOCRで検索
-2. 欄をクリックして `tesuto` を入力し Enter → 患者一覧を表示
-3. 0.5秒待って Enter → 先頭患者を選択してカルテを開く
-4. 1秒待って Enter → 表示直後のダイアログを閉じる
+0. HDMIスクリーンをキャプチャしてOCRで「患者検索」タブを検出しクリック（0.5秒待機）
+1. フリガナ欄をOCRで検索してクリックし `tesuto` を入力、Enter → 患者一覧を表示
+2. 0.5秒待って Enter → 先頭患者を選択してカルテを開く
+3. 2秒待って Enter → 表示直後のダイアログを閉じる
 
 ```python
 from automation.ehr_input import open_test_patient_chart
@@ -497,7 +497,7 @@ All outputs are saved to `automation_outputs/`:
 
 - `config.py`: Configuration and .env loading
 - `ble_controller.py`: ESP32 BLE communication
-- `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost). 切断を検知するとタイムスタンプ付きでログ出力し、60秒ごとに自動再接続を試みる
+- `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost). BLE切断を検知するとプロセスを終了し、`start_ble_server.sh` の再起動ループが3秒後に再起動する（毎回クリーンな接続状態を確保）
 - `ble_client.py`: Sync client for `ble_server.py`
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
 - `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `close_record`, `input_text_to_field`, `type_kanji_via_ime`, `type_japanese_sentence`, `detect_ime_mode`, `ensure_ime_mode`)

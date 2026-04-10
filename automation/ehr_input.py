@@ -23,6 +23,42 @@ from automation.ble_client import BLEClient
 from automation.local_segmentation import segment_japanese_text_locally
 
 
+def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
+    """
+    BLE サーバーが起動して BLE デバイスへ接続済みになるまで待機する。
+
+    BLE サーバーは切断後 60 秒で自動再接続する。その間 is_server_running() が
+    False を返すため、タイムアウトまでポーリングして待機する。
+
+    Args:
+        timeout: 最大待機秒数（デフォルト 70 秒 = 60 秒再接続サイクル + 余裕）
+
+    Returns:
+        接続済み BLEClient インスタンス
+
+    Raises:
+        RuntimeError: タイムアウトまでに接続が確立されなかった場合
+    """
+    client = BLEClient()
+    if client.is_server_running():
+        return client
+
+    print(f"BLE 未接続。最大 {timeout:.0f} 秒待機します（サーバー再接続中の可能性があります）...")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(2.0)
+        if client.is_server_running():
+            print("BLE 接続を確認しました。")
+            return client
+        remaining = deadline - time.monotonic()
+        print(f"  BLE 接続待機中... (残り {remaining:.0f} 秒)")
+
+    raise RuntimeError(
+        "BLE サーバーが起動していないか、BLE デバイスへの接続がタイムアウトしました。\n"
+        "  python -m automation.ble_server  を先に別ターミナルで実行してください"
+    )
+
+
 def input_text_to_field(
     input_text: str = "tesuto",
     label: str = "フリガナ"
@@ -72,12 +108,7 @@ def input_text_to_field(
         os.unlink(tmp_path)
 
     # 4. BLE operations — delegate to ble_server.py (must be running beforehand)
-    client = BLEClient()
-    if not client.is_server_running():
-        raise RuntimeError(
-            "BLE サーバーが起動していません。\n"
-            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
-        )
+    client = _wait_for_ble_connected()
 
     ok = client.switch_to_mouse_mode()
     print(f"mode:mouse -> {'OK' if ok else 'NG'}")
@@ -105,21 +136,57 @@ def open_test_patient_chart() -> None:
     テスト患者のカルテを開く。
 
     以下の手順を自動実行する:
+    0. 「患者検索」タブをOCRで検出してクリック → 患者検索画面を前面に出す
     1. フリガナ欄に「tesuto」と入力して Enter → 患者一覧を表示
     2. 0.5 秒待ってから Enter → 先頭患者を選択してカルテを開く
-    3. 1 秒待ってから Enter → 表示直後のダイアログを閉じる
+    3. 2 秒待ってから Enter → 表示直後のダイアログを閉じる
 
     ble_server.py が事前に起動済みであること。
     """
+    # Step 0: 「患者検索」タブをクリックして患者検索画面を前面に出す
+    config = load_config(skip_password=True)
+    print(f"HDMIデバイス (index={config.capture_device_index}) からキャプチャ中...")
+    frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if frame is None:
+        raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
+
+    ocr_reader = load_rapidocr_reader()
+    results = run_ocr(ocr_reader, frame)
+
+    tab_x: Optional[int] = None
+    tab_y: Optional[int] = None
+    for bbox, text, conf in results:
+        if "患者検索" in text:
+            xs = [p[0] for p in bbox]
+            ys = [p[1] for p in bbox]
+            tab_x = int(sum(xs) / len(xs))
+            tab_y = int(sum(ys) / len(ys))
+            print(f"「患者検索」検出: {text!r} at ({tab_x}, {tab_y}), conf={conf:.2f}")
+            break
+
+    if tab_x is None or tab_y is None:
+        raise RuntimeError("「患者検索」タブが画面上に見つかりませんでした")
+
+    client = _wait_for_ble_connected()
+
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+    ok = client.move_mouse_to_position(tab_x, tab_y)
+    print(f"moveto ({tab_x}, {tab_y}) -> {'OK' if ok else 'NG'}")
+    ok = client.click()
+    print(f"click -> {'OK' if ok else 'NG'}")
+
+    print("「患者検索」タブをクリックしました。タブ切替を待機中 (0.5秒)...")
+    time.sleep(0.5)
+
     # Step 1: フリガナ欄に「tesuto」と入力して Enter → 患者一覧を表示させる
     input_text_to_field(input_text="tesuto", label="フリガナ")
 
-    client = BLEClient()
-    if not client.is_server_running():
-        raise RuntimeError(
-            "BLE サーバーが起動していません。\n"
-            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
-        )
+    client = _wait_for_ble_connected()
     ok = client.switch_to_keyboard_mode()
     print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
 
@@ -179,12 +246,7 @@ def close_record() -> None:
     if target_x is None or target_y is None:
         raise RuntimeError("「取消」ボタンが画面上に見つかりませんでした")
 
-    client = BLEClient()
-    if not client.is_server_running():
-        raise RuntimeError(
-            "BLE サーバーが起動していません。\n"
-            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
-        )
+    client = _wait_for_ble_connected()
 
     ok = client.switch_to_mouse_mode()
     print(f"mode:mouse -> {'OK' if ok else 'NG'}")
@@ -297,12 +359,7 @@ def type_kanji_via_ime(
     """
     config = load_config(skip_password=True)
 
-    client = BLEClient()
-    if not client.is_server_running():
-        raise RuntimeError(
-            "BLE サーバーが起動していません。\n"
-            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
-        )
+    client = _wait_for_ble_connected()
 
     ocr_reader = load_rapidocr_reader()
 
@@ -542,12 +599,7 @@ def type_japanese_sentence(text: str) -> None:
 
     config = load_config(skip_password=True)
 
-    client = BLEClient()
-    if not client.is_server_running():
-        raise RuntimeError(
-            "BLE サーバーが起動していません。\n"
-            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
-        )
+    client = _wait_for_ble_connected()
 
     # 開始時に1回だけ IME モードを検出し、以降は内部変数でトラッキングする
     print("現在の IME モードを検出中...")
@@ -613,12 +665,7 @@ def _type_english_text(text: str) -> None:
     """
     config = load_config(skip_password=True)
 
-    client = BLEClient()
-    if not client.is_server_running():
-        raise RuntimeError(
-            "BLE サーバーが起動していません。\n"
-            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
-        )
+    client = _wait_for_ble_connected()
 
     frame = capture_screen(
         device_index=config.capture_device_index,
