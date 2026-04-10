@@ -142,6 +142,62 @@ def open_test_patient_chart() -> None:
     print("完了")
 
 
+def close_record() -> None:
+    """
+    画面右上の「取り消し[F9]」ボタンをクリックしてカルテを閉じる。
+
+    OCR で「取り消し」テキストを検出し、その座標にマウスを移動してクリックする。
+    ble_server.py が事前に起動済みであること。
+    """
+    config = load_config(skip_password=True)
+
+    print(f"HDMIデバイス (index={config.capture_device_index}) からキャプチャ中...")
+    frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if frame is None:
+        raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
+
+    ocr_reader = load_rapidocr_reader()
+    results = run_ocr(ocr_reader, frame)
+
+    # 「取り消し」テキストを含む結果を検索
+    target_x: Optional[int] = None
+    target_y: Optional[int] = None
+    for bbox, text, conf in results:
+        if "取り消し" in text:
+            # bbox は [[x1,y1],[x2,y1],[x2,y2],[x1,y2]] 形式
+            xs = [p[0] for p in bbox]
+            ys = [p[1] for p in bbox]
+            target_x = int(sum(xs) / len(xs))
+            target_y = int(sum(ys) / len(ys))
+            print(f"「取り消し」検出: {text!r} at ({target_x}, {target_y}), conf={conf:.2f}")
+            break
+
+    if target_x is None or target_y is None:
+        raise RuntimeError("「取り消し」ボタンが画面上に見つかりませんでした")
+
+    client = BLEClient()
+    if not client.is_server_running():
+        raise RuntimeError(
+            "BLE サーバーが起動していません。\n"
+            "  python -m automation.ble_server  を先に別ターミナルで実行してください"
+        )
+
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
+    ok = client.move_mouse_to_position(target_x, target_y)
+    print(f"moveto ({target_x}, {target_y}) -> {'OK' if ok else 'NG'}")
+
+    ok = client.click()
+    print(f"click -> {'OK' if ok else 'NG'}")
+
+    print("完了")
+
+
 def _find_ime_candidate_region(frame: np.ndarray) -> Optional[np.ndarray]:
     """
     画面から IME 変換候補の反転表示ブロック（黒背景＋白文字）を検出して切り出す。
@@ -593,6 +649,11 @@ def _run_cli(args: list[str]) -> int:
         open_test_patient_chart()
         return 0
 
+    if len(args) == 1 and args[0] == "close record":
+        # "close record" → 「取り消し[F9]」ボタンをクリックしてカルテを閉じる
+        close_record()
+        return 0
+
     if len(args) == 1:
         text = args[0]
         if _is_japanese(text):
@@ -628,6 +689,7 @@ def _run_cli(args: list[str]) -> int:
     print("使い方:")
     print('  python -m automation.ehr_input                         # テスト患者カルテを開く')
     print('  python -m automation.ehr_input "open test"             # テスト患者カルテを開く')
+    print('  python -m automation.ehr_input "close record"          # 取り消し[F9]ボタンをクリックしてカルテを閉じる')
     print('  python -m automation.ehr_input 肺炎                    # IME変換のみ')
     print('  python -m automation.ehr_input "COVID-19の検査"        # 日英混在入力')
     print('  python -m automation.ehr_input tesuto                  # 英語直接入力')
