@@ -17,6 +17,7 @@ import json
 import os
 import signal
 import sys
+from datetime import datetime
 
 from automation.ble_controller import BLEController
 from automation.config import AutomationConfig
@@ -94,6 +95,40 @@ async def handle_client(ble: BLEController, reader: asyncio.StreamReader,
             pass
 
 
+async def reconnect_loop(
+    ble: BLEController,
+    disconnect_event: asyncio.Event,
+    stop_event: asyncio.Event,
+    on_disconnect_cb,
+) -> None:
+    """切断イベントを待ち、60秒後に再接続を試みる。失敗時は繰り返す。"""
+    while not stop_event.is_set():
+        await disconnect_event.wait()
+        if stop_event.is_set():
+            break
+        disconnect_event.clear()
+
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE 切断を検知。60秒後に再接続を試みます...")
+
+        # 60秒待つ（stop_event が来たら即終了）
+        try:
+            await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=60.0)
+            break  # stop_event がセットされた
+        except asyncio.TimeoutError:
+            pass
+
+        if stop_event.is_set():
+            break
+
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 再接続中...")
+        connected = await ble.connect(timeout=15.0, disconnected_callback=on_disconnect_cb)
+        if connected:
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 再接続成功: {ble.device_address}")
+        else:
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 再接続失敗。再度60秒後に試みます...")
+            disconnect_event.set()  # ループを継続させる
+
+
 async def main() -> None:
     config = AutomationConfig()
     ble = BLEController(
@@ -103,8 +138,15 @@ async def main() -> None:
         tx_char_uuid=config.ble_tx_char_uuid,
     )
 
+    loop = asyncio.get_running_loop()
+    disconnect_event = asyncio.Event()
+
+    def on_ble_disconnect(client):
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE デバイスが切断されました。")
+        loop.call_soon_threadsafe(disconnect_event.set)
+
     print(f"BLE デバイス '{config.esp32_device_name}' に接続中...")
-    connected = await ble.connect(timeout=15.0)
+    connected = await ble.connect(timeout=15.0, disconnected_callback=on_ble_disconnect)
     if connected:
         print(f"接続成功: {ble.device_address}")
     else:
@@ -121,7 +163,6 @@ async def main() -> None:
     print(f"BLE サーバー起動: {SOCKET_PATH}")
     print("停止するには Ctrl+C を押してください。")
 
-    loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
     def _shutdown():
@@ -131,7 +172,15 @@ async def main() -> None:
         loop.add_signal_handler(sig, _shutdown)
 
     async with server:
+        reconnect_task = asyncio.create_task(
+            reconnect_loop(ble, disconnect_event, stop_event, on_ble_disconnect)
+        )
         await stop_event.wait()
+        reconnect_task.cancel()
+        try:
+            await reconnect_task
+        except asyncio.CancelledError:
+            pass
 
     print("\nシャットダウン中...")
     if ble.is_connected():

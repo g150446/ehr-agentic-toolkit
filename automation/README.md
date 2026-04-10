@@ -482,7 +482,7 @@ All outputs are saved to `automation_outputs/`:
 
 - `config.py`: Configuration and .env loading
 - `ble_controller.py`: ESP32 BLE communication
-- `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost)
+- `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost). 切断を検知するとタイムスタンプ付きでログ出力し、60秒ごとに自動再接続を試みる
 - `ble_client.py`: Sync client for `ble_server.py`
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
 - `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `input_text_to_field`, `type_kanji_via_ime`, `type_japanese_sentence`, `detect_ime_mode`, `ensure_ime_mode`)

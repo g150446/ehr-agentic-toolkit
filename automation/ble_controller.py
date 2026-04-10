@@ -74,12 +74,14 @@ class BLEController:
         logger.warning(f"Device '{self.device_name}' not found")
         return None
 
-    async def connect(self, timeout: float = 10.0) -> bool:
+    async def connect(self, timeout: float = 10.0, disconnected_callback=None) -> bool:
         """
         Connect to ESP32 BLE device.
 
         Args:
             timeout: Connection timeout in seconds
+            disconnected_callback: Optional callback invoked on unexpected disconnect.
+                Receives the BleakClient instance as its sole argument.
 
         Returns:
             True if connection successful, False otherwise
@@ -93,7 +95,10 @@ class BLEController:
 
             # Connect to device
             logger.info(f"Connecting to {self.device_address}...")
-            self.client = BleakClient(self.device_address)
+            self.client = BleakClient(
+                self.device_address,
+                disconnected_callback=disconnected_callback,
+            )
             await self.client.connect()
 
             if self.client.is_connected:

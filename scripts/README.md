@@ -84,6 +84,37 @@ curl -s http://127.0.0.1:8181/v1/models
 
 ---
 
+### `start_ble_server.sh`
+
+**Purpose**: Start the resident BLE server that manages the ESP32 connection
+
+**What it does:**
+- Activates virtual environment
+- Sets PYTHONPATH
+- Runs `automation.ble_server` — a long-running process that connects to the ESP32 and listens on `/tmp/ble_server.sock`
+
+**Usage:**
+```bash
+./scripts/start_ble_server.sh
+```
+
+Keep this running in a separate terminal before executing `ehr_input.py` or any other client that uses `BLEClient`.
+
+**Auto-reconnect behavior:**
+- When the BLE connection drops unexpectedly, the server logs the disconnection with a timestamp and waits 60 seconds before retrying.
+- If reconnection fails, it retries again every 60 seconds until successful or until the server is stopped.
+- Stop the server with **Ctrl+C** or SIGTERM; the server reconnects gracefully without losing the socket.
+
+Example output on disconnection and recovery:
+```
+[2026-04-10 10:23:45] BLE デバイスが切断されました。
+[2026-04-10 10:23:45] BLE 切断を検知。60秒後に再接続を試みます...
+[2026-04-10 10:24:45] 再接続中...
+[2026-04-10 10:24:52] 再接続成功: AA:BB:CC:DD:EE:FF
+```
+
+---
+
 ### `run_ble_test.sh`
 
 **Purpose**: Run interactive BLE test CLI for ESP32 keyboard/mouse control
