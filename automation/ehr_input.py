@@ -167,17 +167,17 @@ def close_record() -> None:
     target_x: Optional[int] = None
     target_y: Optional[int] = None
     for bbox, text, conf in results:
-        if "取り消し" in text:
+        if "取消" in text:
             # bbox は [[x1,y1],[x2,y1],[x2,y2],[x1,y2]] 形式
             xs = [p[0] for p in bbox]
             ys = [p[1] for p in bbox]
             target_x = int(sum(xs) / len(xs))
             target_y = int(sum(ys) / len(ys))
-            print(f"「取り消し」検出: {text!r} at ({target_x}, {target_y}), conf={conf:.2f}")
+            print(f"「取消」検出: {text!r} at ({target_x}, {target_y}), conf={conf:.2f}")
             break
 
     if target_x is None or target_y is None:
-        raise RuntimeError("「取り消し」ボタンが画面上に見つかりませんでした")
+        raise RuntimeError("「取消」ボタンが画面上に見つかりませんでした")
 
     client = BLEClient()
     if not client.is_server_running():
