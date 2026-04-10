@@ -169,19 +169,19 @@ def open_test_patient_chart() -> None:
             break
 
     if tab_x is None or tab_y is None:
-        raise RuntimeError("「患者検索」タブが画面上に見つかりませんでした")
+        print("「患者検索」タブが検出できませんでした（既に選択済みと判断）。スキップします。")
+    else:
+        client = _wait_for_ble_connected()
 
-    client = _wait_for_ble_connected()
+        ok = client.switch_to_mouse_mode()
+        print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+        ok = client.move_mouse_to_position(tab_x, tab_y)
+        print(f"moveto ({tab_x}, {tab_y}) -> {'OK' if ok else 'NG'}")
+        ok = client.click()
+        print(f"click -> {'OK' if ok else 'NG'}")
 
-    ok = client.switch_to_mouse_mode()
-    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
-    ok = client.move_mouse_to_position(tab_x, tab_y)
-    print(f"moveto ({tab_x}, {tab_y}) -> {'OK' if ok else 'NG'}")
-    ok = client.click()
-    print(f"click -> {'OK' if ok else 'NG'}")
-
-    print("「患者検索」タブをクリックしました。タブ切替を待機中 (0.5秒)...")
-    time.sleep(0.5)
+        print("「患者検索」タブをクリックしました。タブ切替を待機中 (0.5秒)...")
+        time.sleep(0.5)
 
     # Step 1: フリガナ欄に「tesuto」と入力して Enter → 患者一覧を表示させる
     input_text_to_field(input_text="tesuto", label="フリガナ")
