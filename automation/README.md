@@ -117,6 +117,37 @@ click_history("20260312")
 | `MLX_VLM_HISTORY_MODEL` | `mlx-community/gemma-4-e2b-it-4bit` | 使用モデル |
 | `MLX_VLM_HISTORY_TIMEOUT` | `120` | タイムアウト秒数 |
 
+### edit_history
+
+過去カルテ列の指定日付エントリをクリックし、1秒待機後に修正ボタンをクリックして修正モードへ移行する。
+
+1. `click_history(date_str)` を呼び出して対象日付のエントリをクリック
+2. 1秒待機（修正ボタンが表示されるまで）
+3. HDMIスクリーンを再キャプチャ
+4. OpenCV テンプレートマッチング（`match_templates/edit_button.jpg`）で修正ボタンを検出
+5. 検出した座標にBLEマウスを移動してクリック
+
+```bash
+python -m automation.ehr_input "edit history 20260312"
+```
+
+```python
+from automation.ehr_input import edit_history
+edit_history("20260312")
+```
+
+> **テンプレート画像**: `match_templates/edit_button.jpg` に修正ボタンの切り取り画像が必要。
+> マッチングスコアが 0.7 未満の場合は `RuntimeError` を送出する。
+
+#### テンプレートマッチングの動作確認（クリックなし）
+
+`mlx_vlm_history.py` の CLI は、日付座標を特定した後に修正ボタンのテンプレートマッチングも実行して座標を表示する（クリックはしない）。
+
+```bash
+python -m automation.mlx_vlm_history captures/history.jpg 20260312
+# → 日付座標 + 修正ボタン座標とマッチングスコアを表示
+```
+
 ### close_record
 
 画面右上の「取消[F9]」ボタンをOCRで検出してクリックし、開いているカルテを閉じる。
@@ -530,7 +561,7 @@ All outputs are saved to `automation_outputs/`:
 - `ble_server.py`: Long-running BLE server (Unix socket, eliminates per-call connection cost). BLE切断を検知するとプロセスを終了し、`start_ble_server.sh` の再起動ループが3秒後に再起動する（毎回クリーンな接続状態を確保）
 - `ble_client.py`: Sync client for `ble_server.py`
 - `ble_test_cli.py`: Interactive BLE testing CLI tool
-- `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `close_record`, `click_history`, `input_text_to_field`, `type_kanji_via_ime`, `type_japanese_sentence`, `detect_ime_mode`, `ensure_ime_mode`)
+- `ehr_input.py`: EHR field input automation (`open_test_patient_chart`, `close_record`, `click_history`, `edit_history`, `input_text_to_field`, `type_kanji_via_ime`, `type_japanese_sentence`, `detect_ime_mode`, `ensure_ime_mode`)
 - `screen_analyzer.py`: DocLayout-YOLO + OCR integration (RapidOCR/EasyOCR with caching)
 - `model_manager.py`: Multi-model management (DocLayout-YOLO + YOLOv11)
 - `gui_image_analyzer.py`: Image analysis for text coordinates and textbox finding
@@ -538,7 +569,7 @@ All outputs are saved to `automation_outputs/`:
 - `monitor_stream.py`: HDMI capture stream monitor with YOLO detection
 - `local_segmentation.py`: **sudachipy + pykakasi** による日本語文節分割（`ehr_input.py` が使用するメイン実装）
 - `local_segment_probe.py`: ローカル文節分割 CLI プローブ
-- `mlx_vlm_history.py`: mlx_vlm サーバーを使った過去カルテ日付検出（`click_history()` が使用）。正規表現プレフィルタ → VLMで候補番号を特定 → 正規表現で後検証する3段構成
+- `mlx_vlm_history.py`: mlx_vlm サーバーを使った過去カルテ日付検出（`click_history()` が使用）。正規表現プレフィルタ → VLMで候補番号を特定 → 正規表現で後検証する3段構成。CLI実行時は修正ボタンのテンプレートマッチングも実施
 - `mlx_vlm_segmentation.py`: mlx_vlm サーバーを使った日本語文節分割ヘルパー (参考実装)
 - `mlx_vlm_segment_probe.py`: mlx_vlm 文節分割 CLI プローブ
 - `ollama_segmentation.py`: Ollama を使った日本語文節分割ヘルパー (参考実装)

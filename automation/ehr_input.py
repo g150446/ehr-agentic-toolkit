@@ -397,6 +397,71 @@ def click_history(date_str: str) -> None:
     print("完了")
 
 
+EDIT_BUTTON_TEMPLATE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "match_templates",
+    "edit_button.jpg",
+)
+
+
+def _find_button_with_template(
+    frame: np.ndarray,
+    template_path: str,
+    threshold: float = 0.7,
+) -> Optional[tuple[int, int]]:
+    """OpenCV テンプレートマッチングでボタン中心座標を返す。"""
+    tmpl = cv2.imread(template_path)
+    if tmpl is None:
+        raise RuntimeError(f"テンプレート画像を読み込めません: {template_path}")
+    result = cv2.matchTemplate(frame, tmpl, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+    print(f"テンプレートマッチング スコア: {max_val:.3f} ({template_path})")
+    if max_val < threshold:
+        return None
+    th, tw = tmpl.shape[:2]
+    return (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+
+
+def edit_history(date_str: str) -> None:
+    """過去カルテの日付エントリをクリックし、修正ボタンをクリックする。
+
+    Args:
+        date_str: 日付文字列 (yyyymmdd 形式, 例: "20190502")
+    """
+    click_history(date_str)
+    time.sleep(1.0)
+
+    config = load_config(skip_password=True)
+    print("修正ボタンを探しています...")
+    frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if frame is None:
+        raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
+
+    coords = _find_button_with_template(frame, EDIT_BUTTON_TEMPLATE)
+    if coords is None:
+        raise RuntimeError("修正ボタンが画面上に見つかりませんでした")
+
+    target_x, target_y = coords
+    print(f"修正ボタン: ({target_x}, {target_y})")
+
+    client = _wait_for_ble_connected()
+
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
+    ok = client.move_mouse_to_position(target_x, target_y)
+    print(f"moveto ({target_x}, {target_y}) -> {'OK' if ok else 'NG'}")
+
+    ok = client.click()
+    print(f"click -> {'OK' if ok else 'NG'}")
+
+    print("完了")
+
+
 def _find_ime_candidate_region(frame: np.ndarray) -> Optional[np.ndarray]:
     """
     画面から IME 変換候補の反転表示ブロック（黒背景＋白文字）を検出して切り出す。
@@ -849,6 +914,17 @@ def _run_cli(args: list[str]) -> int:
         click_history(args[1])
         return 0
 
+    if len(args) == 1 and args[0].startswith("edit history "):
+        # "edit history yyyymmdd" → 過去カルテ日付クリック後に修正ボタンをクリック
+        date_str = args[0][len("edit history "):].strip()
+        edit_history(date_str)
+        return 0
+
+    if len(args) >= 2 and args[0] == "edit history":
+        # "edit history" "yyyymmdd" (2引数) → 過去カルテ日付クリック後に修正ボタンをクリック
+        edit_history(args[1])
+        return 0
+
     if len(args) == 1:
         text = args[0]
         if _is_japanese(text):
@@ -886,6 +962,7 @@ def _run_cli(args: list[str]) -> int:
     print('  python -m automation.ehr_input "open test"             # テスト患者カルテを開く')
     print('  python -m automation.ehr_input "close record"          # 取り消し[F9]ボタンをクリックしてカルテを閉じる')
     print('  python -m automation.ehr_input "click history 20190502"  # 過去カルテの指定日付をクリック')
+    print('  python -m automation.ehr_input "edit history 20190502"   # 過去カルテ日付クリック後に修正ボタンをクリック')
     print('  python -m automation.ehr_input 肺炎                    # IME変換のみ')
     print('  python -m automation.ehr_input "COVID-19の検査"        # 日英混在入力')
     print('  python -m automation.ehr_input tesuto                  # 英語直接入力')

@@ -287,10 +287,31 @@ def main(argv: list[str] | None = None) -> int:
     if coords:
         x, y = coords
         print(f"\n✅ クリック座標: ({x}, {y})")
-        return 0
     else:
         print("\n❌ 該当エントリが見つかりませんでした")
-        return 1
+
+    # --- テンプレートマッチング（修正ボタン） ---
+    template_path = Path(__file__).parent.parent / "match_templates" / "edit_button.jpg"
+    if template_path.exists():
+        print(f"\nテンプレートマッチング: {template_path}")
+        tmpl = cv2.imread(str(template_path))
+        if tmpl is not None:
+            match_result = cv2.matchTemplate(image, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(match_result)
+            print(f"最高スコア: {max_val:.3f}")
+            if max_val >= 0.7:
+                th, tw = tmpl.shape[:2]
+                cx = max_loc[0] + tw // 2
+                cy = max_loc[1] + th // 2
+                print(f"✅ 修正ボタン検出: ({cx}, {cy})")
+            else:
+                print(f"❌ 修正ボタン未検出 (スコア {max_val:.3f} < 0.7)")
+        else:
+            print(f"❌ テンプレート画像を読み込めません: {template_path}")
+    else:
+        print(f"⚠️ テンプレートファイルが見つかりません: {template_path}")
+
+    return 0 if coords else 1
 
 
 if __name__ == "__main__":
