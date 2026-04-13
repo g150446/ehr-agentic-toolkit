@@ -10,8 +10,7 @@ from automation.ble_controller import BLEController
 from automation.screen_analyzer import (
     capture_screen,
     load_ocr_reader,
-    load_paddleocr_reader,
-    load_ppstructure_reader,
+    load_rapidocr_reader,
     analyze_layout,
     extract_text,
     find_password_field,
@@ -19,7 +18,6 @@ from automation.screen_analyzer import (
     OCRResult,
     PasswordField
 )
-from automation.ocr_client import OCRClient, OCRServerError, request_ocr
 from automation.utils import (
     setup_logging,
     debug_pause,
@@ -42,17 +40,13 @@ __all__ = [
     # Screen Analysis
     "capture_screen",
     "load_ocr_reader",
-    "load_paddleocr_reader",
-    "load_ppstructure_reader",
+    "load_rapidocr_reader",
     "analyze_layout",
     "extract_text",
     "find_password_field",
     "DetectedRegion",
     "OCRResult",
     "PasswordField",
-    "OCRClient",
-    "OCRServerError",
-    "request_ocr",
 
     # Utilities
     "setup_logging",

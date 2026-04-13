@@ -1,18 +1,14 @@
-"""Text-only history date finder backed by local mlx_vlm.server.
+"""History date finder backed by RapidOCR + local mlx_vlm.server.
 
-Sends OCR candidate text (no image) to a local mlx_vlm server
-(gemma-4-e2b-it-4bit) and asks it to identify which OCR segment
-corresponds to the target date in the 過去カルテ column.
+Runs full-image RapidOCR to collect date-like candidates, then asks a local
+multimodal MLX VLM to pick the correct candidate using both:
 
-Image is omitted intentionally: the OCR text already contains all date
-information, and text-only prompts produce more reliable results than
-image+text for small VLMs on this structured matching task. The server
-implementation comes from ``mlx_vlm.server``, but this module uses it as
-a text-only chat completion endpoint.
+- the screenshot itself
+- the RapidOCR candidate list of (date text, position)
 
 Usage:
     # Start mlx_vlm server first:
-    #   bash scripts/start_mlx_vlm_server.sh
+    #   bash scripts/start_mlx_vlm_server.sh qwen
     #
     # Test against a captured image:
     python -m automation.mlx_vlm_history captures/history.jpg 20260312
@@ -20,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -30,7 +27,9 @@ import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
 
-from automation.ocr_client import OCRServerError, request_ocr
+import cv2
+
+from automation.screen_analyzer import load_rapidocr_reader, run_ocr
 
 
 MLX_VLM_HISTORY_URL = os.getenv(
@@ -39,7 +38,7 @@ MLX_VLM_HISTORY_URL = os.getenv(
 )
 MLX_VLM_HISTORY_MODEL = os.getenv(
     "MLX_VLM_HISTORY_MODEL",
-    "mlx-community/gemma-4-e2b-it-4bit",
+    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit"),
 )
 MLX_VLM_HISTORY_TIMEOUT = float(os.getenv("MLX_VLM_HISTORY_TIMEOUT", "120"))
 
@@ -98,7 +97,7 @@ def _build_candidates(ocr_results: list) -> list[tuple[int, str, int, int]]:
 
 
 def _build_prompt(date_str: str, candidates: list[tuple[int, str, int, int]]) -> str:
-    """Build the VLM prompt for identifying the target date entry."""
+    """Build the multimodal VLM prompt for identifying the target date entry."""
     year = int(date_str[:4])
     month = int(date_str[4:6])
     day = int(date_str[6:8])
@@ -113,13 +112,16 @@ def _build_prompt(date_str: str, candidates: list[tuple[int, str, int, int]]) ->
     day_fmt = f"{day:02d}日 または {day}日"
 
     return (
-        f"以下は電子カルテのOCRテキスト候補リストです。\n\n"
+        f"以下は電子カルテ画面の画像と、RapidOCR が抽出した日付候補リストです。\n"
+        f"画像を見て文字を読み取り、OCR誤認識を補正しながら選んでください。\n"
+        f"座標は候補リストにだけ書かれています。\n\n"
         f"【探す日付】{year}年 {month_fmt} {day_fmt}\n"
         f"（ゼロ埋めの有無は問いません。例: 3月2日 と 03月02日 は同じ日付です）\n\n"
         f"候補リスト:\n"
         f"{entries}\n\n"
         f"ルール:\n"
-        f"- 候補の中に探す日付と同じ年・月・日が含まれるものがあれば、その番号のみを返してください。\n"
+        f"- 画像と候補リストの両方を見て、探す日付と同じ年・月・日の候補番号のみを返してください。\n"
+        f"- OCR文字列が少し壊れていても、画像上で同じ日付だと読めるなら選んでください。\n"
         f"- 年・月・日のいずれか一つでも違う候補は選ばないでください。\n"
         f"- 探す日付と一致する候補が一つもない場合は、必ず -1 を返してください。\n"
         f"- 近い日付や似た日付を選ぶことは禁止です。完全一致のみ有効です。\n"
@@ -127,21 +129,59 @@ def _build_prompt(date_str: str, candidates: list[tuple[int, str, int, int]]) ->
     )
 
 
+def _encode_image_data_url(image) -> str:
+    ok, encoded = cv2.imencode(".png", image)
+    if not ok:
+        raise MlxVlmHistoryError("VLM送信用の画像エンコードに失敗しました")
+    b64 = base64.b64encode(encoded.tobytes()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def _extract_response_content(result: dict) -> str:
+    try:
+        content = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise MlxVlmHistoryError(f"VLM応答の解析に失敗しました: {result!r}") from exc
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in {"text", "output_text"} and isinstance(item.get("text"), str):
+                text_parts.append(item["text"])
+        joined = "".join(text_parts).strip()
+        if joined:
+            return joined
+
+    raise MlxVlmHistoryError(f"VLM応答に content テキストが含まれていません: {result!r}")
+
+
+def _run_full_image_ocr(image, languages: list[str] | None = None) -> list[tuple]:
+    reader = load_rapidocr_reader(languages or ["ja", "en"])
+    return run_ocr(reader, image)
+
+
 def find_history_date_with_vlm(
     date_str: str,
     ocr_results: list,
     *,
+    image=None,
     model: str = MLX_VLM_HISTORY_MODEL,
     url: str = MLX_VLM_HISTORY_URL,
     timeout: float = MLX_VLM_HISTORY_TIMEOUT,
 ) -> Optional[Tuple[int, int]]:
-    """Use local mlx_vlm (text-only) to identify which OCR segment matches the target date.
+    """Use local mlx_vlm to identify which OCR segment matches the target date.
 
     Args:
         date_str:    Target date in yyyymmdd format (e.g. "20260312").
         ocr_results: List of (bbox, text, conf) from run_ocr().
+        image:       Source screenshot for multimodal fallback.
         model:       mlx_vlm model identifier.
-        url:         Text-only chat completion endpoint served by mlx_vlm.server.
+        url:         Chat completion endpoint served by mlx_vlm.server.
         timeout:     Request timeout in seconds.
 
     Returns:
@@ -182,12 +222,23 @@ def find_history_date_with_vlm(
         return (cx, cy)
 
     # Step 2: 0件 → VLM に問い合わせる
+    if image is None:
+        raise MlxVlmHistoryError("VLM fallback には元画像が必要です")
+
     vlm_candidates = regex_matched if regex_matched else all_candidates
     prompt = _build_prompt(date_str, [(0, text, cx, cy) for _, text, cx, cy in vlm_candidates])
 
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": _encode_image_data_url(image)}},
+                ],
+            }
+        ],
         "stream": False,
         "max_tokens": 16,
     }
@@ -219,8 +270,8 @@ def find_history_date_with_vlm(
 
     try:
         result = json.loads(response_body)
-        content = result["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, json.JSONDecodeError) as exc:
+        content = _extract_response_content(result)
+    except json.JSONDecodeError as exc:
         raise MlxVlmHistoryError(
             f"VLM応答の解析に失敗しました: {response_body!r}"
         ) from exc
@@ -263,15 +314,12 @@ def find_history_date_in_image(
     url: str = MLX_VLM_HISTORY_URL,
     timeout: float = MLX_VLM_HISTORY_TIMEOUT,
 ) -> Optional[Tuple[int, int]]:
-    """Run full-image OCR through the resident OCR server, then identify the target history date."""
-    actual_languages = languages or ["ja", "en"]
-    try:
-        ocr_results = request_ocr(image, languages=actual_languages)
-    except OCRServerError as exc:
-        raise MlxVlmHistoryError(str(exc)) from exc
+    """Run full-image RapidOCR, then identify the target history date."""
+    ocr_results = _run_full_image_ocr(image, languages)
     return find_history_date_with_vlm(
         date_str,
         ocr_results,
+        image=image,
         model=model,
         url=url,
         timeout=timeout,
@@ -303,8 +351,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"model: {MLX_VLM_HISTORY_MODEL}")
     print(f"timeout: {MLX_VLM_HISTORY_TIMEOUT:g}秒\n")
 
-    import cv2
-
     image = cv2.imread(image_path)
     if image is None:
         print(f"❌ 画像を読み込めません: {image_path}")
@@ -312,14 +358,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print("OCR実行中...")
     try:
-        ocr_results = request_ocr(image, languages=["ja", "en"])
-    except OCRServerError as exc:
-        print(f"❌ OCR サーバーエラー: {exc}")
+        ocr_results = _run_full_image_ocr(image, ["ja", "en"])
+    except Exception as exc:
+        print(f"❌ OCR エラー: {exc}")
         return 1
     print(f"OCR結果: {len(ocr_results)} セグメント\n")
 
     try:
-        coords = find_history_date_with_vlm(date_str, ocr_results)
+        coords = find_history_date_with_vlm(date_str, ocr_results, image=image)
     except MlxVlmHistoryError as exc:
         print(f"❌ エラー: {exc}")
         return 1

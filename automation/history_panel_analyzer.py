@@ -2,9 +2,9 @@
 Analyze the past-history area using OCR anchors and layout-aware OCR strategies.
 
 This tool is for offline analysis on saved screenshots. It compares:
-- PaddleOCR + full-image OCR
-- PaddleOCR + UI detection OCR
-- PP-StructureV3 + Paddle OCR models
+- RapidOCR + full-image OCR
+- RapidOCR + UI detection OCR
+- EasyOCR + full-image OCR
 """
 
 from __future__ import annotations
@@ -23,10 +23,9 @@ from automation.config import load_config
 from automation.mlx_vlm_history import _date_matches_text
 from automation.model_manager import ModelManager, ModelType
 from automation.screen_analyzer import (
-    load_paddleocr_reader,
-    load_ppstructure_reader,
+    load_ocr_reader,
+    load_rapidocr_reader,
     run_ocr,
-    run_ppstructure_ocr,
 )
 from automation.utils import draw_bounding_boxes, format_timestamp
 
@@ -57,10 +56,10 @@ def _bbox_center(bbox: list[list[int]]) -> tuple[int, int]:
 
 
 def _load_ocr_backend(backend: str, config):
-    if backend == "paddleocr":
-        return load_paddleocr_reader(config.ocr_languages)
-    if backend == "ppstructure":
-        return load_ppstructure_reader(config.ocr_languages)
+    if backend == "rapidocr":
+        return load_rapidocr_reader(config.ocr_languages)
+    if backend == "easyocr":
+        return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
     raise ValueError(f"Unsupported OCR backend: {backend}")
 
 
@@ -84,11 +83,6 @@ def _run_region_ocr(image, config, ocr_reader, model_type: ModelType, confidence
             abs_bbox = [[int(p[0]) + x1, int(p[1]) + y1] for p in bbox]
             results.append((abs_bbox, text, float(conf)))
     return results
-
-
-def _run_ppstructure_blocks(image, config) -> list[tuple]:
-    reader = load_ppstructure_reader(config.ocr_languages)
-    return run_ppstructure_ocr(reader, image)
 
 
 def _is_date_like_text(text: str) -> bool:
@@ -306,8 +300,6 @@ def _run_strategy(
                 ModelType.UI_DETECTION,
                 confidence=0.25,
             )
-        elif layout_mode == "pp-structure":
-            ocr_results = _run_ppstructure_blocks(image, config)
         else:
             raise ValueError(f"Unsupported layout mode: {layout_mode}")
     except Exception as exc:
@@ -374,9 +366,9 @@ def analyze_history_panel(
     cv2.imwrite(str(source_path), image)
 
     layout_strategies = [
-        _run_strategy(image=image, config=config, ocr_backend="paddleocr", layout_mode="full-image", target_date=target_date),
-        _run_strategy(image=image, config=config, ocr_backend="paddleocr", layout_mode="ui-detection", target_date=target_date),
-        _run_strategy(image=image, config=config, ocr_backend="ppstructure", layout_mode="pp-structure", target_date=target_date),
+        _run_strategy(image=image, config=config, ocr_backend="rapidocr", layout_mode="full-image", target_date=target_date),
+        _run_strategy(image=image, config=config, ocr_backend="rapidocr", layout_mode="ui-detection", target_date=target_date),
+        _run_strategy(image=image, config=config, ocr_backend="easyocr", layout_mode="full-image", target_date=target_date),
     ]
 
     saved_strategies = []
@@ -415,18 +407,12 @@ def analyze_history_panel(
         recommendations.append(
             f"最有力レイアウト戦略は {best_strategy.layout_mode} + {best_strategy.ocr_backend} です。"
         )
-        ppstructure_result = next(
-            (item for item in saved_strategies if item["layout_mode"] == "pp-structure"),
-            None,
-        )
         ui_result = next(
             (item for item in saved_strategies if item["layout_mode"] == "ui-detection"),
             None,
         )
-        if ppstructure_result and ppstructure_result["date_candidates"] > 0:
-            recommendations.append("PP-Structure は補助的なブロック分割として確認価値があります。")
         full_result = next(
-            (item for item in saved_strategies if item["layout_mode"] == "full-image"),
+            (item for item in saved_strategies if item["layout_mode"] == "full-image" and item["ocr_backend"] == "rapidocr"),
             None,
         )
         if (
@@ -438,7 +424,8 @@ def analyze_history_panel(
             )
         ):
             recommendations.append("この画像では detector-first より全画面 OCR の方が履歴日付候補を多く拾えています。")
-        recommendations.append("必要なら次段階で ROI 内に対する PaddleOCR 前処理強化を検討してください。")
+        if ui_result and ui_result["date_candidates"] > 0:
+            recommendations.append("UI detection 経路も補助比較として有効です。")
 
     manifest = {
         "source_path": str(source_path),

@@ -20,11 +20,19 @@ import numpy as np
 from automation.config import load_config
 from automation.screen_analyzer import (
     capture_screen,
+    load_ocr_reader,
+    load_rapidocr_reader,
+    run_ocr,
 )
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
 from automation.local_segmentation import segment_japanese_text_locally
-from automation.ocr_client import OCRServerError, request_ocr
+
+
+def _load_ocr_engine(config):
+    if getattr(config, "ocr_backend", "rapidocr") == "easyocr":
+        return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
+    return load_rapidocr_reader(config.ocr_languages)
 
 
 def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
@@ -64,15 +72,7 @@ def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
 
 
 def _request_ocr_results(frame, config) -> list[tuple]:
-    try:
-        return request_ocr(
-            frame,
-            languages=config.ocr_languages,
-            socket_path=config.ocr_server_socket_path,
-            timeout=config.ocr_server_timeout,
-        )
-    except OCRServerError as exc:
-        raise RuntimeError(str(exc)) from exc
+    return run_ocr(_load_ocr_engine(config), frame)
 
 
 def input_text_to_field(

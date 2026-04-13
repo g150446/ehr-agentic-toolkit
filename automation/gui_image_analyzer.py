@@ -19,14 +19,14 @@ import time
 from typing import Optional, Tuple
 
 from automation.config import AutomationConfig, load_config
-from automation.screen_analyzer import load_ocr_reader, load_paddleocr_reader, run_ocr, run_ocr_word_split
+from automation.screen_analyzer import load_ocr_reader, load_rapidocr_reader, run_ocr, run_ocr_word_split
 
 
 def _load_ocr(config: AutomationConfig):
     """Load the OCR reader selected by config.ocr_backend."""
-    if config.ocr_backend == 'paddleocr':
-        return load_paddleocr_reader(config.ocr_languages)
-    return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
+    if config.ocr_backend == 'easyocr':
+        return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
+    return load_rapidocr_reader(config.ocr_languages)
 
 
 def _run_yolo_ocr(image, config: AutomationConfig, ocr_reader) -> list:

@@ -26,8 +26,8 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 | Component | Status | Description |
 |-----------|--------|-------------|
 | **HDMI Capture** | ✅ **Complete** | Real-time video capture from MiraBox/compatible devices |
-| **Layout Analysis (PP-Structure)** | 🔄 **In Progress** | Evaluating PP-Structure for EHR layout parsing |
-| **OCR (PaddleOCR/EasyOCR)** | ✅ **Complete** | Multi-language text extraction (Japanese, English); PaddleOCR default |
+| **Layout Analysis** | 🔄 **In Progress** | Evaluating ROI inference and detector-first OCR for EHR layout parsing |
+| **OCR (RapidOCR/EasyOCR)** | ✅ **Complete** | Multi-language text extraction with RapidOCR as the default path |
 | **Stream Monitor** | ✅ **Complete** | Interactive HDMI capture monitor with detection overlay |
 | **ESP32 BLE Control** | ✅ **Complete** | Keyboard/mouse HID emulation over Bluetooth |
 | **BLE Test CLI** | ✅ **Complete** | Interactive testing tool for ESP32 keyboard/mouse |
@@ -115,7 +115,7 @@ nano .env  # Configure your settings
 git clone https://github.com/g150446/ehr-agentic-toolkit.git
 cd ehr-agentic-toolkit
 
-# Create virtual environment (Python 3.12 recommended for Paddle)
+# Create virtual environment (Python 3.12 recommended)
 python3.12 -m venv venv
 source venv/bin/activate
 
@@ -194,25 +194,21 @@ python scripts/capture_windows.py myshot
 
 このコマンドは次を比較します。
 
-- PaddleOCR + 全画面 OCR
-- PaddleOCR + UI detection OCR
-- PP-StructureV3 + Paddle OCR
+- RapidOCR + 全画面 OCR
+- RapidOCR + UI detection OCR
+- EasyOCR + 全画面 OCR
 
 出力は `automation_outputs/history_panel_analysis/<run-name>/` に保存されます。
 
 ---
 
-### 常駐 OCR サーバー
-
-PaddleOCR の初期化コストを毎回払わないように、automation では常駐 OCR サーバーを使えます。
+### MLX VLM サーバー
 
 ```bash
-./scripts/start_ocr_server.sh
+./scripts/start_mlx_vlm_server.sh qwen
 ```
 
-`automation.ehr_input` と `automation.mlx_vlm_history` は、このサーバーへ OCR リクエストを送り、PaddleOCR モデルをプロセス内に保持したまま再利用します。
-
-**macOS note:** 現在の PaddlePaddle ビルドでは Apple GPU / MPS は使えず、OCR サーバーは CPU 動作です。高速化ポイントは GPU 化ではなく **モデルの事前ロード** です。
+`automation.mlx_vlm_history` と `automation.ehr_input "click history ..."` は、RapidOCR で抽出した候補と画像自体を `mlx_vlm.server` へ送り、Qwen 3.5 4B MLX に候補番号を選ばせます。
 
 ---
 
@@ -317,12 +313,12 @@ export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 python -m automation.monitor_stream
 ```
 
-#### "No module named 'paddleocr'"
+#### "No module named 'rapidocr_onnxruntime'"
 
-**Solution:** Install PaddlePaddle and PaddleOCR in a supported Python environment:
+**Solution:** Install RapidOCR in the active virtual environment:
 ```bash
 source venv/bin/activate
-python -m pip install paddlepaddle==3.2.0 paddleocr==3.4.0
+python -m pip install rapidocr_onnxruntime
 ```
 
 #### ESP32 Not Connecting
@@ -425,8 +421,7 @@ This software is provided for research and development purposes. It is not a med
 ## 🙏 Acknowledgments
 
 - Built with [Anthropic Claude](https://www.anthropic.com/claude)
-- Layout parsing powered by [PaddleOCR / PP-Structure](https://www.paddleocr.ai/)
-- OCR powered by [PaddleOCR](https://www.paddleocr.ai/)
+- OCR powered by [RapidOCR](https://github.com/RapidAI/RapidOCR) and [EasyOCR](https://github.com/JaidedAI/EasyOCR)
 - BLE communication using [Bleak](https://github.com/hbldh/bleak)
 - Computer vision using [OpenCV](https://opencv.org/)
 

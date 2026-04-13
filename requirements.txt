@@ -13,11 +13,10 @@ ultralyticsplus>=0.0.28
 pykakasi>=2.2.0  # Japanese kanji/kana to romaji conversion
 sudachipy>=0.6.10
 sudachidict_core>=20241021
-paddlepaddle>=3.2.0
-paddleocr>=3.4.0
-paddlex[ocr]>=3.4.3
+rapidocr_onnxruntime>=1.4.4
 easyocr>=1.7.0
 pillow>=9.0.0
+mlx-vlm>=0.4.4
 
 # BLE Communication (for Windows login automation)
 bleak>=0.21.1

@@ -105,14 +105,14 @@ def test_click_history_surfaces_mlx_vlm_errors(monkeypatch):
         raise AssertionError("RuntimeError was not raised")
 
 
-def test_find_history_date_in_image_uses_full_image_paddleocr(monkeypatch):
+def test_find_history_date_in_image_uses_full_image_rapidocr(monkeypatch):
     frame = object()
     ocr_results = [("full", "full", 1.0)]
 
     monkeypatch.setattr(
         mlx_vlm_history,
-        "request_ocr",
-        lambda image, **kwargs: ocr_results if image is frame else None,
+        "_run_full_image_ocr",
+        lambda image, languages=None: ocr_results if image is frame else None,
     )
     monkeypatch.setattr(
         mlx_vlm_history,
@@ -126,7 +126,7 @@ def test_find_history_date_in_image_uses_full_image_paddleocr(monkeypatch):
     assert mlx_vlm_history.find_history_date_in_image("20260312", frame) == (335, 753)
 
 
-def test_open_test_patient_chart_uses_ocr_server(monkeypatch):
+def test_open_test_patient_chart_uses_direct_ocr(monkeypatch):
     frame = object()
     events = []
 
@@ -159,8 +159,8 @@ def test_open_test_patient_chart_uses_ocr_server(monkeypatch):
             capture_width=1920,
             capture_height=1080,
             ocr_languages=["ja", "en"],
-            ocr_server_socket_path="/tmp/test-ocr.sock",
-            ocr_server_timeout=30,
+            ocr_backend="rapidocr",
+            ocr_use_gpu=False,
         ),
     )
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)

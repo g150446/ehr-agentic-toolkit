@@ -59,8 +59,8 @@ class AutomationConfig:
         # OCR Configuration
         ocr_languages = os.getenv('OCR_LANGUAGES', 'ja,en')
         self.ocr_languages = [lang.strip() for lang in ocr_languages.split(',')]
-        # Default backend: PaddleOCR. Use PP-OCRv4 where supported; Japanese falls back to PP-OCRv5.
-        self.ocr_backend = os.getenv('OCR_BACKEND', 'paddleocr')
+        # Default backend: RapidOCR. EasyOCR remains available as an alternate backend.
+        self.ocr_backend = os.getenv('OCR_BACKEND', 'rapidocr')
         # Detection mode: 'yolo' (UI element detection first, then per-element OCR) or 'ocr' (full-image OCR only)
         # yolo mode is more reliable for menus/tab bars where OCR merges adjacent items into one segment.
         self.detection_mode = os.getenv('DETECTION_MODE', 'yolo')
@@ -71,9 +71,6 @@ class AutomationConfig:
         except Exception:
             _mps_available = False
         self.ocr_use_gpu = os.getenv('OCR_USE_GPU', 'true' if _mps_available else 'false').lower() == 'true'
-        self.ocr_server_socket_path = os.getenv('OCR_SERVER_SOCKET_PATH', '/tmp/paddle_ocr_server.sock')
-        self.ocr_server_timeout = float(os.getenv('OCR_SERVER_TIMEOUT', '120'))
-        self.ocr_server_device = os.getenv('OCR_SERVER_DEVICE', 'auto')
 
         # Output Paths
         self.output_dir = Path(os.getenv('LOGIN_OUTPUT_DIR', './automation_outputs'))
@@ -122,7 +119,6 @@ class AutomationConfig:
             f"  debug_mode={self.debug_mode},\n"
             f"  capture_device={self.capture_device_index},\n"
             f"  ocr_backend={self.ocr_backend},\n"
-            f"  ocr_server_socket_path={self.ocr_server_socket_path},\n"
             f"  output_dir={self.output_dir}\n"
             f")"
         )

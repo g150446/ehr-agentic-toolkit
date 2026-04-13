@@ -10,9 +10,8 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 **What it does:**
 - Creates Python virtual environment (`venv/`)
-- Prefers Python 3.12/3.11 when available for Paddle compatibility
+- Prefers Python 3.12/3.11 when available for MLX / RapidOCR compatibility
 - Installs all dependencies from `requirements.txt`
-- Installs PaddlePaddle / PaddleOCR dependencies
 - Creates `.env` file from template if it doesn't exist
 - Creates output directories
 
@@ -66,7 +65,7 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 - Activates virtual environment
 - Sets `PYTHONPATH`
 - Runs `automation.history_panel_analyzer`
-- Compares full-image PaddleOCR / UI detection / PP-Structure paths
+- Compares RapidOCR full-image / RapidOCR + UI detection / EasyOCR full-image paths
 - Infers a history ROI from date-like OCR anchors
 
 **Usage:**
@@ -82,17 +81,22 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 ### `start_mlx_vlm_server.sh`
 
-**Purpose**: Start the local `mlx_vlm.server` process used as a text-only chat completion endpoint
+**Purpose**: Start the local `mlx_vlm.server` process used by history matching and segmentation probes
 
 **What it does:**
 - Activates virtual environment
-- Starts `mlx_vlm.server` on port **8181** with `mlx-community/gemma-4-e2b-it-4bit`
+- Starts `mlx_vlm.server` on port **8181**
+- Uses `mlx-community/Qwen3.5-4B-MLX-4bit` by default, or `gemma` / any model ID you pass
 - Provides an OpenAI-compatible API (`/v1/chat/completions`) for local LLM inference on Apple Silicon
-- In this repository, callers use that endpoint with text prompts only; image payloads are not sent in the current history-matching and segmentation flows
+- `automation.mlx_vlm_history` sends **image + RapidOCR candidate list**
+- `automation.mlx_vlm_segment_probe` still uses text-only prompts
 
 **Usage:**
 ```bash
 bash scripts/start_mlx_vlm_server.sh
+bash scripts/start_mlx_vlm_server.sh qwen
+bash scripts/start_mlx_vlm_server.sh gemma
+bash scripts/start_mlx_vlm_server.sh mlx-community/Qwen3.5-4B-MLX-4bit
 ```
 
 Keep this running in a separate terminal before using `automation.mlx_vlm_segment_probe` or `automation.mlx_vlm_history`.
@@ -101,29 +105,6 @@ Keep this running in a separate terminal before using `automation.mlx_vlm_segmen
 ```bash
 curl -s http://127.0.0.1:8181/v1/models
 ```
-
----
-
-### `start_ocr_server.sh`
-
-**Purpose**: Start the resident PaddleOCR server that keeps OCR models preloaded
-
-**What it does:**
-- Activates virtual environment
-- Sets `PYTHONPATH`
-- Runs `automation.ocr_server` — a long-running process that preloads PaddleOCR and listens on `/tmp/paddle_ocr_server.sock`
-- Reuses the same OCR process across `ehr_input.py` and `mlx_vlm_history.py`
-
-**Usage:**
-```bash
-./scripts/start_ocr_server.sh
-```
-
-Keep this running in a separate terminal before executing `automation.ehr_input` or `automation.mlx_vlm_history`.
-
-**Acceleration note:**
-- On the current macOS / PaddlePaddle build, Apple GPU / MPS is not exposed, so the OCR server runs on CPU.
-- The speedup comes from keeping PaddleOCR preloaded across requests rather than re-initializing it per process.
 
 ---
 
