@@ -2,9 +2,8 @@
 Analyze the past-history area using OCR anchors and layout-aware OCR strategies.
 
 This tool is for offline analysis on saved screenshots. It compares:
-- RapidOCR + full-image OCR
-- RapidOCR + UI detection OCR
 - EasyOCR + full-image OCR
+- EasyOCR + UI detection OCR
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ from automation.mlx_vlm_history import _date_matches_text
 from automation.model_manager import ModelManager, ModelType
 from automation.screen_analyzer import (
     load_ocr_reader,
-    load_rapidocr_reader,
     run_ocr,
 )
 from automation.utils import draw_bounding_boxes, format_timestamp
@@ -56,8 +54,6 @@ def _bbox_center(bbox: list[list[int]]) -> tuple[int, int]:
 
 
 def _load_ocr_backend(backend: str, config):
-    if backend == "rapidocr":
-        return load_rapidocr_reader(config.ocr_languages)
     if backend == "easyocr":
         return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
     raise ValueError(f"Unsupported OCR backend: {backend}")
@@ -366,9 +362,8 @@ def analyze_history_panel(
     cv2.imwrite(str(source_path), image)
 
     layout_strategies = [
-        _run_strategy(image=image, config=config, ocr_backend="rapidocr", layout_mode="full-image", target_date=target_date),
-        _run_strategy(image=image, config=config, ocr_backend="rapidocr", layout_mode="ui-detection", target_date=target_date),
         _run_strategy(image=image, config=config, ocr_backend="easyocr", layout_mode="full-image", target_date=target_date),
+        _run_strategy(image=image, config=config, ocr_backend="easyocr", layout_mode="ui-detection", target_date=target_date),
     ]
 
     saved_strategies = []
@@ -412,7 +407,7 @@ def analyze_history_panel(
             None,
         )
         full_result = next(
-            (item for item in saved_strategies if item["layout_mode"] == "full-image" and item["ocr_backend"] == "rapidocr"),
+            (item for item in saved_strategies if item["layout_mode"] == "full-image" and item["ocr_backend"] == "easyocr"),
             None,
         )
         if (

@@ -59,8 +59,8 @@ class AutomationConfig:
         # OCR Configuration
         ocr_languages = os.getenv('OCR_LANGUAGES', 'ja,en')
         self.ocr_languages = [lang.strip() for lang in ocr_languages.split(',')]
-        # Default backend: RapidOCR. EasyOCR remains available as an alternate backend.
-        self.ocr_backend = os.getenv('OCR_BACKEND', 'rapidocr')
+        # Default backend: EasyOCR.
+        self.ocr_backend = os.getenv('OCR_BACKEND', 'easyocr')
         # Detection mode: 'yolo' (UI element detection first, then per-element OCR) or 'ocr' (full-image OCR only)
         # yolo mode is more reliable for menus/tab bars where OCR merges adjacent items into one segment.
         self.detection_mode = os.getenv('DETECTION_MODE', 'yolo')

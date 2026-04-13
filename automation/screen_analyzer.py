@@ -114,32 +114,6 @@ def load_ocr_reader(languages: List[str] = ['ja', 'en'], use_gpu: bool = False):
         raise
 
 
-def load_rapidocr_reader(languages: List[str] = ['ja', 'en']):
-    """
-    Load RapidOCR engine (cached).
-
-    Returns:
-        RapidOCR instance
-    """
-    cache_key = ('rapidocr', tuple(languages))
-    if cache_key in _ocr_reader_cache:
-        logger.debug("Returning cached RapidOCR engine")
-        return _ocr_reader_cache[cache_key]
-
-    try:
-        from rapidocr_onnxruntime import RapidOCR
-
-        logger.info(f"Loading RapidOCR engine (languages hint: {', '.join(languages)})...")
-        reader = RapidOCR()
-        logger.info("RapidOCR engine loaded successfully")
-        _ocr_reader_cache[cache_key] = reader
-        return reader
-
-    except Exception as e:
-        logger.error(f"Failed to load RapidOCR: {e}")
-        raise
-
-
 def run_ocr_word_split(reader, image: np.ndarray, gap_ratio: float = 1.5) -> List[tuple]:
     """
     Run OCR with a small-segment preference when the backend supports it.
@@ -147,7 +121,7 @@ def run_ocr_word_split(reader, image: np.ndarray, gap_ratio: float = 1.5) -> Lis
     Args:
         reader: OCR engine instance
         image: Input image as numpy array (BGR)
-        gap_ratio: Retained for API compatibility. Currently unused by RapidOCR.
+        gap_ratio: Retained for API compatibility. Currently unused by EasyOCR.
 
     Returns:
         List of (bbox, text, confidence) tuples
@@ -155,9 +129,7 @@ def run_ocr_word_split(reader, image: np.ndarray, gap_ratio: float = 1.5) -> Lis
     del gap_ratio
     if type(reader).__name__ == 'Reader':
         return reader.readtext(image)
-    if type(reader).__name__ != 'RapidOCR':
-        return []
-    return run_ocr(reader, image)
+    return []
 
 
 def run_ocr(reader, image: np.ndarray) -> List[tuple]:
@@ -165,7 +137,7 @@ def run_ocr(reader, image: np.ndarray) -> List[tuple]:
     Run OCR on an image, normalizing output to EasyOCR-compatible format.
 
     Args:
-        reader: EasyOCR reader or RapidOCR instance
+        reader: EasyOCR reader instance
         image: Input image as numpy array (BGR)
 
     Returns:
@@ -176,21 +148,7 @@ def run_ocr(reader, image: np.ndarray) -> List[tuple]:
     if reader_type == 'Reader':
         return reader.readtext(image)
 
-    if reader_type != 'RapidOCR':
-        return []
-
-    result_list, _ = reader(image)
-    if not result_list:
-        return []
-
-    output = []
-    for item in result_list:
-        if len(item) < 3:
-            continue
-        box, text, score = item[0], item[1], item[2]
-        norm_box = [[int(point[0]), int(point[1])] for point in box]
-        output.append((norm_box, text, float(score) if score is not None else 0.0))
-    return output
+    return []
 
 
 def analyze_layout(

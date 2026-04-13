@@ -68,6 +68,15 @@ def test_find_history_date_with_vlm_ignores_verbose_non_numeric_response(monkeyp
     assert mlx_vlm_history.find_history_date_with_vlm("20260311", ocr_results, image=object()) is None
 
 
+def test_load_ocr_engine_uses_easyocr_reader(monkeypatch):
+    sentinel = object()
+    config = SimpleNamespace(ocr_languages=["ja", "en"], ocr_use_gpu=False)
+
+    monkeypatch.setattr(ehr_input, "load_ocr_reader", lambda languages, use_gpu: sentinel)
+
+    assert ehr_input._load_ocr_engine(config) is sentinel
+
+
 def test_click_history_uses_mlx_vlm_ocr_pipeline(monkeypatch):
     frame = object()
     events = []
@@ -138,7 +147,7 @@ def test_click_history_surfaces_mlx_vlm_errors(monkeypatch):
         raise AssertionError("RuntimeError was not raised")
 
 
-def test_find_history_date_in_image_uses_full_image_rapidocr(monkeypatch):
+def test_find_history_date_in_image_uses_full_image_easyocr(monkeypatch):
     frame = object()
     ocr_results = [("full", "full", 1.0)]
 
@@ -192,7 +201,7 @@ def test_open_test_patient_chart_uses_direct_ocr(monkeypatch):
             capture_width=1920,
             capture_height=1080,
             ocr_languages=["ja", "en"],
-            ocr_backend="rapidocr",
+            ocr_backend="easyocr",
             ocr_use_gpu=False,
         ),
     )

@@ -10,7 +10,6 @@ from automation.ble_controller import BLEController
 from automation.screen_analyzer import (
     capture_screen,
     load_ocr_reader,
-    load_rapidocr_reader,
     analyze_layout,
     extract_text,
     find_password_field,
@@ -40,7 +39,6 @@ __all__ = [
     # Screen Analysis
     "capture_screen",
     "load_ocr_reader",
-    "load_rapidocr_reader",
     "analyze_layout",
     "extract_text",
     "find_password_field",

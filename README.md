@@ -27,7 +27,7 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 |-----------|--------|-------------|
 | **HDMI Capture** | ✅ **Complete** | Real-time video capture from MiraBox/compatible devices |
 | **Layout Analysis** | 🔄 **In Progress** | Evaluating ROI inference and detector-first OCR for EHR layout parsing |
-| **OCR (RapidOCR/EasyOCR)** | ✅ **Complete** | Multi-language text extraction with RapidOCR as the default path |
+| **OCR (EasyOCR)** | ✅ **Complete** | Multi-language text extraction with EasyOCR as the default path |
 | **Stream Monitor** | ✅ **Complete** | Interactive HDMI capture monitor with detection overlay |
 | **ESP32 BLE Control** | ✅ **Complete** | Keyboard/mouse HID emulation over Bluetooth |
 | **BLE Test CLI** | ✅ **Complete** | Interactive testing tool for ESP32 keyboard/mouse |
@@ -194,9 +194,8 @@ python scripts/capture_windows.py myshot
 
 このコマンドは次を比較します。
 
-- RapidOCR + 全画面 OCR
-- RapidOCR + UI detection OCR
 - EasyOCR + 全画面 OCR
+- EasyOCR + UI detection OCR
 
 出力は `automation_outputs/history_panel_analysis/<run-name>/` に保存されます。
 
@@ -208,7 +207,7 @@ python scripts/capture_windows.py myshot
 ./scripts/start_mlx_vlm_server.sh qwen
 ```
 
-`automation.mlx_vlm_history` と `automation.ehr_input "click history ..."` は、RapidOCR で抽出した候補と画像自体を `mlx_vlm.server` へ送り、Qwen 3.5 4B MLX に候補番号を選ばせます。
+`automation.mlx_vlm_history` と `automation.ehr_input "click history ..."` は、EasyOCR で抽出した候補と画像自体を `mlx_vlm.server` へ送り、Qwen 3.5 4B MLX に候補番号を選ばせます。
 
 ---
 
@@ -313,12 +312,12 @@ export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 python -m automation.monitor_stream
 ```
 
-#### "No module named 'rapidocr_onnxruntime'"
+#### "No module named 'easyocr'"
 
-**Solution:** Install RapidOCR in the active virtual environment:
+**Solution:** Install EasyOCR in the active virtual environment:
 ```bash
 source venv/bin/activate
-python -m pip install rapidocr_onnxruntime
+python -m pip install easyocr
 ```
 
 #### ESP32 Not Connecting
@@ -421,7 +420,7 @@ This software is provided for research and development purposes. It is not a med
 ## 🙏 Acknowledgments
 
 - Built with [Anthropic Claude](https://www.anthropic.com/claude)
-- OCR powered by [RapidOCR](https://github.com/RapidAI/RapidOCR) and [EasyOCR](https://github.com/JaidedAI/EasyOCR)
+- OCR powered by [EasyOCR](https://github.com/JaidedAI/EasyOCR)
 - BLE communication using [Bleak](https://github.com/hbldh/bleak)
 - Computer vision using [OpenCV](https://opencv.org/)
 

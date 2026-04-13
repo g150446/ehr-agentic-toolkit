@@ -10,7 +10,7 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 **What it does:**
 - Creates Python virtual environment (`venv/`)
-- Prefers Python 3.12/3.11 when available for MLX / RapidOCR compatibility
+- Prefers Python 3.12/3.11 when available for MLX / EasyOCR compatibility
 - Installs all dependencies from `requirements.txt`
 - Creates `.env` file from template if it doesn't exist
 - Creates output directories
@@ -65,7 +65,7 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 - Activates virtual environment
 - Sets `PYTHONPATH`
 - Runs `automation.history_panel_analyzer`
-- Compares RapidOCR full-image / RapidOCR + UI detection / EasyOCR full-image paths
+- Compares EasyOCR full-image / EasyOCR + UI detection paths
 - Infers a history ROI from date-like OCR anchors
 
 **Usage:**
@@ -88,7 +88,7 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 - Starts `mlx_vlm.server` on port **8181**
 - Uses `mlx-community/Qwen3.5-4B-MLX-4bit` by default, or `gemma` / any model ID you pass
 - Provides an OpenAI-compatible API (`/v1/chat/completions`) for local LLM inference on Apple Silicon
-- `automation.mlx_vlm_history` sends **image + RapidOCR candidate list**
+- `automation.mlx_vlm_history` sends **image + EasyOCR candidate list**
 - `automation.mlx_vlm_segment_probe` still uses text-only prompts
 
 **Usage:**

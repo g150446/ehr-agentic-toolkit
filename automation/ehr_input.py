@@ -21,7 +21,6 @@ from automation.config import load_config
 from automation.screen_analyzer import (
     capture_screen,
     load_ocr_reader,
-    load_rapidocr_reader,
     run_ocr,
 )
 from automation.gui_image_analyzer import find_textbox_right_of_label
@@ -30,9 +29,7 @@ from automation.local_segmentation import segment_japanese_text_locally
 
 
 def _load_ocr_engine(config):
-    if getattr(config, "ocr_backend", "rapidocr") == "easyocr":
-        return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
-    return load_rapidocr_reader(config.ocr_languages)
+    return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
 
 
 def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:

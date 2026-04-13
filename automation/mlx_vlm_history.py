@@ -1,10 +1,10 @@
-"""History date finder backed by RapidOCR + local mlx_vlm.server.
+"""History date finder backed by EasyOCR + local mlx_vlm.server.
 
-Runs full-image RapidOCR to collect date-like candidates, then asks a local
+Runs full-image EasyOCR to collect date-like candidates, then asks a local
 multimodal MLX VLM to pick the correct candidate using both:
 
 - the screenshot itself
-- the RapidOCR candidate list of (date text, position)
+- the EasyOCR candidate list of (date text, position)
 
 Usage:
     # Start mlx_vlm server first:
@@ -29,7 +29,7 @@ from typing import Optional, Tuple
 
 import cv2
 
-from automation.screen_analyzer import load_rapidocr_reader, run_ocr
+from automation.screen_analyzer import load_ocr_reader, run_ocr
 
 
 MLX_VLM_HISTORY_URL = os.getenv(
@@ -112,7 +112,7 @@ def _build_prompt(date_str: str, candidates: list[tuple[int, str, int, int]]) ->
     day_fmt = f"{day:02d}日 または {day}日"
 
     return (
-        f"以下は電子カルテ画面の画像と、RapidOCR が抽出した日付候補リストです。\n"
+        f"以下は電子カルテ画面の画像と、EasyOCR が抽出した日付候補リストです。\n"
         f"画像を見て文字を読み取り、OCR誤認識を補正しながら選んでください。\n"
         f"座標は候補リストにだけ書かれています。\n\n"
         f"【探す日付】{year}年 {month_fmt} {day_fmt}\n"
@@ -175,7 +175,7 @@ def _parse_candidate_index(content: str) -> Optional[int]:
 
 
 def _run_full_image_ocr(image, languages: list[str] | None = None) -> list[tuple]:
-    reader = load_rapidocr_reader(languages or ["ja", "en"])
+    reader = load_ocr_reader(languages or ["ja", "en"])
     return run_ocr(reader, image)
 
 
@@ -326,7 +326,7 @@ def find_history_date_in_image(
     url: str = MLX_VLM_HISTORY_URL,
     timeout: float = MLX_VLM_HISTORY_TIMEOUT,
 ) -> Optional[Tuple[int, int]]:
-    """Run full-image RapidOCR, then identify the target history date."""
+    """Run full-image EasyOCR, then identify the target history date."""
     ocr_results = _run_full_image_ocr(image, languages)
     return find_history_date_with_vlm(
         date_str,
