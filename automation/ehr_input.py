@@ -18,7 +18,11 @@ from typing import Optional
 import numpy as np
 
 from automation.config import load_config
-from automation.screen_analyzer import capture_screen, load_rapidocr_reader, run_ocr
+from automation.screen_analyzer import (
+    capture_screen,
+    load_paddleocr_reader,
+    run_ocr,
+)
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
 from automation.local_segmentation import segment_japanese_text_locally
@@ -155,7 +159,7 @@ def open_test_patient_chart() -> None:
     if frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    ocr_reader = load_rapidocr_reader()
+    ocr_reader = load_paddleocr_reader(config.ocr_languages)
     results = run_ocr(ocr_reader, frame)
 
     tab_x: Optional[int] = None
@@ -228,7 +232,7 @@ def close_record() -> None:
     if frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    ocr_reader = load_rapidocr_reader()
+    ocr_reader = load_paddleocr_reader(config.ocr_languages)
     results = run_ocr(ocr_reader, frame)
 
     # 「取り消し」テキストを含む結果を検索
@@ -283,13 +287,11 @@ def click_history(date_str: str) -> None:
     if frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    ocr_reader = load_rapidocr_reader()
-    results = run_ocr(ocr_reader, frame)
-
     try:
-        from automation.mlx_vlm_history import find_history_date_with_vlm, MlxVlmHistoryError
+        from automation.mlx_vlm_history import MlxVlmHistoryError, find_history_date_in_image
 
-        coords = find_history_date_with_vlm(date_str, results)
+        ocr_languages = getattr(config, "ocr_languages", ["ja", "en"])
+        coords = find_history_date_in_image(date_str, frame, languages=ocr_languages)
     except MlxVlmHistoryError as exc:
         raise RuntimeError(f"過去カルテ日付の検出に失敗しました: {exc}") from exc
 
@@ -479,7 +481,7 @@ def type_kanji_via_ime(
 
     client = _wait_for_ble_connected()
 
-    ocr_reader = load_rapidocr_reader()
+    ocr_reader = load_paddleocr_reader(config.ocr_languages)
 
     # ベースフレームをキャプチャ（差分検出のフォールバック用）
     print("ベースフレームをキャプチャ中...")
@@ -610,7 +612,7 @@ def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
     # IME インジケーターは画面下部に存在する（タスクバー高さ 80px、全幅でスキャン）
     roi = frame[max(0, h - 80):h, :]
 
-    ocr_reader = load_rapidocr_reader()
+    ocr_reader = load_paddleocr_reader(config.ocr_languages)
     results = run_ocr(ocr_reader, roi)
     texts = "".join(text for (_, text, _) in results)
     print(f"  [IME検出] OCR結果: {texts!r}")

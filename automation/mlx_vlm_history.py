@@ -49,7 +49,7 @@ class MlxVlmHistoryError(RuntimeError):
 def _date_matches_text(text: str, year: int, month: int, day: int) -> bool:
     """OCRテキストが指定年月日を含むか正規表現で検証する。
 
-    RapidOCRの既知誤読パターンを許容:
+    OCRの既知誤読パターンを許容:
     - 1桁月に "1" または "日" が前置される (4月→14月, 4月→日4月)
     - 数字 "8" が漢字 "日" と誤認識される
     - 1桁日の先頭ゼロが省略される
@@ -250,6 +250,32 @@ def find_history_date_with_vlm(
 
     print(f"VLM特定: {text!r} at ({cx},{cy})")
     return (cx, cy)
+
+
+def find_history_date_in_image(
+    date_str: str,
+    image,
+    *,
+    languages: list[str] | None = None,
+    model: str = MLX_VLM_HISTORY_MODEL,
+    url: str = MLX_VLM_HISTORY_URL,
+    timeout: float = MLX_VLM_HISTORY_TIMEOUT,
+) -> Optional[Tuple[int, int]]:
+    """Run full-image PaddleOCR, then identify the target history date from OCR results."""
+    from automation.screen_analyzer import load_paddleocr_reader, run_ocr
+
+    actual_languages = languages or ["ja", "en"]
+    reader = load_paddleocr_reader(actual_languages)
+    ocr_results = run_ocr(reader, image)
+    return find_history_date_with_vlm(
+        date_str,
+        ocr_results,
+        model=model,
+        url=url,
+        timeout=timeout,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point for testing against a saved image."""
     args = sys.argv[1:] if argv is None else argv
@@ -276,15 +302,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"timeout: {MLX_VLM_HISTORY_TIMEOUT:g}秒\n")
 
     import cv2
-    from automation.screen_analyzer import load_rapidocr_reader, run_ocr
 
     image = cv2.imread(image_path)
     if image is None:
         print(f"❌ 画像を読み込めません: {image_path}")
         return 1
 
+    from automation.screen_analyzer import load_paddleocr_reader, run_ocr
+
     print("OCR実行中...")
-    reader = load_rapidocr_reader()
+    reader = load_paddleocr_reader(['ja', 'en'])
     ocr_results = run_ocr(reader, image)
     print(f"OCR結果: {len(ocr_results)} セグメント\n")
 

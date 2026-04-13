@@ -51,8 +51,7 @@ class AutomationConfig:
         self.capture_width = int(os.getenv('CAPTURE_WIDTH', '1920'))
         self.capture_height = int(os.getenv('CAPTURE_HEIGHT', '1080'))
 
-        # DocLayout-YOLO Configuration
-        self.doclayout_model_path = os.getenv('DOCLAYOUT_MODEL_PATH', './DocLayout-YOLO/models/doclayout.pt')
+        # Detection Configuration (used by UI detection model and analysis helpers)
         self.detection_confidence = float(os.getenv('DETECTION_CONFIDENCE', '0.2'))
         self.detection_image_size = int(os.getenv('DETECTION_IMAGE_SIZE', '1024'))
         self.detection_device = os.getenv('DETECTION_DEVICE', 'auto')
@@ -60,12 +59,12 @@ class AutomationConfig:
         # OCR Configuration
         ocr_languages = os.getenv('OCR_LANGUAGES', 'ja,en')
         self.ocr_languages = [lang.strip() for lang in ocr_languages.split(',')]
-        # Default backend: rapidocr (ONNX-based, faster on CPU/M1). Set OCR_BACKEND=easyocr to use EasyOCR.
-        self.ocr_backend = os.getenv('OCR_BACKEND', 'rapidocr')
+        # Default backend: PaddleOCR. Use PP-OCRv4 where supported; Japanese falls back to PP-OCRv5.
+        self.ocr_backend = os.getenv('OCR_BACKEND', 'paddleocr')
         # Detection mode: 'yolo' (UI element detection first, then per-element OCR) or 'ocr' (full-image OCR only)
         # yolo mode is more reliable for menus/tab bars where OCR merges adjacent items into one segment.
         self.detection_mode = os.getenv('DETECTION_MODE', 'yolo')
-        # For EasyOCR: auto-enable MPS on Apple Silicon if not overridden via env var
+        # For EasyOCR only: auto-enable MPS on Apple Silicon if not overridden via env var
         try:
             import torch
             _mps_available = torch.backends.mps.is_available()
@@ -100,10 +99,6 @@ class AutomationConfig:
         if not skip_password and not self.password:
             errors.append("WINDOWS_LOGIN_PASSWORD is not set")
 
-        model_path = Path(self.doclayout_model_path)
-        if not model_path.exists():
-            errors.append(f"DocLayout-YOLO model not found: {self.doclayout_model_path}")
-
         if self.retry_count < 0:
             errors.append(f"LOGIN_RETRY_COUNT must be non-negative: {self.retry_count}")
 
@@ -123,7 +118,7 @@ class AutomationConfig:
             f"  password={'*' * len(self.password) if self.password else 'NOT SET'},\n"
             f"  debug_mode={self.debug_mode},\n"
             f"  capture_device={self.capture_device_index},\n"
-            f"  model_path={self.doclayout_model_path},\n"
+            f"  ocr_backend={self.ocr_backend},\n"
             f"  output_dir={self.output_dir}\n"
             f")"
         )

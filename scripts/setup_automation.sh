@@ -11,10 +11,20 @@ echo "=========================================="
 echo "EHR AI Bridge Toolkit - Automation Setup"
 echo "=========================================="
 
+if command -v python3.12 >/dev/null 2>&1; then
+    PYTHON_BIN="python3.12"
+elif command -v python3.11 >/dev/null 2>&1; then
+    PYTHON_BIN="python3.11"
+else
+    PYTHON_BIN="python3"
+fi
+
+echo "Using Python interpreter: $PYTHON_BIN"
+
 # Check if venv exists
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
-    python3 -m venv venv
+    "$PYTHON_BIN" -m venv venv
 fi
 
 # Activate venv
@@ -29,16 +39,6 @@ pip install --upgrade pip
 echo "Installing dependencies..."
 pip install -r requirements.txt
 
-# Install DocLayout-YOLO
-echo "Installing DocLayout-YOLO..."
-cd DocLayout-YOLO
-pip install -e .
-cd ..
-
-# Install EasyOCR
-echo "Installing EasyOCR..."
-pip install easyocr
-
 # Create .env if it doesn't exist
 if [ ! -f ".env" ]; then
     echo "Creating .env file from template..."
@@ -49,30 +49,10 @@ if [ ! -f ".env" ]; then
     echo ""
 fi
 
-# Create models directory
-mkdir -p DocLayout-YOLO/models
-
-# Download model if it doesn't exist
-if [ ! -f "DocLayout-YOLO/models/doclayout.pt" ]; then
-    echo "Downloading DocLayout-YOLO model..."
-    python3 << 'EOF'
-import sys
-sys.path.insert(0, './DocLayout-YOLO')
-try:
-    from doclayout_yolo import YOLOv10
-    print("Loading model from HuggingFace...")
-    model = YOLOv10.from_pretrained("juliozhao/DocLayout-YOLO-DocStructBench")
-    model.save("DocLayout-YOLO/models/doclayout.pt")
-    print("✓ Model saved to DocLayout-YOLO/models/doclayout.pt")
-except Exception as e:
-    print(f"Warning: Could not download model: {e}")
-    print("You can download it manually or skip model-based features.")
-EOF
-fi
-
 # Create output directories
 mkdir -p automation_outputs/screenshots
 mkdir -p automation_outputs/logs
+mkdir -p automation_outputs/history_panel_analysis
 
 echo ""
 echo "=========================================="

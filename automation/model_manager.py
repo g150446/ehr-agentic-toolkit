@@ -1,12 +1,11 @@
 """
 Model Manager for YOLO Model Switching
 
-This module provides a unified interface for switching between multiple YOLO models:
-- DocLayout-YOLO: Document layout detection
-- YOLOv11: UI element detection (foduucom/web-form-ui-field-detection)
+This module provides a unified interface for the YOLO UI detection model
+(`foduucom/web-form-ui-field-detection`).
 
-The ModelManager handles lazy loading, model switching, and provides a unified
-detection interface that abstracts away model-specific differences.
+The ModelManager handles lazy loading and provides a unified
+detection interface for the UI detection model.
 """
 
 import logging
@@ -19,7 +18,6 @@ logger = logging.getLogger("model_manager")
 
 class ModelType(Enum):
     """Supported YOLO model types"""
-    DOCLAYOUT = "doclayout"
     UI_DETECTION = "ui-detection"
 
 
@@ -44,10 +42,7 @@ class DetectionResult:
 
 class ModelManager:
     """
-    Manages multiple YOLO models with unified interface.
-
-    Provides lazy loading, model switching, and unified detection interface
-    that works with both DocLayout-YOLO and YOLOv11 models.
+    Manages the YOLO UI detection model with a unified interface.
     """
 
     def __init__(self, config):
@@ -59,32 +54,9 @@ class ModelManager:
         """
         self.config = config
         self.current_model_type = ModelType.UI_DETECTION
-        self.doclayout_model = None
         self.ui_detection_model = None
 
         logger.info("Model Manager initialized")
-
-    def load_doclayout_model(self):
-        """
-        Load DocLayout-YOLO model (lazy loading).
-
-        Returns:
-            Loaded DocLayout-YOLO model instance
-        """
-        if self.doclayout_model is None:
-            logger.info("Loading DocLayout-YOLO model...")
-            try:
-                from automation.screen_analyzer import load_yolo_model
-                self.doclayout_model = load_yolo_model(
-                    self.config.doclayout_model_path,
-                    self.config.detection_device
-                )
-                logger.info("DocLayout-YOLO model loaded successfully")
-            except Exception as e:
-                logger.error(f"Failed to load DocLayout-YOLO model: {e}")
-                raise
-
-        return self.doclayout_model
 
     def load_ui_detection_model(self):
         """
@@ -163,21 +135,12 @@ class ModelManager:
         Returns:
             List of DetectionResult objects
         """
-        if self.current_model_type == ModelType.DOCLAYOUT:
-            model = self.load_doclayout_model()
-            results = model.predict(
-                image,
-                imgsz=self.config.detection_image_size,
-                conf=confidence,
-                verbose=False
-            )
-        else:
-            model = self.load_ui_detection_model()
-            results = model.predict(
-                image,
-                conf=confidence,
-                verbose=False
-            )
+        model = self.load_ui_detection_model()
+        results = model.predict(
+            image,
+            conf=confidence,
+            verbose=False
+        )
 
         # Convert to unified format
         detections = []

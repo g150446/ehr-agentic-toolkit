@@ -6,19 +6,18 @@ numpy>=1.21.0
 torch>=2.0.0
 torchvision>=0.15.0
 
-# DocLayout-YOLO
-ultralytics>=8.0.0
-# Install DocLayout-YOLO from local directory:
-# pip install -e ./DocLayout-YOLO
-
 # YOLOv8 UI Detection (for browser assistant)
 ultralyticsplus>=0.0.28
 
 # OCR
 pykakasi>=2.2.0  # Japanese kanji/kana to romaji conversion
+sudachipy>=0.6.10
+sudachidict_core>=20241021
+paddlepaddle>=3.2.0
+paddleocr>=3.4.0
+paddlex[ocr]>=3.4.3
 easyocr>=1.7.0
 pillow>=9.0.0
-rapidocr>=3.5.0  # Fast ONNX-based OCR with Japanese support (alternative to EasyOCR)
 
 # BLE Communication (for Windows login automation)
 bleak>=0.21.1

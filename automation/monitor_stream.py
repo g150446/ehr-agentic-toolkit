@@ -32,11 +32,11 @@ from typing import Optional, List, Tuple
 # Import automation modules
 from automation.config import load_config, AutomationConfig
 from automation.screen_analyzer import (
-    load_yolo_model,
     analyze_layout,
     visualize_detections,
     DetectedRegion
 )
+from automation.model_manager import ModelManager
 from automation.utils import (
     setup_logging,
     save_debug_image
@@ -70,6 +70,7 @@ class StreamMonitor:
         # Resources (lazy-loaded)
         self.capture = None
         self.yolo_model = None
+        self.model_manager = None
 
         # FPS tracking (rolling 30-frame average)
         self.frame_times = deque(maxlen=30)
@@ -126,12 +127,11 @@ class StreamMonitor:
             Loaded YOLO model
         """
         if self.yolo_model is None:
-            logger.info("Loading DocLayout-YOLO model...")
+            logger.info("Loading UI detection model...")
             try:
-                self.yolo_model = load_yolo_model(
-                    self.config.doclayout_model_path,
-                    self.config.detection_device
-                )
+                if self.model_manager is None:
+                    self.model_manager = ModelManager(self.config)
+                self.yolo_model = self.model_manager.load_ui_detection_model()
                 logger.info("YOLO model loaded successfully")
             except Exception as e:
                 logger.error(f"Failed to load YOLO model: {e}")

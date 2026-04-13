@@ -26,8 +26,8 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 | Component | Status | Description |
 |-----------|--------|-------------|
 | **HDMI Capture** | ✅ **Complete** | Real-time video capture from MiraBox/compatible devices |
-| **DocLayout-YOLO** | ✅ **Complete** | Document layout detection and UI element recognition |
-| **OCR (RapidOCR/EasyOCR)** | ✅ **Complete** | Multi-language text extraction (Japanese, English); RapidOCR default for M1 speed |
+| **Layout Analysis (PP-Structure)** | 🔄 **In Progress** | Evaluating PP-Structure for EHR layout parsing |
+| **OCR (PaddleOCR/EasyOCR)** | ✅ **Complete** | Multi-language text extraction (Japanese, English); PaddleOCR default |
 | **Stream Monitor** | ✅ **Complete** | Interactive HDMI capture monitor with detection overlay |
 | **ESP32 BLE Control** | ✅ **Complete** | Keyboard/mouse HID emulation over Bluetooth |
 | **BLE Test CLI** | ✅ **Complete** | Interactive testing tool for ESP32 keyboard/mouse |
@@ -115,20 +115,12 @@ nano .env  # Configure your settings
 git clone https://github.com/g150446/ehr-agentic-toolkit.git
 cd ehr-agentic-toolkit
 
-# Create virtual environment
-python3 -m venv venv
+# Create virtual environment (Python 3.12 recommended for Paddle)
+python3.12 -m venv venv
 source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Install DocLayout-YOLO
-cd DocLayout-YOLO
-pip install -e .
-cd ..
-
-# Install EasyOCR
-pip install easyocr
 
 # Create .env file
 cp .env.example .env
@@ -189,6 +181,24 @@ python scripts/capture_windows.py myshot
 ```
 
 **出力先:** すべての画像は `captures/` ディレクトリに保存されます。
+
+---
+
+### 過去カルテ列の OCR / レイアウト比較
+
+保存画像に対して、過去カルテ列向けの **OCR アンカー ROI 推定** と **OCR / レイアウト戦略比較** を実行できます。
+
+```bash
+./scripts/run_history_panel_analyzer.sh captures/0410.jpg --date 20260410
+```
+
+このコマンドは次を比較します。
+
+- PaddleOCR + 全画面 OCR
+- PaddleOCR + UI detection OCR
+- PP-StructureV3 + Paddle OCR
+
+出力は `automation_outputs/history_panel_analysis/<run-name>/` に保存されます。
 
 ---
 
@@ -293,31 +303,12 @@ export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
 python -m automation.monitor_stream
 ```
 
-#### "No module named 'doclayout_yolo'"
+#### "No module named 'paddleocr'"
 
-**Solution:** Install DocLayout-YOLO in your virtual environment:
+**Solution:** Install PaddlePaddle and PaddleOCR in a supported Python environment:
 ```bash
 source venv/bin/activate
-cd DocLayout-YOLO
-pip install -e .
-cd ..
-```
-
-Or run the setup script:
-```bash
-./scripts/setup_automation.sh
-```
-
-#### "Configuration error: DocLayout-YOLO model not found"
-
-**Solution:** Download the pre-trained model:
-```bash
-source venv/bin/activate
-python3 -c "
-from doclayout_yolo import YOLOv10
-model = YOLOv10.from_pretrained('juliozhao/DocLayout-YOLO-DocStructBench')
-model.save('DocLayout-YOLO/models/doclayout.pt')
-"
+python -m pip install paddlepaddle==3.2.0 paddleocr==3.4.0
 ```
 
 #### ESP32 Not Connecting
@@ -420,8 +411,8 @@ This software is provided for research and development purposes. It is not a med
 ## 🙏 Acknowledgments
 
 - Built with [Anthropic Claude](https://www.anthropic.com/claude)
-- Document layout analysis powered by [DocLayout-YOLO](https://github.com/opendatalab/DocLayout-YOLO)
-- OCR powered by [EasyOCR](https://github.com/JaidedAI/EasyOCR)
+- Layout parsing powered by [PaddleOCR / PP-Structure](https://www.paddleocr.ai/)
+- OCR powered by [PaddleOCR](https://www.paddleocr.ai/)
 - BLE communication using [Bleak](https://github.com/hbldh/bleak)
 - Computer vision using [OpenCV](https://opencv.org/)
 

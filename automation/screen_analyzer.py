@@ -1,7 +1,7 @@
 """
 Screen Analyzer module for Windows login automation.
 
-Handles screen capture, DocLayout-YOLO detection, and OCR text extraction
+Handles screen capture, UI element detection, and OCR text extraction
 to locate password fields and other UI elements.
 """
 
@@ -10,12 +10,6 @@ import logging
 import numpy as np
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
-import ssl
-
-# Fix SSL certificate issue for EasyOCR model download
-ssl._create_default_https_context = ssl._create_unverified_context
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -87,43 +81,6 @@ def capture_screen(device_index: int = 0, width: int = 1920, height: int = 1080)
         return None
 
 
-def load_yolo_model(model_path: str, device: str = "auto"):
-    """
-    Load DocLayout-YOLO model.
-
-    Args:
-        model_path: Path to YOLO model file (.pt)
-        device: Device to use ('cpu', 'cuda', 'mps', 'auto')
-
-    Returns:
-        Loaded YOLO model
-    """
-    try:
-        from doclayout_yolo import YOLOv10
-
-        logger.info(f"Loading YOLO model from {model_path}...")
-
-        # Auto-detect device
-        if device == "auto":
-            import torch
-            if torch.cuda.is_available():
-                device = "cuda"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
-            logger.info(f"Auto-selected device: {device}")
-
-        model = YOLOv10(model_path)
-        model.to(device)  # Explicitly set device
-        logger.info(f"YOLO model loaded successfully on {device}")
-        return model
-
-    except Exception as e:
-        logger.error(f"Failed to load YOLO model: {e}")
-        raise
-
-
 _ocr_reader_cache: dict = {}
 
 
@@ -157,50 +114,118 @@ def load_ocr_reader(languages: List[str] = ['ja', 'en'], use_gpu: bool = False):
         raise
 
 
-def load_rapidocr_reader():
-    """
-    Load RapidOCR reader with Japanese model (ONNX Runtime backend).
+def _resolve_paddle_lang(languages: List[str]) -> str:
+    if "ja" in languages:
+        return "japan"
+    if "en" in languages:
+        return "en"
+    return "japan"
 
-    Uses PP-OCRv4 Japan model — faster than EasyOCR on CPU/M1 via ONNX Runtime.
-    Result is cached so repeated calls are instant.
+
+def _resolve_paddle_ocr_version(lang: str) -> str:
+    # PaddleOCR 3.4 exposes PP-OCRv4 only for Chinese/English.
+    # Japanese uses the available PP-OCRv5 models instead of failing at runtime.
+    if lang in {"ch", "en"}:
+        return "PP-OCRv4"
+    return "PP-OCRv5"
+
+
+def load_paddleocr_reader(languages: List[str] = ['ja', 'en']):
+    """
+    Load PaddleOCR reader (cached).
+
+    Uses the best available Paddle OCR model for the requested language:
+    PP-OCRv4 for supported languages, otherwise PP-OCRv5.
 
     Returns:
-        RapidOCR engine instance
+        PaddleOCR instance
     """
-    cache_key = ('rapidocr',)
+    lang = _resolve_paddle_lang(languages)
+    ocr_version = _resolve_paddle_ocr_version(lang)
+    cache_key = ('paddleocr', tuple(languages), ocr_version)
     if cache_key in _ocr_reader_cache:
-        logger.debug("Returning cached RapidOCR reader")
+        logger.debug("Returning cached PaddleOCR reader")
         return _ocr_reader_cache[cache_key]
 
     try:
-        from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
+        import os
 
-        logger.info("Loading RapidOCR (ONNX, PP-OCRv4 Japan)...")
-        engine = RapidOCR(params={
-            "Rec.ocr_version": OCRVersion.PPOCRV4,
-            "Rec.engine_type": EngineType.ONNXRUNTIME,
-            "Rec.lang_type": LangRec.JAPAN,
-            "Rec.model_type": ModelType.MOBILE,
-        })
-        logger.info("RapidOCR loaded successfully")
-        _ocr_reader_cache[cache_key] = engine
-        return engine
+        os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        from paddleocr import PaddleOCR
+
+        logger.info(f"Loading PaddleOCR ({ocr_version}, lang={lang})...")
+        reader = PaddleOCR(
+            lang=lang,
+            ocr_version=ocr_version,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            return_word_box=True,
+        )
+        logger.info("PaddleOCR loaded successfully")
+        _ocr_reader_cache[cache_key] = reader
+        return reader
 
     except Exception as e:
-        logger.error(f"Failed to load RapidOCR: {e}")
+        logger.error(f"Failed to load PaddleOCR: {e}")
         raise
+
+
+def load_ppstructure_reader(languages: List[str] = ['ja', 'en']):
+    """
+    Load PP-StructureV3 reader (cached).
+
+    Returns:
+        PP-StructureV3 instance configured for layout parsing + OCR.
+    """
+    lang = _resolve_paddle_lang(languages)
+    ocr_version = _resolve_paddle_ocr_version(lang)
+    cache_key = ('ppstructure', tuple(languages), ocr_version)
+    if cache_key in _ocr_reader_cache:
+        logger.debug("Returning cached PP-StructureV3 reader")
+        return _ocr_reader_cache[cache_key]
+
+    try:
+        import os
+
+        os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        from paddleocr import PPStructureV3
+
+        logger.info(f"Loading PP-StructureV3 ({ocr_version}, lang={lang})...")
+        reader = PPStructureV3(
+            lang=lang,
+            ocr_version=ocr_version,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            use_seal_recognition=False,
+            use_table_recognition=False,
+            use_formula_recognition=False,
+            use_chart_recognition=False,
+            use_region_detection=False,
+            format_block_content=False,
+        )
+        logger.info("PP-StructureV3 loaded successfully")
+        _ocr_reader_cache[cache_key] = reader
+        return reader
+
+    except Exception as e:
+        logger.error(f"Failed to load PP-StructureV3: {e}")
+        raise
+
+
+def _extract_paddle_result_data(result_obj):
+    if hasattr(result_obj, "json"):
+        return result_obj.json.get("res", {})
+    if isinstance(result_obj, dict):
+        return result_obj
+    return {}
 
 
 def run_ocr_word_split(reader, image: np.ndarray, gap_ratio: float = 1.5) -> List[tuple]:
     """
-    Run RapidOCR with character-level boxes, then split merged lines into separate
-    segments wherever horizontal gap between characters exceeds gap_ratio × avg char width.
-
-    This solves the case where a horizontal menu bar like
-    "受付患者一覧　予約患者一覧　枠別予約患者一覧" is returned as one segment.
-    Each menu item is returned as a separate (bbox, text, confidence) tuple.
-
-    Only supported for the RapidOCR backend.  Falls back to run_ocr() for EasyOCR.
+    Run OCR and, when Paddle word boxes are available, split merged lines into smaller
+    segments based on the per-word boxes returned by PaddleOCR.
 
     Args:
         reader: RapidOCR engine instance
@@ -211,60 +236,36 @@ def run_ocr_word_split(reader, image: np.ndarray, gap_ratio: float = 1.5) -> Lis
         List of (bbox, text, confidence) tuples, one per detected word/phrase segment
     """
     if type(reader).__name__ == 'Reader':
-        # EasyOCR — fall back to standard readtext
         return reader.readtext(image)
-
-    import cv2 as _cv2
-    image_rgb = _cv2.cvtColor(image, _cv2.COLOR_BGR2RGB)
-    result = reader(image_rgb, return_word_box=True)
-
-    if result is None or result.word_results is None:
+    if type(reader).__name__ != 'PaddleOCR':
         return []
 
+    result_list = reader.predict(image, return_word_box=True)
+    if not result_list:
+        return []
+    result = _extract_paddle_result_data(result_list[0])
+    words = result.get("text_word") or []
+    word_boxes = result.get("text_word_boxes") or []
+    word_scores = result.get("rec_scores") or []
+    if not words or not word_boxes:
+        return run_ocr(reader, image)
+
     output = []
-    for line_chars in result.word_results:
-        if not line_chars:
+    for idx, (word_group, box_group) in enumerate(zip(words, word_boxes)):
+        if not word_group or not box_group:
             continue
 
-        # Compute average character width for this line
-        char_widths = []
-        for char, conf, box in line_chars:
-            x_coords = [p[0] for p in box]
-            char_widths.append(max(x_coords) - min(x_coords))
-        avg_w = sum(char_widths) / len(char_widths) if char_widths else 1
+        if isinstance(word_group, str):
+            word_group = [word_group]
+        if box_group and isinstance(box_group[0][0], (int, float)):
+            box_group = [box_group]
 
-        # Group characters into segments by gap
-        segments = []   # each segment: list of (char, conf, box)
-        current = [line_chars[0]]
-
-        for i in range(1, len(line_chars)):
-            prev_box = line_chars[i - 1][2]
-            curr_box = line_chars[i][2]
-            prev_x2 = max(p[0] for p in prev_box)
-            curr_x1 = min(p[0] for p in curr_box)
-            gap = curr_x1 - prev_x2
-
-            if gap > gap_ratio * avg_w:
-                segments.append(current)
-                current = [line_chars[i]]
-            else:
-                current.append(line_chars[i])
-
-        segments.append(current)
-
-        # Convert each segment to (bbox, text, confidence)
-        for seg in segments:
-            text = ''.join(c[0] for c in seg)
-            conf = sum(c[1] for c in seg) / len(seg)
-
-            all_points = [p for c in seg for p in c[2]]
-            x_min = min(p[0] for p in all_points)
-            y_min = min(p[1] for p in all_points)
-            x_max = max(p[0] for p in all_points)
-            y_max = max(p[1] for p in all_points)
-            bbox = [[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]]
-
-            output.append((bbox, text, float(conf)))
+        line_score = float(word_scores[idx]) if idx < len(word_scores) else 1.0
+        for word, box in zip(word_group, box_group):
+            if not word:
+                continue
+            norm_box = [[int(point[0]), int(point[1])] for point in box]
+            output.append((norm_box, word, line_score))
 
     return output
 
@@ -274,29 +275,59 @@ def run_ocr(reader, image: np.ndarray) -> List[tuple]:
     Run OCR on an image, normalizing output to EasyOCR-compatible format.
 
     Args:
-        reader: EasyOCR reader or RapidOCR engine instance
+        reader: EasyOCR reader or PaddleOCR instance
         image: Input image as numpy array (BGR)
 
     Returns:
         List of (bbox, text, confidence) tuples where bbox is [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
     """
-    # Detect backend by class name to avoid importing both
     reader_type = type(reader).__name__
 
     if reader_type == 'Reader':
-        # EasyOCR
         return reader.readtext(image)
 
-    # RapidOCR
-    import cv2 as _cv2
-    image_rgb = _cv2.cvtColor(image, _cv2.COLOR_BGR2RGB)
-    result = reader(image_rgb)
-    if result is None or result.boxes is None:
+    if reader_type != 'PaddleOCR':
         return []
+
+    result_list = reader.predict(image)
+    if not result_list:
+        return []
+    result = _extract_paddle_result_data(result_list[0])
+    polys = result.get("rec_polys") or result.get("dt_polys") or []
+    texts = result.get("rec_texts") or []
+    scores = result.get("rec_scores") or []
+
     output = []
-    for box, text, score in zip(result.boxes, result.txts, result.scores):
-        # box is ndarray shape (4, 2) — same layout as EasyOCR bbox
-        output.append((box.tolist(), text, float(score) if score is not None else 0.0))
+    for box, text, score in zip(polys, texts, scores):
+        norm_box = [[int(point[0]), int(point[1])] for point in box]
+        output.append((norm_box, text, float(score) if score is not None else 0.0))
+    return output
+
+
+def run_ppstructure_ocr(reader, image: np.ndarray) -> List[tuple]:
+    """
+    Run PP-StructureV3 and normalize parsed blocks to OCR-like tuples.
+
+    Returns:
+        List of (bbox, text, confidence) tuples using each parsed block's bounding box
+        and aggregated block content.
+    """
+    result_list = reader.predict(image)
+    if not result_list:
+        return []
+    result_obj = result_list[0]
+    result = _extract_paddle_result_data(result_obj)
+    parsing_res_list = result.get("parsing_res_list") or []
+
+    output = []
+    for block in parsing_res_list:
+        text = (block.get("block_content") or "").strip()
+        bbox = block.get("block_bbox")
+        if not text or not bbox or len(bbox) != 4:
+            continue
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        poly = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        output.append((poly, text, 1.0))
     return output
 
 

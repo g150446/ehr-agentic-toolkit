@@ -1,16 +1,17 @@
 """
 Windows Login Automation Package
 
-Automates Windows PC login using HDMI screen capture, DocLayout-YOLO detection,
-EasyOCR text extraction, and ESP32 BLE keyboard/mouse control.
+Automates Windows PC login using HDMI screen capture, OCR text extraction,
+and ESP32 BLE keyboard/mouse control.
 """
 
 from automation.config import AutomationConfig, load_config
 from automation.ble_controller import BLEController
 from automation.screen_analyzer import (
     capture_screen,
-    load_yolo_model,
     load_ocr_reader,
+    load_paddleocr_reader,
+    load_ppstructure_reader,
     analyze_layout,
     extract_text,
     find_password_field,
@@ -39,8 +40,9 @@ __all__ = [
 
     # Screen Analysis
     "capture_screen",
-    "load_yolo_model",
     "load_ocr_reader",
+    "load_paddleocr_reader",
+    "load_ppstructure_reader",
     "analyze_layout",
     "extract_text",
     "find_password_field",

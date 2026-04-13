@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import automation.ehr_input as ehr_input
 import automation.mlx_vlm_history as mlx_vlm_history
+import automation.screen_analyzer as screen_analyzer
 
 
 def test_date_matches_text_accepts_extra_leading_one_for_10th_day():
@@ -37,7 +38,6 @@ def test_find_history_date_with_vlm_prefers_topmost_match_when_multiple_rows_mat
 
 def test_click_history_uses_mlx_vlm_ocr_pipeline(monkeypatch):
     frame = object()
-    ocr_results = [("bbox", "text", 1.0)]
     events = []
 
     class FakeClient:
@@ -60,24 +60,15 @@ def test_click_history_uses_mlx_vlm_ocr_pipeline(monkeypatch):
             capture_device_index=0,
             capture_width=1920,
             capture_height=1080,
+            detection_confidence=0.2,
         ),
     )
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
-    monkeypatch.setattr(ehr_input, "load_rapidocr_reader", lambda: "reader")
-    monkeypatch.setattr(
-        ehr_input,
-        "run_ocr",
-        lambda reader, image: ocr_results if reader == "reader" and image is frame else None,
-    )
     monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: FakeClient())
     monkeypatch.setattr(
         mlx_vlm_history,
-        "find_history_date_with_vlm",
-        lambda date_str, actual_results, **kwargs: (
-            (335, 924)
-            if date_str == "20260410" and actual_results == ocr_results
-            else None
-        ),
+        "find_history_date_in_image",
+        lambda date_str, image, **kwargs: (335, 924) if date_str == "20260410" and image is frame else None,
     )
 
     ehr_input.click_history("20260410")
@@ -95,14 +86,13 @@ def test_click_history_surfaces_mlx_vlm_errors(monkeypatch):
             capture_device_index=0,
             capture_width=1920,
             capture_height=1080,
+            detection_confidence=0.2,
         ),
     )
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
-    monkeypatch.setattr(ehr_input, "load_rapidocr_reader", lambda: "reader")
-    monkeypatch.setattr(ehr_input, "run_ocr", lambda reader, image: [("ignored", "ignored", 1.0)])
     monkeypatch.setattr(
         mlx_vlm_history,
-        "find_history_date_with_vlm",
+        "find_history_date_in_image",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             mlx_vlm_history.MlxVlmHistoryError("server unavailable")
         ),
@@ -114,3 +104,29 @@ def test_click_history_surfaces_mlx_vlm_errors(monkeypatch):
         assert str(exc) == "過去カルテ日付の検出に失敗しました: server unavailable"
     else:
         raise AssertionError("RuntimeError was not raised")
+
+
+def test_find_history_date_in_image_uses_full_image_paddleocr(monkeypatch):
+    frame = object()
+    ocr_results = [("full", "full", 1.0)]
+
+    monkeypatch.setattr(
+        screen_analyzer,
+        "load_paddleocr_reader",
+        lambda languages: "reader",
+    )
+    monkeypatch.setattr(
+        screen_analyzer,
+        "run_ocr",
+        lambda reader, image: ocr_results if reader == "reader" and image is frame else None,
+    )
+    monkeypatch.setattr(
+        mlx_vlm_history,
+        "find_history_date_with_vlm",
+        lambda date_str, actual_results, **kwargs: (
+            (335, 753) if actual_results == ocr_results and date_str == "20260312"
+            else None
+        ),
+    )
+
+    assert mlx_vlm_history.find_history_date_in_image("20260312", frame) == (335, 753)

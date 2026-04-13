@@ -10,11 +10,10 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 **What it does:**
 - Creates Python virtual environment (`venv/`)
+- Prefers Python 3.12/3.11 when available for Paddle compatibility
 - Installs all dependencies from `requirements.txt`
-- Installs DocLayout-YOLO in editable mode
-- Installs EasyOCR
+- Installs PaddlePaddle / PaddleOCR dependencies
 - Creates `.env` file from template if it doesn't exist
-- Downloads DocLayout-YOLO model
 - Creates output directories
 
 **Usage:**
@@ -56,6 +55,26 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 - **+/-** - Adjust confidence
 
 **Options:** See `./scripts/run_monitor.sh --help`
+
+---
+
+### `run_history_panel_analyzer.sh`
+
+**Purpose**: Compare OCR/layout strategies for the past-history panel on a saved screenshot
+
+**What it does:**
+- Activates virtual environment
+- Sets `PYTHONPATH`
+- Runs `automation.history_panel_analyzer`
+- Compares full-image PaddleOCR / UI detection / PP-Structure paths
+- Infers a history ROI from date-like OCR anchors
+
+**Usage:**
+```bash
+./scripts/run_history_panel_analyzer.sh captures/0410.jpg --date 20260410
+```
+
+**Output:** `automation_outputs/history_panel_analysis/<run-name>/`
 
 ---
 
