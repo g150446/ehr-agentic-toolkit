@@ -160,6 +160,20 @@ def _extract_response_content(result: dict) -> str:
     raise MlxVlmHistoryError(f"VLM応答に content テキストが含まれていません: {result!r}")
 
 
+def _parse_candidate_index(content: str) -> Optional[int]:
+    stripped = content.strip()
+    patterns = (
+        r"^(-?\d+)$",
+        r"^\[\s*(-?\d+)\s*\]$",
+        r"^候補\s*\[\s*(-?\d+)\s*\]$",
+    )
+    for pattern in patterns:
+        m = re.fullmatch(pattern, stripped)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def _run_full_image_ocr(image, languages: list[str] | None = None) -> list[tuple]:
     reader = load_rapidocr_reader(languages or ["ja", "en"])
     return run_ocr(reader, image)
@@ -278,13 +292,11 @@ def find_history_date_with_vlm(
 
     print(f"VLM応答: {content!r}")
 
-    m = re.search(r"-?\d+", content)
-    if not m:
-        raise MlxVlmHistoryError(
-            f"VLM応答から候補番号を抽出できませんでした: {content!r}"
-        )
+    pos_idx = _parse_candidate_index(content)
+    if pos_idx is None:
+        print(f"⚠️ VLM応答から候補番号を厳密抽出できませんでした: {content!r}")
+        return None
 
-    pos_idx = int(m.group())
     if pos_idx == -1:
         print("VLM: 該当エントリなし")
         return None

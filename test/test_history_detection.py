@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 import automation.ehr_input as ehr_input
 import automation.mlx_vlm_history as mlx_vlm_history
@@ -33,6 +34,38 @@ def test_find_history_date_with_vlm_prefers_topmost_match_when_multiple_rows_mat
     ]
 
     assert mlx_vlm_history.find_history_date_with_vlm("20260403", ocr_results) == (334, 654)
+
+
+def test_find_history_date_with_vlm_ignores_verbose_non_numeric_response(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "画像を確認すると、以下の候補が該当します。\n\n- 候補 [3]"
+                            }
+                        }
+                    ]
+                }
+            ).encode()
+
+    monkeypatch.setattr(mlx_vlm_history.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(mlx_vlm_history, "_encode_image_data_url", lambda image: "data:image/png;base64,abc")
+
+    ocr_results = [
+        ([[560, 20], [592, 20], [592, 42], [560, 42]], "1932（昭07）年10月13日", 0.90),
+        ([[290, 886], [380, 886], [380, 908], [290, 908]], "2026年03月02日13:20", 0.95),
+    ]
+
+    assert mlx_vlm_history.find_history_date_with_vlm("20260311", ocr_results, image=object()) is None
 
 
 def test_click_history_uses_mlx_vlm_ocr_pipeline(monkeypatch):
