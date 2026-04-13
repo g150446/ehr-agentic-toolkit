@@ -20,12 +20,11 @@ import numpy as np
 from automation.config import load_config
 from automation.screen_analyzer import (
     capture_screen,
-    load_paddleocr_reader,
-    run_ocr,
 )
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
 from automation.local_segmentation import segment_japanese_text_locally
+from automation.ocr_client import OCRServerError, request_ocr
 
 
 def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
@@ -62,6 +61,18 @@ def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
         "BLE サーバーが起動していないか、BLE デバイスへの接続がタイムアウトしました。\n"
         "  python -m automation.ble_server  を先に別ターミナルで実行してください"
     )
+
+
+def _request_ocr_results(frame, config) -> list[tuple]:
+    try:
+        return request_ocr(
+            frame,
+            languages=config.ocr_languages,
+            socket_path=config.ocr_server_socket_path,
+            timeout=config.ocr_server_timeout,
+        )
+    except OCRServerError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def input_text_to_field(
@@ -159,8 +170,7 @@ def open_test_patient_chart() -> None:
     if frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    ocr_reader = load_paddleocr_reader(config.ocr_languages)
-    results = run_ocr(ocr_reader, frame)
+    results = _request_ocr_results(frame, config)
 
     tab_x: Optional[int] = None
     tab_y: Optional[int] = None
@@ -232,8 +242,7 @@ def close_record() -> None:
     if frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    ocr_reader = load_paddleocr_reader(config.ocr_languages)
-    results = run_ocr(ocr_reader, frame)
+    results = _request_ocr_results(frame, config)
 
     # 「取り消し」テキストを含む結果を検索
     target_x: Optional[int] = None
@@ -291,7 +300,11 @@ def click_history(date_str: str) -> None:
         from automation.mlx_vlm_history import MlxVlmHistoryError, find_history_date_in_image
 
         ocr_languages = getattr(config, "ocr_languages", ["ja", "en"])
-        coords = find_history_date_in_image(date_str, frame, languages=ocr_languages)
+        coords = find_history_date_in_image(
+            date_str,
+            frame,
+            languages=ocr_languages,
+        )
     except MlxVlmHistoryError as exc:
         raise RuntimeError(f"過去カルテ日付の検出に失敗しました: {exc}") from exc
 
@@ -481,8 +494,6 @@ def type_kanji_via_ime(
 
     client = _wait_for_ble_connected()
 
-    ocr_reader = load_paddleocr_reader(config.ocr_languages)
-
     # ベースフレームをキャプチャ（差分検出のフォールバック用）
     print("ベースフレームをキャプチャ中...")
     base_frame = capture_screen(
@@ -524,7 +535,7 @@ def type_kanji_via_ime(
         combined = ""
 
         if roi is not None:
-            ocr_results = run_ocr(ocr_reader, roi)
+            ocr_results = _request_ocr_results(roi, config)
             texts = [text for (_, text, _) in ocr_results]
             combined = "".join(texts)
             # 日本語文字（漢字・ひらがな・カタカナ）が含まれない場合は誤検出とみなす
@@ -536,7 +547,7 @@ def type_kanji_via_ime(
             roi = _find_changed_region(base_frame, frame)
             source = "差分領域"
             if roi is not None:
-                ocr_results = run_ocr(ocr_reader, roi)
+                ocr_results = _request_ocr_results(roi, config)
                 texts = [text for (_, text, _) in ocr_results]
                 combined = "".join(texts)
 
@@ -612,8 +623,7 @@ def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
     # IME インジケーターは画面下部に存在する（タスクバー高さ 80px、全幅でスキャン）
     roi = frame[max(0, h - 80):h, :]
 
-    ocr_reader = load_paddleocr_reader(config.ocr_languages)
-    results = run_ocr(ocr_reader, roi)
+    results = _request_ocr_results(roi, config)
     texts = "".join(text for (_, text, _) in results)
     print(f"  [IME検出] OCR結果: {texts!r}")
 

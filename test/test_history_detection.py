@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import automation.ehr_input as ehr_input
 import automation.mlx_vlm_history as mlx_vlm_history
-import automation.screen_analyzer as screen_analyzer
 
 
 def test_date_matches_text_accepts_extra_leading_one_for_10th_day():
@@ -111,14 +110,9 @@ def test_find_history_date_in_image_uses_full_image_paddleocr(monkeypatch):
     ocr_results = [("full", "full", 1.0)]
 
     monkeypatch.setattr(
-        screen_analyzer,
-        "load_paddleocr_reader",
-        lambda languages: "reader",
-    )
-    monkeypatch.setattr(
-        screen_analyzer,
-        "run_ocr",
-        lambda reader, image: ocr_results if reader == "reader" and image is frame else None,
+        mlx_vlm_history,
+        "request_ocr",
+        lambda image, **kwargs: ocr_results if image is frame else None,
     )
     monkeypatch.setattr(
         mlx_vlm_history,
@@ -130,3 +124,58 @@ def test_find_history_date_in_image_uses_full_image_paddleocr(monkeypatch):
     )
 
     assert mlx_vlm_history.find_history_date_in_image("20260312", frame) == (335, 753)
+
+
+def test_open_test_patient_chart_uses_ocr_server(monkeypatch):
+    frame = object()
+    events = []
+
+    class FakeClient:
+        def switch_to_mouse_mode(self):
+            events.append("mouse")
+            return True
+
+        def move_mouse_to_position(self, x, y):
+            events.append(("move", x, y))
+            return True
+
+        def click(self):
+            events.append("click")
+            return True
+
+        def switch_to_keyboard_mode(self):
+            events.append("keyboard")
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(
+        ehr_input,
+        "load_config",
+        lambda skip_password=True: SimpleNamespace(
+            capture_device_index=0,
+            capture_width=1920,
+            capture_height=1080,
+            ocr_languages=["ja", "en"],
+            ocr_server_socket_path="/tmp/test-ocr.sock",
+            ocr_server_timeout=30,
+        ),
+    )
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_request_ocr_results",
+        lambda image, config: [
+            ([[70, 450], [90, 450], [90, 474], [70, 474]], "患者検索", 0.99),
+        ] if image is frame else [],
+    )
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: FakeClient())
+    monkeypatch.setattr(ehr_input, "input_text_to_field", lambda input_text, label: events.append(("input", input_text, label)))
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+
+    ehr_input.open_test_patient_chart()
+
+    assert ("move", 80, 462) in events
+    assert ("input", "tesuto", "フリガナ") in events

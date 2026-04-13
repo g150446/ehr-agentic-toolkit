@@ -19,6 +19,7 @@ from automation.screen_analyzer import (
     OCRResult,
     PasswordField
 )
+from automation.ocr_client import OCRClient, OCRServerError, request_ocr
 from automation.utils import (
     setup_logging,
     debug_pause,
@@ -49,6 +50,9 @@ __all__ = [
     "DetectedRegion",
     "OCRResult",
     "PasswordField",
+    "OCRClient",
+    "OCRServerError",
+    "request_ocr",
 
     # Utilities
     "setup_logging",

@@ -104,6 +104,29 @@ curl -s http://127.0.0.1:8181/v1/models
 
 ---
 
+### `start_ocr_server.sh`
+
+**Purpose**: Start the resident PaddleOCR server that keeps OCR models preloaded
+
+**What it does:**
+- Activates virtual environment
+- Sets `PYTHONPATH`
+- Runs `automation.ocr_server` — a long-running process that preloads PaddleOCR and listens on `/tmp/paddle_ocr_server.sock`
+- Reuses the same OCR process across `ehr_input.py` and `mlx_vlm_history.py`
+
+**Usage:**
+```bash
+./scripts/start_ocr_server.sh
+```
+
+Keep this running in a separate terminal before executing `automation.ehr_input` or `automation.mlx_vlm_history`.
+
+**Acceleration note:**
+- On the current macOS / PaddlePaddle build, Apple GPU / MPS is not exposed, so the OCR server runs on CPU.
+- The speedup comes from keeping PaddleOCR preloaded across requests rather than re-initializing it per process.
+
+---
+
 ### `start_ble_server.sh`
 
 **Purpose**: Start the resident BLE server that manages the ESP32 connection

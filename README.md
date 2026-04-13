@@ -202,6 +202,20 @@ python scripts/capture_windows.py myshot
 
 ---
 
+### 常駐 OCR サーバー
+
+PaddleOCR の初期化コストを毎回払わないように、automation では常駐 OCR サーバーを使えます。
+
+```bash
+./scripts/start_ocr_server.sh
+```
+
+`automation.ehr_input` と `automation.mlx_vlm_history` は、このサーバーへ OCR リクエストを送り、PaddleOCR モデルをプロセス内に保持したまま再利用します。
+
+**macOS note:** 現在の PaddlePaddle ビルドでは Apple GPU / MPS は使えず、OCR サーバーは CPU 動作です。高速化ポイントは GPU 化ではなく **モデルの事前ロード** です。
+
+---
+
 ### GUI Image Analyzer
 
 Analyze screenshots to find text coordinates and textbox positions for GUI automation.

@@ -71,6 +71,9 @@ class AutomationConfig:
         except Exception:
             _mps_available = False
         self.ocr_use_gpu = os.getenv('OCR_USE_GPU', 'true' if _mps_available else 'false').lower() == 'true'
+        self.ocr_server_socket_path = os.getenv('OCR_SERVER_SOCKET_PATH', '/tmp/paddle_ocr_server.sock')
+        self.ocr_server_timeout = float(os.getenv('OCR_SERVER_TIMEOUT', '120'))
+        self.ocr_server_device = os.getenv('OCR_SERVER_DEVICE', 'auto')
 
         # Output Paths
         self.output_dir = Path(os.getenv('LOGIN_OUTPUT_DIR', './automation_outputs'))
@@ -119,6 +122,7 @@ class AutomationConfig:
             f"  debug_mode={self.debug_mode},\n"
             f"  capture_device={self.capture_device_index},\n"
             f"  ocr_backend={self.ocr_backend},\n"
+            f"  ocr_server_socket_path={self.ocr_server_socket_path},\n"
             f"  output_dir={self.output_dir}\n"
             f")"
         )

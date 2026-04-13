@@ -30,6 +30,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
 
+from automation.ocr_client import OCRServerError, request_ocr
+
 
 MLX_VLM_HISTORY_URL = os.getenv(
     "MLX_VLM_HISTORY_URL",
@@ -261,12 +263,12 @@ def find_history_date_in_image(
     url: str = MLX_VLM_HISTORY_URL,
     timeout: float = MLX_VLM_HISTORY_TIMEOUT,
 ) -> Optional[Tuple[int, int]]:
-    """Run full-image PaddleOCR, then identify the target history date from OCR results."""
-    from automation.screen_analyzer import load_paddleocr_reader, run_ocr
-
+    """Run full-image OCR through the resident OCR server, then identify the target history date."""
     actual_languages = languages or ["ja", "en"]
-    reader = load_paddleocr_reader(actual_languages)
-    ocr_results = run_ocr(reader, image)
+    try:
+        ocr_results = request_ocr(image, languages=actual_languages)
+    except OCRServerError as exc:
+        raise MlxVlmHistoryError(str(exc)) from exc
     return find_history_date_with_vlm(
         date_str,
         ocr_results,
@@ -308,11 +310,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"❌ 画像を読み込めません: {image_path}")
         return 1
 
-    from automation.screen_analyzer import load_paddleocr_reader, run_ocr
-
     print("OCR実行中...")
-    reader = load_paddleocr_reader(['ja', 'en'])
-    ocr_results = run_ocr(reader, image)
+    try:
+        ocr_results = request_ocr(image, languages=["ja", "en"])
+    except OCRServerError as exc:
+        print(f"❌ OCR サーバーエラー: {exc}")
+        return 1
     print(f"OCR結果: {len(ocr_results)} セグメント\n")
 
     try:
