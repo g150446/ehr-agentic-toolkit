@@ -261,48 +261,17 @@ def close_record() -> None:
     print("完了")
 
 
-def _build_date_regex(year: int, month: int, day: int) -> re.Pattern:
-    """
-    年月日の OCR 誤読を許容する正規表現を生成する。
-
-    既知の誤読パターン:
-    - 1桁の月 (例: 4月) → OCR が "14月" と読む場合がある
-    - 数字 "8" → 漢字 "日" と視覚的に類似しているため誤認識される
-    - 1桁の日の先頭ゼロ (例: "08") → 省略される場合がある
-    """
-    # 月: 1桁の場合は先頭に "0"（ゼロ埋め）"1"（誤読）"日"（誤読）が付く場合を許容
-    # 例: 4月 → "04月"（ゼロ埋め）"14月"（1が付く）"日4月"（日が挿入）
-    month_p = f'[01日]?{month}' if month < 10 else str(month)
-
-    # 日: 各桁で "8" が "日" と誤読される場合を許容
-    def _dp(d: str) -> str:
-        return '[8日]' if d == '8' else re.escape(d)
-
-    if day < 10:
-        # "08日" → "0日日", "8日" など先頭ゼロが落ちる場合も許容
-        day_p = f'0?{_dp(str(day))}'
-    else:
-        day_p = ''.join(_dp(d) for d in f'{day:02d}')
-
-    return re.compile(f'{year}年{month_p}月{day_p}日')
-
-
 def click_history(date_str: str) -> None:
     """
-    過去カルテ列から指定日付のエントリを OCR で検出してクリックする。
+    過去カルテ列から指定日付のエントリを検出してクリックする。
 
-    VLM（mlx-community/gemma-4-e2b-it-4bit）を一次検索に使用する。
-    VLM サーバーが利用できない場合は正規表現フォールバックを使用する。
+    automation.mlx_vlm_history と同じ OCR→候補抽出→VLM 判定の経路を使用する。
 
     Args:
         date_str: 日付文字列 (yyyymmdd 形式, 例: "20190502")
     """
     if len(date_str) != 8 or not date_str.isdigit():
         raise ValueError(f"日付は yyyymmdd 形式で指定してください: {date_str!r}")
-
-    year = int(date_str[:4])
-    month = int(date_str[4:6])
-    day = int(date_str[6:8])
 
     config = load_config(skip_password=True)
     print(f"HDMIデバイス (index={config.capture_device_index}) からキャプチャ中...")
@@ -317,71 +286,18 @@ def click_history(date_str: str) -> None:
     ocr_reader = load_rapidocr_reader()
     results = run_ocr(ocr_reader, frame)
 
-    target_x: Optional[int] = None
-    target_y: Optional[int] = None
-
-    # --- VLM による一次検索 ---
     try:
         from automation.mlx_vlm_history import find_history_date_with_vlm, MlxVlmHistoryError
+
         coords = find_history_date_with_vlm(date_str, results)
-        if coords is None:
-            print(f"日付 {date_str} のエントリが画面上に見つかりませんでした")
-            return
-        target_x, target_y = coords
-    except Exception as exc:
-        print(f"VLM検索失敗: {exc}。正規表現フォールバックを使用します")
+    except MlxVlmHistoryError as exc:
+        raise RuntimeError(f"過去カルテ日付の検出に失敗しました: {exc}") from exc
 
-        # --- 正規表現フォールバック ---
-        date_regex = _build_date_regex(year, month, day)
-        print(f"日付マッチパターン: {date_regex.pattern}")
-
-        CONTEXT_KEYWORDS = ["診療記録", "内科", "外科", "整形", "皮膚", "眼科", "耳鼻", "小児"]
-        TIME_PATTERN = re.compile(r"\d{1,2}:\d{2}")
-
-        fallback_x: Optional[int] = None
-        fallback_y: Optional[int] = None
-
-        for bbox, text, conf in results:
-            if not date_regex.search(text):
-                continue
-
-            xs = [p[0] for p in bbox]
-            ys = [p[1] for p in bbox]
-            cx = int(sum(xs) / len(xs))
-            cy = int(sum(ys) / len(ys))
-
-            has_context = (
-                any(kw in text for kw in CONTEXT_KEYWORDS)
-                or bool(TIME_PATTERN.search(text))
-            )
-
-            if has_context:
-                target_x, target_y = cx, cy
-                print(f"過去カルテ日付検出(コンテキスト一致): {text!r} at ({cx}, {cy}), conf={conf:.2f}")
-                break
-
-            if fallback_x is None:
-                row_context = any(
-                    (any(kw in t for kw in CONTEXT_KEYWORDS) or bool(TIME_PATTERN.search(t)))
-                    and abs(int(sum(p[1] for p in b) / len(b)) - cy) <= 15
-                    for b, t, _ in results
-                )
-                if row_context:
-                    target_x, target_y = cx, cy
-                    print(f"過去カルテ日付検出(同行コンテキスト): {text!r} at ({cx}, {cy}), conf={conf:.2f}")
-                    break
-                fallback_x, fallback_y = cx, cy
-                print(f"日付候補(コンテキスト不明): {text!r} at ({cx}, {cy}), conf={conf:.2f}")
-
-        if target_x is None and fallback_x is not None:
-            print("⚠️ コンテキスト付きエントリが見つかりません。フォールバックを使用します")
-            target_x, target_y = fallback_x, fallback_y
-
-        if target_x is None or target_y is None:
-            raise RuntimeError(f"日付 {date_str} のエントリが画面上に見つかりませんでした")
-
-    if target_x is None or target_y is None:
+    if coords is None:
+        print(f"日付 {date_str} のエントリが画面上に見つかりませんでした")
         return
+
+    target_x, target_y = coords
 
     client = _wait_for_ble_connected()
 

@@ -1,4 +1,4 @@
-"""MLX-VLM based history date finder for EHR click automation.
+"""Text-only history date finder backed by local mlx_vlm.server.
 
 Sends OCR candidate text (no image) to a local mlx_vlm server
 (gemma-4-e2b-it-4bit) and asks it to identify which OCR segment
@@ -6,7 +6,9 @@ corresponds to the target date in the 過去カルテ column.
 
 Image is omitted intentionally: the OCR text already contains all date
 information, and text-only prompts produce more reliable results than
-image+text for small VLMs on this structured matching task.
+image+text for small VLMs on this structured matching task. The server
+implementation comes from ``mlx_vlm.server``, but this module uses it as
+a text-only chat completion endpoint.
 
 Usage:
     # Start mlx_vlm server first:
@@ -51,13 +53,19 @@ def _date_matches_text(text: str, year: int, month: int, day: int) -> bool:
     - 1桁月に "1" または "日" が前置される (4月→14月, 4月→日4月)
     - 数字 "8" が漢字 "日" と誤認識される
     - 1桁日の先頭ゼロが省略される
+    - 10-19日の先頭 "1" が重複する (10日→110日)
     """
     def _dp(d: str) -> str:
         return '[8日]' if d == '8' else re.escape(d)
 
     # 1桁月: 前に "0"（ゼロ埋め03月）"1"（誤読14月）"日"（誤読日4月）が付く場合を許容
     month_p = f'[01日]?{month}' if month < 10 else str(month)
-    day_p = f'0?{_dp(str(day))}' if day < 10 else ''.join(_dp(d) for d in f'{day:02d}')
+    if day < 10:
+        day_p = f'0?{_dp(str(day))}'
+    else:
+        day_s = f'{day:02d}'
+        day_core = ''.join(_dp(d) for d in day_s)
+        day_p = f'1?{day_core}' if day_s.startswith('1') else day_core
     pattern = re.compile(f'{year}年{month_p}月{day_p}日')
     return bool(pattern.search(text))
 
@@ -131,7 +139,7 @@ def find_history_date_with_vlm(
         date_str:    Target date in yyyymmdd format (e.g. "20260312").
         ocr_results: List of (bbox, text, conf) from run_ocr().
         model:       mlx_vlm model identifier.
-        url:         mlx_vlm server endpoint.
+        url:         Text-only chat completion endpoint served by mlx_vlm.server.
         timeout:     Request timeout in seconds.
 
     Returns:
@@ -166,8 +174,12 @@ def find_history_date_with_vlm(
         print(f"正規表現で一意特定: {text!r} at ({cx},{cy})")
         return (cx, cy)
 
-    # Step 2: 0件または複数件 → VLM に問い合わせる
-    # 正規表現一致がある場合はその候補のみ渡す（ない場合は全候補）
+    if len(regex_matched) > 1:
+        _, text, cx, cy = min(regex_matched, key=lambda item: (item[3], item[2]))
+        print(f"複数一致のため最上段を採用: {text!r} at ({cx},{cy})")
+        return (cx, cy)
+
+    # Step 2: 0件 → VLM に問い合わせる
     vlm_candidates = regex_matched if regex_matched else all_candidates
     prompt = _build_prompt(date_str, [(0, text, cx, cy) for _, text, cx, cy in vlm_candidates])
 
@@ -238,8 +250,6 @@ def find_history_date_with_vlm(
 
     print(f"VLM特定: {text!r} at ({cx},{cy})")
     return (cx, cy)
-
-
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point for testing against a saved image."""
     args = sys.argv[1:] if argv is None else argv

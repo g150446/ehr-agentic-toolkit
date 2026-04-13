@@ -23,6 +23,7 @@ from automation.ble_controller import BLEController
 from automation.config import AutomationConfig
 
 SOCKET_PATH = "/tmp/ble_server.sock"
+BLE_HEALTH_CHECK_INTERVAL = 3.0
 
 
 async def dispatch(ble: BLEController, req: dict) -> dict:
@@ -111,6 +112,26 @@ async def disconnect_and_exit_loop(
     stop_event.set()
 
 
+async def monitor_ble_connection(
+    ble: BLEController,
+    disconnect_event: asyncio.Event,
+    stop_event: asyncio.Event,
+    interval: float = BLE_HEALTH_CHECK_INTERVAL,
+) -> None:
+    """BLE 接続状態を定期監視し、callback が来ない切断も検知する。"""
+    while not stop_event.is_set():
+        await asyncio.sleep(interval)
+        if stop_event.is_set():
+            return
+        if ble.is_connected():
+            continue
+        if disconnect_event.is_set():
+            return
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE 接続監視で切断を検知しました。")
+        disconnect_event.set()
+        return
+
+
 async def main() -> None:
     config = AutomationConfig()
     ble = BLEController(
@@ -157,10 +178,18 @@ async def main() -> None:
         disconnect_task = asyncio.create_task(
             disconnect_and_exit_loop(disconnect_event, stop_event)
         )
+        watchdog_task = asyncio.create_task(
+            monitor_ble_connection(ble, disconnect_event, stop_event)
+        )
         await stop_event.wait()
         disconnect_task.cancel()
+        watchdog_task.cancel()
         try:
             await disconnect_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await watchdog_task
         except asyncio.CancelledError:
             pass
 

@@ -63,19 +63,20 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 ### `start_mlx_vlm_server.sh`
 
-**Purpose**: Start mlx_vlm inference server for Japanese text segmentation
+**Purpose**: Start the local `mlx_vlm.server` process used as a text-only chat completion endpoint
 
 **What it does:**
 - Activates virtual environment
 - Starts `mlx_vlm.server` on port **8181** with `mlx-community/gemma-4-e2b-it-4bit`
 - Provides an OpenAI-compatible API (`/v1/chat/completions`) for local LLM inference on Apple Silicon
+- In this repository, callers use that endpoint with text prompts only; image payloads are not sent in the current history-matching and segmentation flows
 
 **Usage:**
 ```bash
 bash scripts/start_mlx_vlm_server.sh
 ```
 
-Keep this running in a separate terminal before using `automation.mlx_vlm_segment_probe`.
+Keep this running in a separate terminal before using `automation.mlx_vlm_segment_probe` or `automation.mlx_vlm_history`.
 
 **Verify server is up:**
 ```bash
@@ -101,16 +102,16 @@ curl -s http://127.0.0.1:8181/v1/models
 Keep this running in a separate terminal before executing `ehr_input.py` or any other client that uses `BLEClient`.
 
 **Auto-reconnect behavior:**
-- When the BLE connection drops unexpectedly, the server logs the disconnection with a timestamp and waits 60 seconds before retrying.
-- If reconnection fails, it retries again every 60 seconds until successful or until the server is stopped.
-- Stop the server with **Ctrl+C** or SIGTERM; the server reconnects gracefully without losing the socket.
+- When the BLE connection drops unexpectedly, the server exits and `start_ble_server.sh` restarts it after about 3 seconds.
+- `automation.ble_server` now watches the connection both via the BLE disconnect callback and via a periodic health check, so sleep/resume cases that miss the callback can still be recovered.
+- Stop the server with **Ctrl+C** or SIGTERM to end the restart loop.
 
 Example output on disconnection and recovery:
 ```
 [2026-04-10 10:23:45] BLE デバイスが切断されました。
-[2026-04-10 10:23:45] BLE 切断を検知。60秒後に再接続を試みます...
-[2026-04-10 10:24:45] 再接続中...
-[2026-04-10 10:24:52] 再接続成功: AA:BB:CC:DD:EE:FF
+[2026-04-10 10:23:45] BLE 切断を検知。サーバーをシャットダウンします（start_ble_server.sh が再起動します）...
+[2026-04-10 10:23:48] BLE サーバーが終了しました (exit code: 0)。3秒後に再起動します...
+[2026-04-10 10:23:51] 接続成功: AA:BB:CC:DD:EE:FF
 ```
 
 ---
