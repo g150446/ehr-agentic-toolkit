@@ -106,9 +106,8 @@ class BLEController:
             await self.client.connect()
 
             if self.client.is_connected:
-                # Bleak 3.x does not auto-discover services on macOS;
-                # explicit discovery is required before write_gatt_char.
-                await self.client.get_services()
+                # In Bleak 3.x on macOS, CoreBluetooth discovers services
+                # automatically during connect(); no explicit call needed.
                 logger.info(f"Successfully connected to {self.device_name}")
                 return True
             else:
