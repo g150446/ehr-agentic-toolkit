@@ -207,7 +207,18 @@ python scripts/capture_windows.py myshot
 ./scripts/start_mlx_vlm_server.sh qwen
 ```
 
-`automation.mlx_vlm_history` と `automation.ehr_input "click history ..."` は、EasyOCR で抽出した候補と画像自体を `mlx_vlm.server` へ送り、Qwen 3.5 4B MLX に候補番号を選ばせます。
+`automation.mlx_vlm_history` と `automation.ehr_input "click history ..."` は、Qwen 3.5 4B MLX に**過去カルテ欄の日付一覧を上から順に読ませ**、対象日付の順位を決めます。EasyOCR は候補位置の推定と、その順位に対応するクリック座標の補助にのみ使います。
+
+> **既知の問題**: `click_history` / `mlx_vlm_history` は、過去カルテ欄の日付誤選択がまだ残っており、現時点では未解決です。
+
+### EHR Input でテキストファイルを入力
+
+`automation.ehr_input` は通常の文章だけでなく、**テキストファイルのパス**も受け取れます。読み取り可能なファイルが指定された場合、その内容を既存の日本語/英語/混在入力フローで遠隔キーボード送信します。
+
+```bash
+python -m automation.ehr_input data/patient_records/asthma_1.txt
+python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
+```
 
 ---
 

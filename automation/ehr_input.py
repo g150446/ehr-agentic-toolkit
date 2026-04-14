@@ -13,6 +13,7 @@ import re
 import tempfile
 import os
 import time
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -70,6 +71,39 @@ def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
 
 def _request_ocr_results(frame, config) -> list[tuple]:
     return run_ocr(_load_ocr_engine(config), frame)
+
+
+def _resolve_text_argument(raw: str) -> str:
+    """Resolve a CLI text argument, loading file contents when given a path."""
+    candidate_path = Path(raw)
+    if not candidate_path.is_file():
+        return raw
+
+    try:
+        text = candidate_path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"テキストファイルを UTF-8 として読めませんでした: {candidate_path}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"テキストファイルを読めませんでした: {candidate_path}") from exc
+
+    resolved = text.rstrip("\r\n")
+    print(f"テキストファイル読込: {candidate_path}")
+    return resolved
+
+
+def _input_resolved_text(text: str) -> None:
+    """Route already-resolved text through the existing input pipeline."""
+    if _is_japanese(text):
+        if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
+            romaji = _kanji_to_romaji(text)
+            print(f"IME変換: {romaji} → {text}")
+            type_kanji_via_ime(romaji, text)
+        else:
+            type_japanese_sentence(text)
+        return
+
+    print(f"英語入力: {text!r}")
+    _type_english_text(text)
 
 
 def input_text_to_field(
@@ -851,35 +885,16 @@ def _run_cli(args: list[str]) -> int:
         return 0
 
     if len(args) == 1:
-        text = args[0]
-        if _is_japanese(text):
-            # 日本語または混在テキスト → 文節分割して IME 変換
-            # 短い純日本語単語（4文字以下かつ助詞なし）は単一変換で高速化
-            if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
-                romaji = _kanji_to_romaji(text)
-                print(f"IME変換: {romaji} → {text}")
-                type_kanji_via_ime(romaji, text)
-            else:
-                type_japanese_sentence(text)
-        else:
-            # 英数字のみ → 英数字モードで直接入力
-            print(f"英語入力: {text!r}")
-            _type_english_text(text)
+        text = _resolve_text_argument(args[0])
+        _input_resolved_text(text)
         return 0
 
     if len(args) >= 2 and args[0] == "open test":
         # 第一引数が "open test"、第二引数がテキスト → カルテ開いてから入力
-        text = args[1]
+        text = _resolve_text_argument(args[1])
         print(f"テスト患者カルテを開いてから入力: {text!r}")
         open_test_patient_chart()
-        if _is_japanese(text):
-            if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
-                romaji = _kanji_to_romaji(text)
-                type_kanji_via_ime(romaji, text)
-            else:
-                type_japanese_sentence(text)
-        else:
-            _type_english_text(text)
+        _input_resolved_text(text)
         return 0
 
     print("使い方:")
@@ -889,9 +904,11 @@ def _run_cli(args: list[str]) -> int:
     print('  python -m automation.ehr_input "click history 20190502"  # 過去カルテの指定日付をクリック')
     print('  python -m automation.ehr_input "edit history 20190502"   # 過去カルテ日付クリック後に修正ボタンをクリック')
     print('  python -m automation.ehr_input 肺炎                    # IME変換のみ')
+    print('  python -m automation.ehr_input note.txt                # テキストファイル内容を入力')
     print('  python -m automation.ehr_input "COVID-19の検査"        # 日英混在入力')
     print('  python -m automation.ehr_input tesuto                  # 英語直接入力')
     print('  python -m automation.ehr_input "open test" 肺炎        # カルテを開いてからIME変換')
+    print('  python -m automation.ehr_input "open test" note.txt    # カルテを開いてからファイル内容を入力')
     print('  python -m automation.ehr_input "open test" "MRI所見"   # カルテを開いてから混在入力')
     return 1
 

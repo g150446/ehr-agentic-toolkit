@@ -59,6 +59,7 @@ def test_find_history_date_with_vlm_ignores_verbose_non_numeric_response(monkeyp
 
     monkeypatch.setattr(mlx_vlm_history.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
     monkeypatch.setattr(mlx_vlm_history, "_encode_image_data_url", lambda image: "data:image/png;base64,abc")
+    monkeypatch.setattr(mlx_vlm_history, "_build_history_crop", lambda image, candidates: image)
 
     ocr_results = [
         ([[560, 20], [592, 20], [592, 42], [560, 42]], "1932（昭07）年10月13日", 0.90),
@@ -66,6 +67,51 @@ def test_find_history_date_with_vlm_ignores_verbose_non_numeric_response(monkeyp
     ]
 
     assert mlx_vlm_history.find_history_date_with_vlm("20260311", ocr_results, image=object()) is None
+
+
+def test_find_history_date_with_vlm_maps_qwen_date_rank_to_easyocr_coords(monkeypatch):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "{\"dates\": [\"20260408\", \"20260407\", \"20260404\", \"20260401\"]}"
+                            }
+                        }
+                    ]
+                }
+            ).encode()
+
+    monkeypatch.setattr(mlx_vlm_history.urllib.request, "urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(mlx_vlm_history, "_encode_image_data_url", lambda image: "data:image/png;base64,abc")
+    monkeypatch.setattr(mlx_vlm_history, "_build_history_crop", lambda image, candidates: image)
+
+    ocr_results = [
+        ([[280, 586], [336, 586], [336, 608], [280, 608]], "2026年』月の日", 0.91),
+        ([[305, 694], [361, 694], [361, 716], [305, 716]], "2026年ざ月昭日 15.52", 0.92),
+        ([[280, 804], [336, 804], [336, 826], [280, 826]], "2026年』月の日", 0.93),
+        ([[280, 917], [336, 917], [336, 939], [280, 939]], "2026年74月1日", 0.94),
+    ]
+
+    assert mlx_vlm_history.find_history_date_with_vlm("20260408", ocr_results, image=object()) == (308, 597)
+
+
+def test_parse_ordered_dates_normalizes_japanese_date_strings():
+    content = '{"dates": ["2026年4月8日", "2026年04月07日", "20260406"]}'
+
+    assert mlx_vlm_history._parse_ordered_dates(content) == [
+        "20260408",
+        "20260407",
+        "20260406",
+    ]
 
 
 def test_load_ocr_engine_uses_easyocr_reader(monkeypatch):

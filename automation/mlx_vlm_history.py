@@ -1,10 +1,9 @@
 """History date finder backed by EasyOCR + local mlx_vlm.server.
 
-Runs full-image EasyOCR to collect date-like candidates, then asks a local
-multimodal MLX VLM to pick the correct candidate using both:
-
-- the screenshot itself
-- the EasyOCR candidate list of (date text, position)
+Runs full-image EasyOCR to collect coordinate anchors for date-like rows, then
+asks a local multimodal MLX VLM to read the visible history dates in top-to-
+bottom order from the screenshot itself. EasyOCR data is used only to estimate
+clickable positions and row ordering.
 
 Usage:
     # Start mlx_vlm server first:
@@ -28,7 +27,6 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
-
 from automation.screen_analyzer import load_ocr_reader, run_ocr
 
 
@@ -72,11 +70,11 @@ def _date_matches_text(text: str, year: int, month: int, day: int) -> bool:
 
 
 def _build_candidates(ocr_results: list) -> list[tuple[int, str, int, int]]:
-    """Filter OCR results to date entries likely in the 過去カルテ column.
+    """Collect coordinate anchors for rows likely to contain history dates.
 
     Returns list of (list_index, text, cx, cy).
-    Only includes segments that contain ALL of 年・月・日 (full date pattern),
-    and excludes the 簡略化履歴一覧 column (x < 200) and far-right menu (x > 1500).
+    The OCR text is retained for local debugging, but downstream VLM prompting
+    uses only candidate coordinates so date recognition comes from the image.
     """
     candidates = []
     for idx, (bbox, text, conf) in enumerate(ocr_results):
@@ -85,47 +83,43 @@ def _build_candidates(ocr_results: list) -> list[tuple[int, str, int, int]]:
         cx = int((min(xs) + max(xs)) / 2)
         cy = int((min(ys) + max(ys)) / 2)
 
-        # Exclude left column (簡略化履歴一覧) and far-right menu
-        if cx < 200 or cx > 1500:
+        # Exclude left column (簡略化履歴一覧), right-side notes, and the header area.
+        if cx < 200 or cx > 700 or cy < 250:
             continue
 
-        # Only include segments containing 年・月・日 all three (full date pattern)
-        if "年" in text and "月" in text and "日" in text:
+        marker_count = sum(marker in text for marker in ("年", "月", "日"))
+        digit_count = sum(ch.isdigit() for ch in text)
+
+        # Keep broad "date-like" anchors; VLM decides the actual date from image.
+        if marker_count >= 2 or ("年" in text and digit_count >= 4) or digit_count >= 6:
             candidates.append((idx, text, cx, cy))
 
     return candidates
 
 
-def _build_prompt(date_str: str, candidates: list[tuple[int, str, int, int]]) -> str:
-    """Build the multimodal VLM prompt for identifying the target date entry."""
+def _build_prompt(date_str: str, candidate_count: int) -> str:
+    """Build the multimodal prompt for ordered history-date reading."""
     year = int(date_str[:4])
     month = int(date_str[4:6])
     day = int(date_str[6:8])
-
-    entries = "\n".join(
-        f"  [{pos}] x={cx}, y={cy}: {text!r}"
-        for pos, (_, text, cx, cy) in enumerate(candidates)
-    )
 
     # ゼロ埋め・ゼロなし両方の表記を提示する
     month_fmt = f"{month:02d}月 または {month}月"
     day_fmt = f"{day:02d}日 または {day}日"
 
     return (
-        f"以下は電子カルテ画面の画像と、EasyOCR が抽出した日付候補リストです。\n"
-        f"画像を見て文字を読み取り、OCR誤認識を補正しながら選んでください。\n"
-        f"座標は候補リストにだけ書かれています。\n\n"
+        f"以下は電子カルテの過去カルテ欄を切り出した画像です。\n"
+        f"画像を見て、過去カルテ欄に表示されている日付の一覧を上から下へ順番どおりに作成してください。\n"
+        f"EasyOCR 候補数は {candidate_count} 件ですが、OCR 文字は信用しなくてよいです。\n\n"
         f"【探す日付】{year}年 {month_fmt} {day_fmt}\n"
         f"（ゼロ埋めの有無は問いません。例: 3月2日 と 03月02日 は同じ日付です）\n\n"
-        f"候補リスト:\n"
-        f"{entries}\n\n"
         f"ルール:\n"
-        f"- 画像と候補リストの両方を見て、探す日付と同じ年・月・日の候補番号のみを返してください。\n"
-        f"- OCR文字列が少し壊れていても、画像上で同じ日付だと読めるなら選んでください。\n"
-        f"- 年・月・日のいずれか一つでも違う候補は選ばないでください。\n"
-        f"- 探す日付と一致する候補が一つもない場合は、必ず -1 を返してください。\n"
-        f"- 近い日付や似た日付を選ぶことは禁止です。完全一致のみ有効です。\n"
-        f"数字のみで回答してください（例: 3 または -1）。"
+        f"- 日付の読み取りは画像だけを根拠にしてください。\n"
+        f"- 時刻や本文は無視し、各行の日付だけを 1 つずつ返してください。\n"
+        f"- OCR由来の画像なので一部欠けやノイズがあっても、画像上で最も自然に読める日付へ補正してください。\n"
+        f"- 探す日付と一致しない近い日付へ寄せてはいけません。\n"
+        f"- 日付が 1 件も読めない場合は空配列を返してください。\n"
+        f"JSON のみで回答してください。形式は {{\"dates\": [\"2026年4月8日\", \"2026年4月7日\"]}} です。"
     )
 
 
@@ -135,6 +129,22 @@ def _encode_image_data_url(image) -> str:
         raise MlxVlmHistoryError("VLM送信用の画像エンコードに失敗しました")
     b64 = base64.b64encode(encoded.tobytes()).decode("ascii")
     return f"data:image/png;base64,{b64}"
+
+
+def _build_history_crop(image, candidates: list[tuple[int, str, int, int]]):
+    height, width = image.shape[:2]
+    xs = [cx for _, _, cx, _ in candidates]
+    ys = [cy for _, _, _, cy in candidates]
+
+    x1 = max(min(xs) - 160, 0)
+    x2 = min(max(xs) + 320, width)
+    y1 = max(min(ys) - 140, 0)
+    y2 = min(max(ys) + 80, height)
+
+    if x2 <= x1 or y2 <= y1:
+        raise MlxVlmHistoryError("過去カルテ欄の画像切り出しに失敗しました")
+
+    return image[y1:y2, x1:x2].copy()
 
 
 def _extract_response_content(result: dict) -> str:
@@ -160,18 +170,45 @@ def _extract_response_content(result: dict) -> str:
     raise MlxVlmHistoryError(f"VLM応答に content テキストが含まれていません: {result!r}")
 
 
-def _parse_candidate_index(content: str) -> Optional[int]:
+def _parse_ordered_dates(content: str) -> Optional[list[str]]:
     stripped = content.strip()
-    patterns = (
-        r"^(-?\d+)$",
-        r"^\[\s*(-?\d+)\s*\]$",
-        r"^候補\s*\[\s*(-?\d+)\s*\]$",
-    )
-    for pattern in patterns:
-        m = re.fullmatch(pattern, stripped)
-        if m:
-            return int(m.group(1))
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        dates = parsed.get("dates")
+        if isinstance(dates, list) and all(isinstance(item, str) for item in dates):
+            normalized = [_normalize_vlm_date(item) for item in dates]
+            return [item for item in normalized if item is not None]
+
+    if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+        normalized = [_normalize_vlm_date(item) for item in parsed]
+        return [item for item in normalized if item is not None]
+
+    matches = re.findall(r"\b(20\d{6})\b", stripped)
+    if matches:
+        return matches
     return None
+
+
+def _normalize_vlm_date(text: str) -> Optional[str]:
+    direct = re.search(r"\b(20\d{6})\b", text)
+    if direct:
+        return direct.group(1)
+
+    match = re.search(r"(20\d{2})\D{0,3}(\d{1,2})\D{0,3}(\d{1,2})", text)
+    if not match:
+        return None
+
+    year = int(match.group(1))
+    month = int(match.group(2))
+    day = int(match.group(3))
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return None
+    return f"{year:04d}{month:02d}{day:02d}"
 
 
 def _run_full_image_ocr(image, languages: list[str] | None = None) -> list[tuple]:
@@ -216,45 +253,46 @@ def find_history_date_with_vlm(
     for pos, (_, text, cx, cy) in enumerate(all_candidates):
         print(f"  [{pos}] ({cx},{cy}) {text!r}")
 
-    # Step 1: 正規表現で日付が一致する候補に絞り込む
-    regex_matched = [
-        (pos, text, cx, cy)
-        for pos, (_, text, cx, cy) in enumerate(all_candidates)
-        if _date_matches_text(text, year, month, day)
-    ]
-    print(f"正規表現一致: {len(regex_matched)} 件")
-
-    if len(regex_matched) == 1:
-        # 1件のみ → VLM 不要、直接採用
-        _, text, cx, cy = regex_matched[0]
-        print(f"正規表現で一意特定: {text!r} at ({cx},{cy})")
-        return (cx, cy)
-
-    if len(regex_matched) > 1:
-        _, text, cx, cy = min(regex_matched, key=lambda item: (item[3], item[2]))
-        print(f"複数一致のため最上段を採用: {text!r} at ({cx},{cy})")
-        return (cx, cy)
-
-    # Step 2: 0件 → VLM に問い合わせる
     if image is None:
-        raise MlxVlmHistoryError("VLM fallback には元画像が必要です")
+        regex_matched = [
+            (pos, text, cx, cy)
+            for pos, (_, text, cx, cy) in enumerate(all_candidates)
+            if _date_matches_text(text, year, month, day)
+        ]
+        print(f"正規表現一致: {len(regex_matched)} 件")
+        if len(regex_matched) == 1:
+            _, text, cx, cy = regex_matched[0]
+            print(f"正規表現で一意特定: {text!r} at ({cx},{cy})")
+            return (cx, cy)
+        if len(regex_matched) > 1:
+            _, text, cx, cy = min(regex_matched, key=lambda item: (item[3], item[2]))
+            print(f"複数一致のため最上段を採用: {text!r} at ({cx},{cy})")
+            return (cx, cy)
+        raise MlxVlmHistoryError("画像なしでは対象日付を一意に判定できませんでした")
 
-    vlm_candidates = regex_matched if regex_matched else all_candidates
-    prompt = _build_prompt(date_str, [(0, text, cx, cy) for _, text, cx, cy in vlm_candidates])
+    print("画像優先モード: 日付一覧の読取りは VLM に委譲します")
+    vlm_candidates = sorted(all_candidates, key=lambda item: (item[3], item[2]))
+    prompt = _build_prompt(date_str, len(vlm_candidates))
+    history_crop = _build_history_crop(image, vlm_candidates)
 
     payload = {
         "model": model,
+        "temperature": 0,
         "messages": [
+            {
+                "role": "system",
+                "content": "Read the visible history dates from the image and reply with JSON only.",
+            },
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": _encode_image_data_url(image)}},
+                    {"type": "image_url", "image_url": {"url": _encode_image_data_url(history_crop)}},
                 ],
             }
         ],
         "stream": False,
-        "max_tokens": 16,
+        "max_tokens": 128,
     }
 
     req = urllib.request.Request(
@@ -292,28 +330,30 @@ def find_history_date_with_vlm(
 
     print(f"VLM応答: {content!r}")
 
-    pos_idx = _parse_candidate_index(content)
-    if pos_idx is None:
-        print(f"⚠️ VLM応答から候補番号を厳密抽出できませんでした: {content!r}")
+    ordered_dates = _parse_ordered_dates(content)
+    if ordered_dates is None:
+        print(f"⚠️ VLM応答から日付一覧を抽出できませんでした: {content!r}")
         return None
 
-    if pos_idx == -1:
+    print(f"VLM日付一覧: {ordered_dates}")
+    if not ordered_dates:
         print("VLM: 該当エントリなし")
         return None
 
-    if pos_idx < 0 or pos_idx >= len(vlm_candidates):
-        raise MlxVlmHistoryError(
-            f"VLM応答の番号 {pos_idx} が候補範囲外です (0-{len(vlm_candidates)-1}): {content!r}"
-        )
-
-    _, text, cx, cy = vlm_candidates[pos_idx]
-
-    # VLM の選択を正規表現で最終検証
-    if not _date_matches_text(text, year, month, day):
-        print(f"⚠️ VLMが選んだ候補 {text!r} は {date_str} と一致しません（無効）")
+    try:
+        rank = ordered_dates.index(date_str)
+    except ValueError:
+        print(f"VLM日付一覧に対象日付 {date_str} がありません")
         return None
 
-    print(f"VLM特定: {text!r} at ({cx},{cy})")
+    if rank >= len(vlm_candidates):
+        raise MlxVlmHistoryError(
+            f"VLM日付順位 {rank} に対応するOCR候補がありません "
+            f"(dates={len(ordered_dates)}, candidates={len(vlm_candidates)})"
+        )
+
+    _, text, cx, cy = vlm_candidates[rank]
+    print(f"VLM特定: rank[{rank}] {text!r} at ({cx},{cy})")
     return (cx, cy)
 
 
