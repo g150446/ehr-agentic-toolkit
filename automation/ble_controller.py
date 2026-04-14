@@ -63,15 +63,19 @@ class BLEController:
         """
         logger.info(f"Scanning for BLE device: {self.device_name}")
 
-        devices = await BleakScanner.discover(timeout=timeout)
+        # Retry scan up to 3 times — the ESP32 BLE advertisement window
+        # may be missed by a single scan pass.
+        for attempt in range(3):
+            devices = await BleakScanner.discover(timeout=timeout)
+            for device in devices:
+                logger.debug(f"Found device: {device.name} ({device.address})")
+                if device.name == self.device_name:
+                    logger.info(f"Found target device: {device.name} at {device.address}")
+                    return device.address
+            if attempt < 2:
+                logger.warning(f"Device '{self.device_name}' not found (attempt {attempt+1}), retrying...")
 
-        for device in devices:
-            logger.debug(f"Found device: {device.name} ({device.address})")
-            if device.name == self.device_name:
-                logger.info(f"Found target device: {device.name} at {device.address}")
-                return device.address
-
-        logger.warning(f"Device '{self.device_name}' not found")
+        logger.warning(f"Device '{self.device_name}' not found after 3 scan attempts")
         return None
 
     async def connect(self, timeout: float = 10.0, disconnected_callback=None) -> bool:
@@ -102,6 +106,9 @@ class BLEController:
             await self.client.connect()
 
             if self.client.is_connected:
+                # Bleak 3.x does not auto-discover services on macOS;
+                # explicit discovery is required before write_gatt_char.
+                await self.client.get_services()
                 logger.info(f"Successfully connected to {self.device_name}")
                 return True
             else:

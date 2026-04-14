@@ -24,6 +24,7 @@ from automation.config import AutomationConfig
 
 SOCKET_PATH = "/tmp/ble_server.sock"
 BLE_HEALTH_CHECK_INTERVAL = 3.0
+BLE_KEEPALIVE_INTERVAL = 10.0  # Send keepalive every 10s to prevent idle disconnect
 
 
 async def dispatch(ble: BLEController, req: dict) -> dict:
@@ -118,18 +119,30 @@ async def monitor_ble_connection(
     stop_event: asyncio.Event,
     interval: float = BLE_HEALTH_CHECK_INTERVAL,
 ) -> None:
-    """BLE 接続状態を定期監視し、callback が来ない切断も検知する。"""
+    """BLE 接続状態を定期監視し、callback が来ない切断も検知する。
+    
+    キープアライブとして定期的に status コマンドを送信し、
+    アイドルによる切断を防ぐ。
+    """
+    last_keepalive = asyncio.get_event_loop().time()
     while not stop_event.is_set():
         await asyncio.sleep(interval)
         if stop_event.is_set():
             return
-        if ble.is_connected():
-            continue
-        if disconnect_event.is_set():
+        if not ble.is_connected():
+            if disconnect_event.is_set():
+                return
+            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE 接続監視で切断を検知しました。")
+            disconnect_event.set()
             return
-        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE 接続監視で切断を検知しました。")
-        disconnect_event.set()
-        return
+        # Send keepalive to prevent idle disconnect
+        now = asyncio.get_event_loop().time()
+        if now - last_keepalive >= BLE_KEEPALIVE_INTERVAL:
+            try:
+                await ble.send_command("mode:mouse")
+            except Exception:
+                pass
+            last_keepalive = now
 
 
 async def main() -> None:
