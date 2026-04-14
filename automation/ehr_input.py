@@ -8,11 +8,16 @@ Uses the same AsyncBLERunner pattern as ble_test_cli.py to ensure
 identical BLE event-loop behaviour on macOS CoreBluetooth.
 """
 
+import base64
+import json
 import cv2
 import re
+import socket
 import tempfile
 import os
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +32,58 @@ from automation.screen_analyzer import (
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
 from automation.local_segmentation import segment_japanese_text_locally
+from automation.mlx_vlm_segmentation import (
+    MlxVlmSegmentationError,
+    segment_japanese_text_with_mlx_vlm,
+)
+
+
+MLX_VLM_IME_URL = os.getenv(
+    "MLX_VLM_IME_URL",
+    os.getenv("MLX_VLM_SEGMENTATION_URL", "http://localhost:8181/v1/chat/completions"),
+)
+MLX_VLM_IME_MODEL = os.getenv(
+    "MLX_VLM_IME_MODEL",
+    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit"),
+)
+MLX_VLM_IME_TIMEOUT = float(
+    os.getenv("MLX_VLM_IME_TIMEOUT", os.getenv("MLX_VLM_SEGMENTATION_TIMEOUT", "120"))
+)
+
+_TEXT_NORMALIZATION_MAP = str.maketrans({
+    "（": "(",
+    "）": ")",
+    "％": "%",
+    "：": ":",
+    "［": "[",
+    "］": "]",
+    "【": "[",
+    "】": "]",
+    "｛": "{",
+    "｝": "}",
+    "，": ",",
+    "．": ".",
+    "　": " ",
+})
+_MULTI_CHAR_REPLACEMENTS = {
+    "→": "->",
+    "⇒": "=>",
+    "〜": "~",
+}
+_ASCII_SPECIAL_KEYS = {
+    "\n": "enter",
+    "\t": "tab",
+    "[": "lbracket",
+    "]": "rbracket",
+    "(": "lparen",
+    ")": "rparen",
+    "%": "percent",
+    ":": "colon",
+}
+_JP_PUNCTUATION = {
+    "、": ",",
+    "。": ".",
+}
 
 
 def _load_ocr_engine(config):
@@ -104,6 +161,146 @@ def _input_resolved_text(text: str) -> None:
 
     print(f"英語入力: {text!r}")
     _type_english_text(text)
+
+
+def _normalize_text_for_typing(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").translate(_TEXT_NORMALIZATION_MAP)
+    for src, dest in _MULTI_CHAR_REPLACEMENTS.items():
+        normalized = normalized.replace(src, dest)
+    return normalized
+
+
+def _classify_input_char(ch: str) -> str:
+    if ch == "\n":
+        return "newline"
+    if ch in _JP_PUNCTUATION:
+        return "jp_punct"
+    if ord(ch) < 128:
+        return "ascii"
+    if _is_japanese(ch):
+        return "japanese"
+    return "ascii"
+
+
+def _tokenize_text_for_input(text: str) -> list[dict[str, str]]:
+    normalized = _normalize_text_for_typing(text)
+    tokens: list[dict[str, str]] = []
+    buffer: list[str] = []
+    current_kind: Optional[str] = None
+
+    def flush_buffer() -> None:
+        nonlocal buffer, current_kind
+        if buffer:
+            tokens.append({"kind": current_kind or "ascii", "text": "".join(buffer)})
+            buffer = []
+            current_kind = None
+
+    for ch in normalized:
+        kind = _classify_input_char(ch)
+        if kind in {"newline", "jp_punct"}:
+            flush_buffer()
+            tokens.append({"kind": kind, "text": ch})
+            continue
+        if current_kind != kind:
+            flush_buffer()
+            current_kind = kind
+        buffer.append(ch)
+
+    flush_buffer()
+    return tokens
+
+
+def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
+    try:
+        raw_content, segments = segment_japanese_text_with_mlx_vlm(text)
+        if "".join(segment["text"] for segment in segments) != text:
+            raise MlxVlmSegmentationError(
+                f"Qwen分割結果が元テキストを保持していません: source={text!r} segments={segments!r}"
+            )
+        if _should_fallback_to_local_segmentation(segments):
+            raise MlxVlmSegmentationError(
+                f"Qwen分割結果が IME 候補を不安定化させる粒度です: source={text!r} segments={segments!r}"
+            )
+        normalized_segments = []
+        for segment in segments:
+            segment_text = segment["text"]
+            romaji = _kanji_to_romaji(segment_text)
+            normalized_segments.append({"text": segment_text, "romaji": romaji})
+        print(f"Qwen分割結果: {raw_content}")
+        print(f"Qwen分割補正後: {normalized_segments}")
+        return normalized_segments
+    except MlxVlmSegmentationError as exc:
+        print(f"Qwen分割失敗 → ローカル分割へフォールバック: {exc}")
+        summary, segments = segment_japanese_text_locally(text)
+        print(f"ローカル分割サマリ: {summary}")
+        return segments
+
+
+def _is_single_kanji(text: str) -> bool:
+    return len(text) == 1 and _has_kanji(text)
+
+
+def _is_hiragana_only(text: str) -> bool:
+    return bool(text) and all("\u3040" <= ch <= "\u309f" for ch in text)
+
+
+def _should_fallback_to_local_segmentation(segments: list[dict[str, str]]) -> bool:
+    consecutive_single_kanji = 0
+    for index, segment in enumerate(segments):
+        text = segment["text"]
+        if _is_single_kanji(text):
+            consecutive_single_kanji += 1
+            if consecutive_single_kanji >= 2:
+                return True
+            if index + 1 < len(segments) and _is_hiragana_only(segments[index + 1]["text"]):
+                return True
+        else:
+            consecutive_single_kanji = 0
+    return False
+
+
+def _segment_text_for_input(text: str) -> list[dict[str, str]]:
+    segments: list[dict[str, str]] = []
+    for segment in _iter_segments_for_input(text):
+        segments.append(segment)
+    return segments
+
+
+def _iter_segments_for_input(text: str):
+    for token in _tokenize_text_for_input(text):
+        kind = token["kind"]
+        value = token["text"]
+        if kind == "japanese":
+            for segment in _segment_japanese_with_default_vlm(value):
+                yield segment
+        elif kind == "jp_punct":
+            yield {"text": value, "romaji": _JP_PUNCTUATION[value]}
+        elif kind == "newline":
+            yield {"text": "\n", "romaji": "<enter>"}
+        else:
+            yield {"text": value, "romaji": value}
+
+
+def _type_ascii_text_precisely(client: BLEClient, text: str) -> None:
+    buffer: list[str] = []
+
+    def flush_buffer() -> None:
+        if not buffer:
+            return
+        chunk = "".join(buffer)
+        ok = client.type_text(chunk)
+        print(f"type:{chunk} -> {'OK' if ok else 'NG'}")
+        buffer.clear()
+
+    for ch in text:
+        key_name = _ASCII_SPECIAL_KEYS.get(ch)
+        if key_name is None:
+            buffer.append(ch)
+            continue
+        flush_buffer()
+        ok = client.press_key(key_name)
+        print(f"key:{key_name} -> {'OK' if ok else 'NG'}")
+    flush_buffer()
 
 
 def input_text_to_field(
@@ -495,6 +692,94 @@ def _find_changed_region(base: np.ndarray, current: np.ndarray) -> Optional[np.n
     return current[y:y + h, x:x + w]
 
 
+def _encode_frame_as_data_url(frame: np.ndarray) -> str:
+    ok, encoded = cv2.imencode(".png", frame)
+    if not ok:
+        raise RuntimeError("IME候補画像の PNG エンコードに失敗しました")
+    return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+def _extract_vlm_text_content(result: dict) -> str:
+    try:
+        content = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"mlx_vlm応答に content がありません: {result!r}") from exc
+
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        merged = "".join(parts).strip()
+        if merged:
+            return merged
+    raise RuntimeError(f"mlx_vlm応答の content 形式が不正です: {content!r}")
+
+
+def _parse_ime_candidate_response(content: str) -> Optional[str]:
+    match = re.search(r"\{.*\}", content, re.DOTALL)
+    if match:
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            candidate = payload.get("candidate")
+            if candidate is None:
+                return None
+            if isinstance(candidate, str):
+                return candidate.strip() or None
+
+    quoted = re.search(r'"candidate"\s*:\s*"([^"]+)"', content)
+    if quoted:
+        return quoted.group(1).strip() or None
+    return content.strip() or None
+
+
+def _read_ime_candidate_with_vlm(frame: np.ndarray, target_kanji: str) -> Optional[str]:
+    prompt = (
+        "この画像は Windows IME の変換候補の一部です。"
+        "現在選択されている候補1件だけを正確に読み取ってください。"
+        "読めない場合は null を返してください。"
+        "JSONのみで回答してください。"
+        ' 形式: {"candidate": "候補文字列"} または {"candidate": null}'
+        f" 目標文字列: {target_kanji}"
+    )
+    payload = {
+        "model": MLX_VLM_IME_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": _encode_frame_as_data_url(frame)}},
+            ],
+        }],
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        MLX_VLM_IME_URL,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=MLX_VLM_IME_TIMEOUT) as resp:
+            result = json.loads(resp.read())
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(
+            f"IME候補確認の mlx_vlm リクエストが {MLX_VLM_IME_TIMEOUT:g} 秒でタイムアウトしました"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"IME候補確認の mlx_vlm 接続に失敗しました: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("IME候補確認の mlx_vlm 応答 JSON を解析できませんでした") from exc
+
+    content = _extract_vlm_text_content(result)
+    return _parse_ime_candidate_response(content)
+
+
 def type_kanji_via_ime(
     romaji: str,
     target_kanji: str,
@@ -541,9 +826,6 @@ def type_kanji_via_ime(
     print(f"type:{romaji} -> {'OK' if ok else 'NG'}")
     time.sleep(0.3)  # IMEがローマ字処理するまで待機
 
-    # Space を1回だけ押して最初の変換候補を表示する。
-    # その後は候補を進めず、OCR を複数回試みて確認する。
-    # OCR で確認できなくても最初の候補を信頼して Enter で確定する。
     print("[Space] 変換候補を表示...")
     ok = client.press_key("space")
     print(f"key:space -> {'OK' if ok else 'NG'}")
@@ -564,13 +846,19 @@ def type_kanji_via_ime(
         source = "IME反転ブロック"
         ocr_results = []
         combined = ""
+        vlm_candidate: Optional[str] = None
 
         if roi is not None:
+            try:
+                vlm_candidate = _read_ime_candidate_with_vlm(roi, target_kanji)
+                print(f"  [試行{attempt}] {source} Qwen読取: {vlm_candidate!r}")
+            except RuntimeError as exc:
+                print(f"  [試行{attempt}] {source} Qwen読取失敗: {exc}")
             ocr_results = _request_ocr_results(roi, config)
             texts = [text for (_, text, _) in ocr_results]
             combined = "".join(texts)
             # 日本語文字（漢字・ひらがな・カタカナ）が含まれない場合は誤検出とみなす
-            if not any("\u3040" <= ch <= "\u9fff" for ch in combined):
+            if vlm_candidate is None and not any("\u3040" <= ch <= "\u9fff" for ch in combined):
                 print(f"  [試行{attempt}] IME反転ブロック OCR結果に日本語なし ({combined!r}) → フレーム差分でフォールバック")
                 roi = None
 
@@ -578,6 +866,11 @@ def type_kanji_via_ime(
             roi = _find_changed_region(base_frame, frame)
             source = "差分領域"
             if roi is not None:
+                try:
+                    vlm_candidate = _read_ime_candidate_with_vlm(roi, target_kanji)
+                    print(f"  [試行{attempt}] {source} Qwen読取: {vlm_candidate!r}")
+                except RuntimeError as exc:
+                    print(f"  [試行{attempt}] {source} Qwen読取失敗: {exc}")
                 ocr_results = _request_ocr_results(roi, config)
                 texts = [text for (_, text, _) in ocr_results]
                 combined = "".join(texts)
@@ -590,43 +883,25 @@ def type_kanji_via_ime(
         texts = [text for (_, text, _) in ocr_results]
         print(f"  [試行{attempt}] {source} OCR結果: {texts!r} → 結合: {combined!r}")
 
-        if _ime_candidate_matches(target_kanji, combined, attempt):
+        if vlm_candidate == target_kanji or _ime_candidate_matches(target_kanji, combined):
             print(f"  「{target_kanji}」を確認 → Enter で確定")
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
             print("完了")
             return
 
-        print(f"  「{target_kanji}」は未確認。再キャプチャして再試行...")
-        time.sleep(0.3)
+        if attempt < max_attempts:
+            print(f"  「{target_kanji}」は未確認。Space で次候補へ進みます...")
+            ok = client.press_key("space")
+            print(f"key:space -> {'OK' if ok else 'NG'}")
+            time.sleep(wait_sec)
 
-    # OCR で確認できなかったが、最初の候補（Space 1回）を信頼して Enter で確定
-    print(f"  OCR確認できませんでしたが、最初の候補を信頼して Enter で確定します")
-    ok = client.press_key("enter")
-    print(f"key:enter -> {'OK' if ok else 'NG'}")
-    print("完了（確認なし）")
+    raise ValueError(f"IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした")
 
 
-def _ime_candidate_matches(target: str, combined: str, attempt: int) -> bool:
-    """IME候補テキストにターゲット文字列が含まれているか確認する。
-
-    試行1（最初のSpace直後）は最初の候補がハイライトされている状態。
-    OCRが差分領域を部分的にしか読めないことが多いため、ターゲットの
-    先頭漢字が含まれていれば一致とみなして即確定する。
-
-    試行2以降はSpaceでカーソルが次候補へ進んでいるため完全一致のみ許容する。
-    これにより「対して」→「大して」への誤移動を防ぐ。
-    """
-    if target in combined:
-        return True
-    # 試行1のみ: OCRが先頭の漢字文字だけ読めていれば最初の候補として確定
-    if attempt == 1:
-        first_kanji = next(
-            (ch for ch in target if "\u4e00" <= ch <= "\u9fff"), None
-        )
-        if first_kanji and first_kanji in combined:
-            return True
-    return False
+def _ime_candidate_matches(target: str, combined: str) -> bool:
+    """IME候補OCRにターゲット文字列が完全一致で含まれているか確認する。"""
+    return target in combined
 
 
 def _is_ascii_only(text: str) -> bool:
@@ -754,10 +1029,7 @@ def type_japanese_sentence(text: str) -> None:
     Args:
         text: 入力するテキスト（日本語・英語混在可）
     """
-    print(f"文節分割中 (sudachipy + pykakasi): {text!r}")
-    segments = _segment_japanese_locally(text)
-    print(f"分割結果: {segments}")
-
+    print(f"文節分割中 (Qwen優先): {text!r}")
     config = load_config(skip_password=True)
 
     client = _wait_for_ble_connected()
@@ -774,12 +1046,17 @@ def type_japanese_sentence(text: str) -> None:
         current_mode = detect_ime_mode(init_frame, config)
     print(f"初期 IME モード: {current_mode!r}")
 
-    for seg in segments:
+    for seg in _iter_segments_for_input(text):
         seg_text = seg["text"]
         seg_romaji = seg["romaji"]
         print(f"\n--- 文節: {seg_text!r} ({seg_romaji}) ---")
 
-        if seg_text in ("、", "。"):
+        if seg_text == "\n":
+            current_mode = ensure_ime_mode("english", client, current_mode)
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
+
+        elif seg_text in ("、", "。"):
             # 句読点: ひらがなモードで IME が自動変換するキー（,/.）を送る。
             # 「。」はIMEの変換バッファに残るため Enter で確定が必要。
             current_mode = ensure_ime_mode("japanese", client, current_mode)
@@ -794,8 +1071,7 @@ def type_japanese_sentence(text: str) -> None:
             # ASCII のみ（英単語・数字・記号）: 英数字モードで直接入力（IME 変換不要）
             current_mode = ensure_ime_mode("english", client, current_mode)
             print(f"  英数字直接入力: {seg_text!r}")
-            ok = client.type_text(seg_text)
-            print(f"type:{seg_text} -> {'OK' if ok else 'NG'}")
+            _type_ascii_text_precisely(client, seg_text)
 
         elif _has_kanji(seg_text):
             # 漢字を含む文節: ひらがなモードで IME 変換候補を確認してから確定
@@ -840,8 +1116,7 @@ def _type_english_text(text: str) -> None:
     ensure_ime_mode("english", client, current_mode)
 
     print(f"英語入力: {text!r}")
-    ok = client.type_text(text)
-    print(f"type:{text} -> {'OK' if ok else 'NG'}")
+    _type_ascii_text_precisely(client, _normalize_text_for_typing(text))
     print("完了")
 
 

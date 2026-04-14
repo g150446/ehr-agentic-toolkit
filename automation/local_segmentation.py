@@ -38,6 +38,19 @@ _MERGE_POS = {
     ("助動詞", "*"),         # た・ない・ます 等
 }
 
+_PUNCTUATION_ROMAJI = {
+    "、": ",",
+    "。": ".",
+    "（": "(",
+    "）": ")",
+    "％": "%",
+    "：": ":",
+    "［": "[",
+    "］": "]",
+    "【": "[",
+    "】": "]",
+}
+
 
 def _should_merge(pos: tuple[str, ...]) -> bool:
     """この品詞のトークンを直前のセグメントに結合するかどうか。"""
@@ -71,12 +84,11 @@ def segment_japanese_text_locally(
         surface = m.surface()
         reading = m.reading_form()  # カタカナ読み
 
-        # 句読点: 「、」→ "," / 「。」→ "." として保持、それ以外はスキップ
+        # 句読点・記号は入力時に失われないよう対応する ASCII として保持
         if pos[0] == "補助記号":
-            if surface == "、":
-                segments.append({"text": "、", "romaji": ","})
-            elif surface == "。":
-                segments.append({"text": "。", "romaji": "."})
+            romaji = _PUNCTUATION_ROMAJI.get(surface)
+            if romaji is not None:
+                segments.append({"text": surface, "romaji": romaji})
             continue
 
         # 接続助詞などは直前セグメントに結合

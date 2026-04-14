@@ -215,10 +215,14 @@ python scripts/capture_windows.py myshot
 
 `automation.ehr_input` は通常の文章だけでなく、**テキストファイルのパス**も受け取れます。読み取り可能なファイルが指定された場合、その内容を既存の日本語/英語/混在入力フローで遠隔キーボード送信します。
 
+現在の `ehr_input` は、長文入力時に **Qwen 3.5 4B MLX を優先して日本語セグメントを切り出し**、ローマ字化はローカル辞書で補正しながら逐次入力します。IME 候補確認も Qwen 優先で行い、一致未確認の候補を盲目的に Enter で確定しないようにしています。
+
 ```bash
 python -m automation.ehr_input data/patient_records/asthma_1.txt
 python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
 ```
+
+> **既知の問題**: `data/patient_records/asthma_1.txt` での再検証では、空白のまま止まる問題は解消しましたが、`咽頭痛` のような語でまだ誤変換が残ります。特に長文冒頭では `[` のような記号未反映や、`昨晩` / `咳嗽` 付近の変換揺れが残っています。
 
 ---
 

@@ -24,6 +24,8 @@
   - "key:esc"     : Press Escape
   - "key:delete"  : Press Delete
   - "key:zenkaku" : Press 半角/全角 IME toggle key (HID 0x35, JP keyboard layout)
+  - "key:lbracket" / "key:rbracket" / "key:lparen" / "key:rparen"
+  - "key:percent" / "key:colon" / "key:newline"
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -96,6 +98,87 @@ void mouseScroll(int amount) {
   }
 }
 
+void tapShiftedAscii(uint8_t key) {
+  Keyboard.press(KEY_LEFT_SHIFT);
+  delay(5);
+  Keyboard.press(key);
+  delay(5);
+  Keyboard.releaseAll();
+  delay(30);
+}
+
+bool pressNamedKey(const String &keyName) {
+  if (keyName == "enter" || keyName == "return" || keyName == "newline") {
+    Keyboard.write(KEY_RETURN);
+    Serial.println("-> key: Enter");
+    return true;
+  }
+  if (keyName == "tab") {
+    Keyboard.write(KEY_TAB);
+    Serial.println("-> key: Tab");
+    return true;
+  }
+  if (keyName == "backspace") {
+    Keyboard.write(KEY_BACKSPACE);
+    Serial.println("-> key: Backspace");
+    return true;
+  }
+  if (keyName == "delete") {
+    Keyboard.write(KEY_DELETE);
+    Serial.println("-> key: Delete");
+    return true;
+  }
+  if (keyName == "esc") {
+    Keyboard.write(KEY_ESC);
+    Serial.println("-> key: Esc");
+    return true;
+  }
+  if (keyName == "space") {
+    Keyboard.write(' ');
+    Serial.println("-> key: Space");
+    return true;
+  }
+  if (keyName == "lbracket" || keyName == "left_bracket") {
+    Keyboard.write('[');
+    Serial.println("-> key: [");
+    return true;
+  }
+  if (keyName == "rbracket" || keyName == "right_bracket") {
+    Keyboard.write(']');
+    Serial.println("-> key: ]");
+    return true;
+  }
+  if (keyName == "lparen" || keyName == "left_paren") {
+    tapShiftedAscii('9');
+    Serial.println("-> key: (");
+    return true;
+  }
+  if (keyName == "rparen" || keyName == "right_paren") {
+    tapShiftedAscii('0');
+    Serial.println("-> key: )");
+    return true;
+  }
+  if (keyName == "percent") {
+    tapShiftedAscii('5');
+    Serial.println("-> key: %");
+    return true;
+  }
+  if (keyName == "colon") {
+    tapShiftedAscii(';');
+    Serial.println("-> key: :");
+    return true;
+  }
+  if (keyName == "zenkaku") {
+    // ASCII 0x60 (backtick) maps to HID keycode 0x35 via en_US layout table.
+    // On Windows with Japanese 106/109 keyboard layout, HID 0x35 = 半角/全角 key,
+    // which toggles the IME between hiragana and alphanumeric input mode.
+    Keyboard.write('`');
+    Serial.println("-> key: zenkaku (半角/全角)");
+    return true;
+  }
+  return false;
+}
+
 void processCommand(String command) {
   command.trim();
   Serial.print("CMD: ");
@@ -149,6 +232,18 @@ void processCommand(String command) {
   } else if (command.startsWith("type:")) {
     String text = command.substring(5);
     for (int i = 0; i < (int)text.length(); i++) {
+      if (text[i] == '\\' && i + 1 < (int)text.length()) {
+        if (text[i + 1] == 'n') {
+          pressNamedKey("newline");
+          i++;
+          continue;
+        }
+        if (text[i + 1] == 't') {
+          pressNamedKey("tab");
+          i++;
+          continue;
+        }
+      }
       Keyboard.write((uint8_t)text[i]);
       delay(30);
     }
@@ -156,31 +251,7 @@ void processCommand(String command) {
 
   } else if (command.startsWith("key:")) {
     String keyName = command.substring(4);
-    if (keyName == "enter" || keyName == "return") {
-      Keyboard.write(KEY_RETURN);
-      Serial.println("-> key: Enter");
-    } else if (keyName == "tab") {
-      Keyboard.write(KEY_TAB);
-      Serial.println("-> key: Tab");
-    } else if (keyName == "backspace") {
-      Keyboard.write(KEY_BACKSPACE);
-      Serial.println("-> key: Backspace");
-    } else if (keyName == "delete") {
-      Keyboard.write(KEY_DELETE);
-      Serial.println("-> key: Delete");
-    } else if (keyName == "esc") {
-      Keyboard.write(KEY_ESC);
-      Serial.println("-> key: Esc");
-    } else if (keyName == "space") {
-      Keyboard.write(' ');
-      Serial.println("-> key: Space");
-    } else if (keyName == "zenkaku") {
-      // ASCII 0x60 (backtick) maps to HID keycode 0x35 via en_US layout table.
-      // On Windows with Japanese 106/109 keyboard layout, HID 0x35 = 半角/全角 key,
-      // which toggles the IME between hiragana and alphanumeric input mode.
-      Keyboard.write('`');
-      Serial.println("-> key: zenkaku (半角/全角)");
-    } else {
+    if (!pressNamedKey(keyName)) {
       Serial.print("-> unknown key: "); Serial.println(keyName);
     }
 
