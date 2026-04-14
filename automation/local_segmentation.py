@@ -51,6 +51,19 @@ _PUNCTUATION_ROMAJI = {
     "】": "]",
 }
 
+# Windows IME が一語として認識しにくい医療用語を手動で分割するテーブル。
+# セグメントが丸ごとこのテーブルのキーに一致した場合、代わりにここで定義した
+# (text, romaji) のリストに展開する。
+_MANUAL_WORD_SPLITS: dict[str, list[tuple[str, str]]] = {
+    "咽頭痛":  [("咽頭", "intou"), ("痛", "tsuu")],
+    "関節痛":  [("関節", "kansetsu"), ("痛", "tsuu")],
+    "筋肉痛":  [("筋肉", "kinniku"), ("痛", "tsuu")],
+    "頭痛":    [("頭", "atama"), ("痛", "tsuu")],   # ずつう は IME に入りにくい
+    "腹痛":    [("腹", "hara"), ("痛", "tsuu")],
+    "胸痛":    [("胸", "mune"), ("痛", "tsuu")],
+    "背部痛":  [("背部", "haibu"), ("痛", "tsuu")],
+}
+
 
 def _should_merge(pos: tuple[str, ...]) -> bool:
     """この品詞のトークンを直前のセグメントに結合するかどうか。"""
@@ -101,10 +114,14 @@ def segment_japanese_text_locally(
 
     # 各セグメントの reading → hepburn romaji に変換
     # 句読点セグメントはすでに romaji を持っているのでスキップ
+    # 既知の医療用語（Windows IME が一語変換できないもの）は手動分割テーブルで展開する
     result: list[dict[str, str]] = []
     for seg in segments:
         if "romaji" in seg:
             result.append({"text": seg["text"], "romaji": seg["romaji"]})
+        elif seg["text"] in _MANUAL_WORD_SPLITS:
+            for sub_text, sub_romaji in _MANUAL_WORD_SPLITS[seg["text"]]:
+                result.append({"text": sub_text, "romaji": sub_romaji})
         else:
             romaji = _katakana_to_romaji(seg["reading"])
             result.append({"text": seg["text"], "romaji": romaji})

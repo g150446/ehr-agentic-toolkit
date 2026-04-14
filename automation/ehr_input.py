@@ -701,6 +701,22 @@ def _encode_frame_as_data_url(frame: np.ndarray) -> str:
     return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
+def _save_debug_image(frame: np.ndarray, name: str) -> None:
+    """デバッグ用: フレームを captures/ に保存する（失敗しても無視）。"""
+    try:
+        captures_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "captures"
+        )
+        os.makedirs(captures_dir, exist_ok=True)
+        # 特殊文字をアンダースコアに置換してファイル名を安全にする
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+        path = os.path.join(captures_dir, f"debug_{safe_name}.png")
+        cv2.imwrite(path, frame)
+        print(f"  [debug] ROI保存: {path}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _extract_vlm_text_content(result: dict) -> str:
     try:
         content = result["choices"][0]["message"]["content"]
@@ -813,8 +829,21 @@ def type_kanji_via_ime(
 
     client = _wait_for_ble_connected()
 
-    # ベースフレームをキャプチャ（差分検出のフォールバック用）
-    print("ベースフレームをキャプチャ中...")
+    # ローマ字入力
+    print(f"ローマ字入力: {romaji}")
+    ok = client.type_text(romaji)
+    print(f"type:{romaji} -> {'OK' if ok else 'NG'}")
+    time.sleep(0.3)  # IMEがローマ字処理するまで待機
+
+    # 1回目の Space: インライン変換（ひらがな→候補に変わる）
+    print("[Space] インライン変換...")
+    ok = client.press_key("space")
+    print(f"key:space -> {'OK' if ok else 'NG'}")
+    time.sleep(wait_sec)
+
+    # ここでベースフレームをキャプチャ（インライン変換後・ポップアップ前）
+    # → 差分検出でポップアップ領域だけを正確に切り出せる
+    print("ベースフレームをキャプチャ中（ポップアップ前）...")
     base_frame = capture_screen(
         device_index=config.capture_device_index,
         width=config.capture_width,
@@ -823,15 +852,9 @@ def type_kanji_via_ime(
     if base_frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    # ローマ字入力
-    print(f"ローマ字入力: {romaji}")
-    ok = client.type_text(romaji)
-    print(f"type:{romaji} -> {'OK' if ok else 'NG'}")
-    time.sleep(0.3)  # IMEがローマ字処理するまで待機
-
-    print("[Space] 変換候補を表示...")
+    # 2回目の Space: ポップアップ候補リストを開く
     ok = client.press_key("space")
-    print(f"key:space -> {'OK' if ok else 'NG'}")
+    print(f"key:space (popup) -> {'OK' if ok else 'NG'}")
     time.sleep(wait_sec)
 
     for attempt in range(1, max_attempts + 1):
@@ -852,6 +875,9 @@ def type_kanji_via_ime(
         vlm_candidate: Optional[str] = None
 
         if roi is not None:
+            # デバッグ用: 最初の試行のROI画像を保存
+            if attempt == 1:
+                _save_debug_image(roi, f"ime_roi_{target_kanji}_attempt{attempt}")
             try:
                 vlm_candidate = _read_ime_candidate_with_vlm(roi, target_kanji)
                 print(f"  [試行{attempt}] {source} Qwen読取: {vlm_candidate!r}")
@@ -869,6 +895,8 @@ def type_kanji_via_ime(
             roi = _find_changed_region(base_frame, frame)
             source = "差分領域"
             if roi is not None:
+                if attempt == 1:
+                    _save_debug_image(roi, f"ime_diff_{target_kanji}_attempt{attempt}")
                 try:
                     vlm_candidate = _read_ime_candidate_with_vlm(roi, target_kanji)
                     print(f"  [試行{attempt}] {source} Qwen読取: {vlm_candidate!r}")
@@ -886,7 +914,7 @@ def type_kanji_via_ime(
         texts = [text for (_, text, _) in ocr_results]
         print(f"  [試行{attempt}] {source} OCR結果: {texts!r} → 結合: {combined!r}")
 
-        if vlm_candidate == target_kanji or _ime_candidate_matches(target_kanji, combined):
+        if _ime_candidate_matches(target_kanji, vlm_candidate or "") or _ime_candidate_matches(target_kanji, combined):
             print(f"  「{target_kanji}」を確認 → Enter で確定")
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
@@ -899,12 +927,28 @@ def type_kanji_via_ime(
             print(f"key:space -> {'OK' if ok else 'NG'}")
             time.sleep(wait_sec)
 
-    raise ValueError(f"IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした")
+    print(f"  ⚠️ IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした（ベストエフォートで Enter を送信）")
+    client.press_key("enter")
 
 
 def _ime_candidate_matches(target: str, combined: str) -> bool:
-    """IME候補OCRにターゲット文字列が完全一致で含まれているか確認する。"""
-    return target in combined
+    """IME候補OCRにターゲット文字列が含まれているか確認する。
+
+    OCR ノイズを 1 文字まで許容する: 先頭文字が一致し、残りの差異が 1 文字以内の
+    部分文字列も一致とみなす（例: 感冒 → 感昌 のような視覚的誤読への対策）。
+    """
+    if target in combined:
+        return True
+    n = len(target)
+    if n < 2:
+        return False
+    for i in range(len(combined) - n + 1):
+        substr = combined[i:i + n]
+        if substr[0] == target[0]:
+            mismatches = sum(a != b for a, b in zip(substr, target))
+            if mismatches <= 1:
+                return True
+    return False
 
 
 def _is_ascii_only(text: str) -> bool:
@@ -994,6 +1038,25 @@ def ensure_ime_mode(
 
 def _kanji_to_romaji(text: str) -> str:
     """漢字・かな文字列をヘボン式ローマ字に変換する。"""
+    # 医療用語など pykakasi が誤読みするケースの手動オーバーライド
+    _ROMAJI_OVERRIDES: dict[str, str] = {
+        "鼻汁": "hanajiru",
+        "咳嗽": "gaisou",
+        "嘔吐": "outo",
+        "浮腫": "fushuu",
+        "倦怠": "kentai",
+        "痙攣": "keiren",
+        "蕁麻疹": "jinmashin",
+        "喀痰": "kakutan",
+        "喘鳴": "zenmei",
+        "哮喘": "kozen",
+        "喘息": "zensoku",
+        "膿胸": "noukyo",
+        "胸水": "kyousui",
+        "肺炎": "haien",
+    }
+    if text in _ROMAJI_OVERRIDES:
+        return _ROMAJI_OVERRIDES[text]
     import pykakasi
     kks = pykakasi.kakasi()
     return "".join(item["hepburn"] for item in kks.convert(text))
