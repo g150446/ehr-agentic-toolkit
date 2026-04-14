@@ -24,8 +24,9 @@
   - "key:esc"     : Press Escape
   - "key:delete"  : Press Delete
   - "key:zenkaku" : Press 半角/全角 IME toggle key (HID 0x35, JP keyboard layout)
-  - "key:lbracket" / "key:rbracket" / "key:lparen" / "key:rparen"
-  - "key:percent" / "key:colon" / "key:newline"
+  - "key:lbracket" / "key:rbracket" (JIS-aware: outputs '[' / ']')
+  - "key:lbrace" / "key:rbrace" (JIS-aware: outputs '{' / '}')
+  - "key:lparen" / "key:rparen" / "key:percent" / "key:colon" / "key:newline"
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -139,13 +140,29 @@ bool pressNamedKey(const String &keyName) {
     return true;
   }
   if (keyName == "lbracket" || keyName == "left_bracket") {
-    Keyboard.write('[');
+    // HID 0x30 (US ']') → JIS keyboard layout maps this to '['.
+    // Keyboard.write('[') sends HID 0x2F which JIS maps to '@' (wrong).
+    Keyboard.write(']');
     Serial.println("-> key: [");
     return true;
   }
   if (keyName == "rbracket" || keyName == "right_bracket") {
-    Keyboard.write(']');
+    // HID 0x31 (US '\') → JIS keyboard layout maps this to ']'.
+    // Keyboard.write(']') sends HID 0x30 which JIS maps to '[' (wrong).
+    Keyboard.write('\\');
     Serial.println("-> key: ]");
+    return true;
+  }
+  if (keyName == "lbrace" || keyName == "left_brace") {
+    // Shift + HID 0x30 → JIS '{' (shift of '[')
+    tapShiftedAscii(']');
+    Serial.println("-> key: {");
+    return true;
+  }
+  if (keyName == "rbrace" || keyName == "right_brace") {
+    // Shift + HID 0x31 → JIS '}' (shift of ']')
+    tapShiftedAscii('\\');
+    Serial.println("-> key: }");
     return true;
   }
   if (keyName == "lparen" || keyName == "left_paren") {
