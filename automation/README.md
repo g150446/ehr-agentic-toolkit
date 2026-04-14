@@ -214,6 +214,8 @@ open_test_patient_chart()
 
 **IME候補の検出方法**: 画面全体のOCRではなく、Windowsが変換候補を**黒背景・白文字**で反転表示する特徴をOpenCVで検出し、その領域だけをOCRすることで元々画面に存在する同じ漢字との誤検知を防ぐ。
 
+**Qwen プロンプト**: 目標文字列を先頭に明示し「黒く反転（ハイライト）されている行の文字列だけを読み取ってください」と指示することで、候補ウィンドウ内の誤読を低減している。
+
 ```python
 from automation.ehr_input import type_kanji_via_ime
 
@@ -230,7 +232,7 @@ type_kanji_via_ime(romaji, "肺炎")
 
 Windows IME の現在入力モードをスクリーンキャプチャから判定し、必要に応じて切替える。
 
-**`detect_ime_mode(frame)`**: 画面下部（タスクバー）を OCR し、「あ」が検出されれば `'japanese'`、「A」/「Ａ」が検出されれば `'english'`、判定不能なら `None` を返す。
+**`detect_ime_mode(frame)`**: 画面下部（タスクバー付近・下100px）に対して OpenCV テンプレートマッチング（`TM_CCOEFF_NORMED`）を行い、`match_templates/english_ime.png` と `match_templates/hiragana_ime.png` のスコアを比較する。閾値 0.7 を超えた方のモードを返し、どちらも届かなければ `None` を返す。EasyOCR は使用しない。
 
 **`ensure_ime_mode(target_mode, client, current_mode)`**: 現在モードが目標と異なる場合のみ `key:zenkaku`（半角/全角キー）を送信してトグルし、新しいモード文字列を返す。画面再キャプチャはしない設計で、呼び出し元がモードをトラッキングする。
 

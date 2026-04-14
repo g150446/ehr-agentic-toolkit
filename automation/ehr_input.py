@@ -556,11 +556,13 @@ def click_history(date_str: str) -> None:
     print("完了")
 
 
-EDIT_BUTTON_TEMPLATE = os.path.join(
+_MATCH_TEMPLATES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "match_templates",
-    "edit_button.jpg",
 )
+EDIT_BUTTON_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "edit_button.jpg")
+ENGLISH_IME_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "english_ime.png")
+HIRAGANA_IME_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "hiragana_ime.png")
 
 
 def _find_button_with_template(
@@ -740,12 +742,13 @@ def _parse_ime_candidate_response(content: str) -> Optional[str]:
 
 def _read_ime_candidate_with_vlm(frame: np.ndarray, target_kanji: str) -> Optional[str]:
     prompt = (
-        "この画像は Windows IME の変換候補の一部です。"
-        "現在選択されている候補1件だけを正確に読み取ってください。"
+        f"探している変換候補は「{target_kanji}」です。"
+        "この画像は Windows IME の変換候補ウィンドウです。"
+        "黒く反転（ハイライト）されている行の文字列だけを正確に読み取ってください。"
+        "前後に余計な句読点や記号を付け足さないでください。"
         "読めない場合は null を返してください。"
         "JSONのみで回答してください。"
         ' 形式: {"candidate": "候補文字列"} または {"candidate": null}'
-        f" 目標文字列: {target_kanji}"
     )
     payload = {
         "model": MLX_VLM_IME_MODEL,
@@ -911,36 +914,44 @@ def _is_ascii_only(text: str) -> bool:
 
 def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
     """
-    スクリーン右下の IME フローティングウィンドウを OCR して現在の入力モードを判定する。
+    OpenCV テンプレートマッチングで IME モードを検出する。
 
-    Windows IME は画面右下（タスクバー付近）に現在のモードを示す小さなインジケーターを
+    Windows IME は画面下部（タスクバー付近）に現在のモードを示す小さなインジケーターを
     表示する。ひらがなモードでは「あ」、英数字モードでは「A」が表示される。
+    match_templates/english_ime.png と hiragana_ime.png をテンプレートとして使用する。
 
     Args:
         frame: HDMI キャプチャフレーム（BGR numpy 配列）
-        config: AppConfig。None の場合はデフォルト設定を使用。
+        config: 未使用（互換性維持のため残す）
 
     Returns:
-        'japanese': ひらがな入力モード（「あ」が検出された）
-        'english':  英数字入力モード（「A」が検出され日本語文字なし）
-        None:       判定不能
+        'japanese': ひらがな入力モード
+        'english':  英数字入力モード
+        None:       どちらのテンプレートも閾値に達しない場合
     """
-    h, w = frame.shape[:2]
-    # IME インジケーターは画面下部に存在する（タスクバー高さ 80px、全幅でスキャン）
-    roi = frame[max(0, h - 80):h, :]
+    _IME_TEMPLATE_THRESHOLD = 0.7
+    h = frame.shape[0]
+    roi = frame[max(0, h - 100):h, :]
 
-    results = _request_ocr_results(roi, config)
-    texts = "".join(text for (_, text, _) in results)
-    print(f"  [IME検出] OCR結果: {texts!r}")
+    eng_tmpl = cv2.imread(ENGLISH_IME_TEMPLATE)
+    hira_tmpl = cv2.imread(HIRAGANA_IME_TEMPLATE)
 
-    # ひらがな「あ」が検出されればひらがなモード（最優先）
-    if "あ" in texts:
-        return "japanese"
-    # 英数字モードのインジケーター: 半角「A」または全角「Ａ」（U+FF21）
-    # 否定フィルターは使わない — 時計・日付の OCR ノイズに CJK 文字が混入するため
-    if "A" in texts or "\uff21" in texts:
-        return "english"
-    return None
+    eng_score = 0.0
+    hira_score = 0.0
+
+    if eng_tmpl is not None:
+        res = cv2.matchTemplate(roi, eng_tmpl, cv2.TM_CCOEFF_NORMED)
+        eng_score = float(cv2.minMaxLoc(res)[1])
+
+    if hira_tmpl is not None:
+        res = cv2.matchTemplate(roi, hira_tmpl, cv2.TM_CCOEFF_NORMED)
+        hira_score = float(cv2.minMaxLoc(res)[1])
+
+    print(f"  [IME検出] 英語スコア: {eng_score:.3f}, ひらがなスコア: {hira_score:.3f}")
+
+    if eng_score < _IME_TEMPLATE_THRESHOLD and hira_score < _IME_TEMPLATE_THRESHOLD:
+        return None
+    return "japanese" if hira_score >= eng_score else "english"
 
 
 def toggle_ime(client: "BLEClient") -> None:

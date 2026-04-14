@@ -1,5 +1,7 @@
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
+import numpy as np
 import automation.ehr_input as ehr_input
 from automation.mlx_vlm_segmentation import MlxVlmSegmentationError
 
@@ -132,3 +134,50 @@ def test_should_fallback_to_local_segmentation_for_single_kanji_run():
     assert not ehr_input._should_fallback_to_local_segmentation(
         [{"text": "感冒"}, {"text": "症状"}]
     )
+
+
+def _make_frame(h=200, w=400) -> np.ndarray:
+    """Blank BGR frame for testing."""
+    return np.zeros((h, w, 3), dtype=np.uint8)
+
+
+def _mock_match_template(scores: dict):
+    """Return a cv2.matchTemplate mock that yields scores by call order."""
+    call_iter = iter(scores.values())
+
+    def fake_match(src, tmpl, method):
+        score = next(call_iter)
+        result = np.full((1, 1), score, dtype=np.float32)
+        return result
+
+    return fake_match
+
+
+def test_detect_ime_mode_returns_japanese_when_hiragana_template_wins():
+    frame = _make_frame()
+    with patch("cv2.imread", return_value=np.zeros((20, 159, 3), dtype=np.uint8)), \
+         patch("cv2.matchTemplate", side_effect=[
+             np.full((1, 1), 0.5, dtype=np.float32),   # english score
+             np.full((1, 1), 0.9, dtype=np.float32),   # hiragana score
+         ]):
+        assert ehr_input.detect_ime_mode(frame) == "japanese"
+
+
+def test_detect_ime_mode_returns_english_when_english_template_wins():
+    frame = _make_frame()
+    with patch("cv2.imread", return_value=np.zeros((28, 156, 3), dtype=np.uint8)), \
+         patch("cv2.matchTemplate", side_effect=[
+             np.full((1, 1), 0.85, dtype=np.float32),  # english score
+             np.full((1, 1), 0.4, dtype=np.float32),   # hiragana score
+         ]):
+        assert ehr_input.detect_ime_mode(frame) == "english"
+
+
+def test_detect_ime_mode_returns_none_when_both_below_threshold():
+    frame = _make_frame()
+    with patch("cv2.imread", return_value=np.zeros((20, 156, 3), dtype=np.uint8)), \
+         patch("cv2.matchTemplate", side_effect=[
+             np.full((1, 1), 0.3, dtype=np.float32),
+             np.full((1, 1), 0.2, dtype=np.float32),
+         ]):
+        assert ehr_input.detect_ime_mode(frame) is None
