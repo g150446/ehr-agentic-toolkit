@@ -36,6 +36,7 @@ from automation.mlx_vlm_segmentation import (
     MlxVlmSegmentationError,
     segment_japanese_text_with_mlx_vlm,
 )
+from automation.ollama_segmentation import OllamaSegmentationError
 
 
 MLX_VLM_IME_URL = os.getenv(
@@ -563,6 +564,9 @@ _MATCH_TEMPLATES_DIR = os.path.join(
 EDIT_BUTTON_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "edit_button.jpg")
 ENGLISH_IME_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "english_ime.png")
 HIRAGANA_IME_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "hiragana_ime.png")
+# 新デザイン（ime2）のテンプレート（存在する場合のみ使用）
+ENGLISH_IME_TEMPLATE2 = os.path.join(_MATCH_TEMPLATES_DIR, "english_ime2.png")
+HIRAGANA_IME_TEMPLATE2 = os.path.join(_MATCH_TEMPLATES_DIR, "hiragana_ime2.png")
 
 
 def _find_button_with_template(
@@ -665,16 +669,25 @@ def _find_ime_candidate_region(frame: np.ndarray) -> Optional[np.ndarray]:
     return cv2.bitwise_not(roi)
 
 
-def _find_changed_region(base: np.ndarray, current: np.ndarray) -> Optional[np.ndarray]:
+def _find_changed_region(
+    base: np.ndarray,
+    current: np.ndarray,
+    exclude_bottom_px: int = 220,
+) -> Optional[np.ndarray]:
     """
     2 フレームの差分から変化した矩形領域を切り出す（フォールバック用）。
 
     IME 候補ブロックが検出できない場合、入力前後の差分で変化領域を特定する。
+    タスクバー・IMEツールバー等の画面下部ノイズを除外するため、
+    exclude_bottom_px より下の領域は差分検索から除外する。
 
     Returns:
         変化した領域の画像。見つからない場合は None。
     """
-    diff = cv2.absdiff(base, current)
+    h = base.shape[0]
+    search_end = max(h - exclude_bottom_px, h // 2)  # 最低でも上半分は含める
+
+    diff = cv2.absdiff(base[:search_end], current[:search_end])
     gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray_diff, 15, 255, cv2.THRESH_BINARY)
 
@@ -687,11 +700,11 @@ def _find_changed_region(base: np.ndarray, current: np.ndarray) -> Optional[np.n
 
     # 最大の変化領域を返す
     largest = max(contours, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(largest)
+    x, y, w, h_ = cv2.boundingRect(largest)
     # 最小サイズフィルタ
-    if w < 10 or h < 10:
+    if w < 10 or h_ < 10:
         return None
-    return current[y:y + h, x:x + w]
+    return current[y:y + h_, x:x + w]
 
 
 def _encode_frame_as_data_url(frame: np.ndarray) -> str:
@@ -859,7 +872,7 @@ def type_kanji_via_ime(
     if base_frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    # 反転ブロック（ポップアップ）を優先し、なければ差分領域でインライン候補を検出
+    # インライン候補を検出: ROI検出を試み、非日本語なら失敗とみなしてポップアップへ
     inline_roi = _find_ime_candidate_region(base_frame)
     if inline_roi is None:
         inline_roi = _find_changed_region(pre_frame, base_frame)
@@ -869,7 +882,7 @@ def type_kanji_via_ime(
         _save_debug_image(inline_roi, f"ime_inline_{target_kanji}")
         try:
             inline_vlm = _read_ime_candidate_with_vlm(inline_roi, target_kanji)
-            print(f"  [第1候補] Qwen読取: {inline_vlm!r}")
+            print(f"  [第1候補] Qwen読取(ROI): {inline_vlm!r}")
         except RuntimeError as exc:
             print(f"  [第1候補] Qwen読取失敗: {exc}")
         ocr_results_inline = _request_ocr_results(inline_roi, config)
@@ -891,6 +904,40 @@ def type_kanji_via_ime(
     print(f"key:space (popup) -> {'OK' if ok else 'NG'}")
     time.sleep(wait_sec)
 
+    # ポップアップ直後の候補リストをVLM（全フレーム）で解析してターゲットの位置を特定
+    popup_init_frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if popup_init_frame is not None:
+        # 全フレームをデバッグ用に保存
+        _save_debug_image(popup_init_frame, f"ime_popup_{target_kanji}")
+        found_pos = None
+        try:
+            # 全フレームをVLMに渡して候補リストを読取（ROI検出をスキップ）
+            vlm_candidates = _read_ime_popup_candidates_with_vlm(popup_init_frame)
+            print(f"  ポップアップ候補解析(VLM全フレーム): {vlm_candidates}")
+            for i, c in enumerate(vlm_candidates):
+                if _ime_candidate_matches(target_kanji, c):
+                    found_pos = i
+                    print(f"  [VLM一致] 「{target_kanji}」を候補位置 {i} で発見 (読取: {c!r})")
+                    break
+        except Exception as exc:
+            print(f"  VLM候補読取失敗: {exc}")
+
+        if found_pos is not None:
+            # ポップアップ開封時点での選択位置は 0。位置 found_pos へ Space×found_pos で移動。
+            print(f"  「{target_kanji}」→ Space×{found_pos}+Enter でナビゲート")
+            for _ in range(found_pos):
+                client.press_key("space")
+                time.sleep(wait_sec)
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
+            print("完了")
+            return
+        print(f"  候補リストに「{target_kanji}」なし → 試行ループへ")
+
     for attempt in range(1, max_attempts + 1):
         # フレームキャプチャ
         frame = capture_screen(
@@ -901,54 +948,18 @@ def type_kanji_via_ime(
         if frame is None:
             raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-        # IME 反転ブロック（黒背景白文字）を検出して OCR
-        roi = _find_ime_candidate_region(frame)
-        source = "IME反転ブロック"
-        ocr_results = []
-        combined = ""
         vlm_candidate: Optional[str] = None
 
-        if roi is not None:
-            # デバッグ用: 最初の試行のROI画像を保存
-            if attempt == 1:
-                _save_debug_image(roi, f"ime_roi_{target_kanji}_attempt{attempt}")
-            try:
-                vlm_candidate = _read_ime_candidate_with_vlm(roi, target_kanji)
-                print(f"  [試行{attempt}] {source} Qwen読取: {vlm_candidate!r}")
-            except RuntimeError as exc:
-                print(f"  [試行{attempt}] {source} Qwen読取失敗: {exc}")
-            ocr_results = _request_ocr_results(roi, config)
-            texts = [text for (_, text, _) in ocr_results]
-            combined = "".join(texts)
-            # 日本語文字（漢字・ひらがな・カタカナ）が含まれない場合は誤検出とみなす
-            if vlm_candidate is None and not any("\u3040" <= ch <= "\u9fff" for ch in combined):
-                print(f"  [試行{attempt}] IME反転ブロック OCR結果に日本語なし ({combined!r}) → フレーム差分でフォールバック")
-                roi = None
+        # 全フレームをVLMに渡して現在ハイライトされている候補を読取
+        try:
+            vlm_candidate = _read_ime_candidate_with_vlm(frame, target_kanji)
+            print(f"  [試行{attempt}] 全フレーム Qwen読取: {vlm_candidate!r}")
+        except RuntimeError as exc:
+            print(f"  [試行{attempt}] 全フレーム Qwen読取失敗: {exc}")
 
-        if roi is None:
-            roi = _find_changed_region(base_frame, frame)
-            source = "差分領域"
-            if roi is not None:
-                if attempt == 1:
-                    _save_debug_image(roi, f"ime_diff_{target_kanji}_attempt{attempt}")
-                try:
-                    vlm_candidate = _read_ime_candidate_with_vlm(roi, target_kanji)
-                    print(f"  [試行{attempt}] {source} Qwen読取: {vlm_candidate!r}")
-                except RuntimeError as exc:
-                    print(f"  [試行{attempt}] {source} Qwen読取失敗: {exc}")
-                ocr_results = _request_ocr_results(roi, config)
-                texts = [text for (_, text, _) in ocr_results]
-                combined = "".join(texts)
+        confirmed = _ime_candidate_matches(target_kanji, vlm_candidate or "")
 
-        if roi is None:
-            print(f"  [試行{attempt}] 変化領域も未検出。少し待って再試行...")
-            time.sleep(0.3)
-            continue
-
-        texts = [text for (_, text, _) in ocr_results]
-        print(f"  [試行{attempt}] {source} OCR結果: {texts!r} → 結合: {combined!r}")
-
-        if _ime_candidate_matches(target_kanji, vlm_candidate or "") or _ime_candidate_matches(target_kanji, combined):
+        if confirmed:
             print(f"  「{target_kanji}」を確認 → Enter で確定")
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
@@ -961,8 +972,86 @@ def type_kanji_via_ime(
             print(f"key:space -> {'OK' if ok else 'NG'}")
             time.sleep(wait_sec)
 
-    print(f"  ⚠️ IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした（ベストエフォートで Enter を送信）")
+    # 全候補を確認できなかった → Esc×1 でひらがな状態に戻してから Enter で確定
+    # Windows MS-IME: ポップアップ状態から Esc×1 = ひらがなに戻る
+    print(f"  ⚠️ IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした")
+    print("  → Esc×1 でひらがなに戻して確定します（誤変換防止）")
+    client.press_key("escape")
+    time.sleep(0.2)
     client.press_key("enter")
+
+
+def _read_ime_popup_candidates_with_vlm(frame: np.ndarray) -> list[str]:
+    """VLM（Qwen）を使って IME ポップアップ候補リスト全体を読み取る。
+
+    Returns:
+        候補文字列のリスト（表示順、0-indexed）。失敗時は空リスト。
+    """
+    prompt = (
+        "この画面には Windows 日本語IME の変換候補リストが表示されています。"
+        "候補リスト（縦に並んだ変換候補のポップアップ）を探し、"
+        "リストに表示されているすべての候補を、上から順に配列で返してください。"
+        "各候補は日本語のテキストです。候補リスト以外のテキストは含めないでください。"
+        "JSONのみで回答してください。"
+        ' 形式: {"candidates": ["候補0", "候補1", "候補2", ...]}'
+    )
+    payload = {
+        "model": MLX_VLM_IME_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": _encode_frame_as_data_url(frame)}},
+            ],
+        }],
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        MLX_VLM_IME_URL,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=MLX_VLM_IME_TIMEOUT) as resp:
+            result = json.loads(resp.read())
+    except Exception as exc:
+        print(f"  [VLM候補リスト] 取得失敗: {exc}")
+        return []
+
+    content = _extract_vlm_text_content(result)
+    if not content:
+        return []
+    # JSON から candidates 配列を抽出
+    try:
+        # コードブロックを除去してJSONパース
+        cleaned = re.sub(r"```[a-z]*\n?", "", content).strip().rstrip("```").strip()
+        # JSONオブジェクトを検索
+        m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if m:
+            parsed = json.loads(m.group())
+            candidates = parsed.get("candidates", [])
+            if isinstance(candidates, list):
+                return [str(c).strip() for c in candidates if str(c).strip()]
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return []
+
+
+def _extract_ime_candidates(ocr_texts: list[str]) -> list[str]:
+    """OCR テキストリストから IME ポップアップ候補を抽出する（ノイズ除去）。
+
+    入力フィールドのコンテキストノイズ（数字・記号・アルファベット混在テキスト）を除去し、
+    純粋な日本語文字のみで構成される候補のみを返す。
+    """
+    result = []
+    for text in ocr_texts:
+        text = text.strip()
+        if not text:
+            continue
+        # 純粋な日本語文字（ひらがな U+3040-、カタカナ U+30A0-、漢字 U+4E00-）のみ 1-6 文字
+        if all("\u3040" <= ch <= "\u9fff" for ch in text) and 1 <= len(text) <= 6:
+            result.append(text)
+    return result
 
 
 def _ime_candidate_matches(target: str, combined: str) -> bool:
@@ -990,13 +1079,21 @@ def _is_ascii_only(text: str) -> bool:
     return all(ord(ch) < 128 for ch in text)
 
 
+def _is_katakana_only(text: str) -> bool:
+    """文字列がカタカナ（長音符含む）のみで構成されているか判定する。"""
+    return bool(text) and all(
+        "\u30a0" <= ch <= "\u30ff" or ch == "\u30fc"  # カタカナ + 長音符ー
+        for ch in text
+    )
+
+
 def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
     """
     OpenCV テンプレートマッチングで IME モードを検出する。
 
     Windows IME は画面下部（タスクバー付近）に現在のモードを示す小さなインジケーターを
     表示する。ひらがなモードでは「あ」、英数字モードでは「A」が表示される。
-    match_templates/english_ime.png と hiragana_ime.png をテンプレートとして使用する。
+    複数のテンプレートデザイン（ime.png / ime2.png）に対応し、最大スコアを採用する。
 
     Args:
         frame: HDMI キャプチャフレーム（BGR numpy 配列）
@@ -1009,21 +1106,23 @@ def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
     """
     _IME_TEMPLATE_THRESHOLD = 0.7
     h = frame.shape[0]
-    roi = frame[max(0, h - 100):h, :]
 
-    eng_tmpl = cv2.imread(ENGLISH_IME_TEMPLATE)
-    hira_tmpl = cv2.imread(HIRAGANA_IME_TEMPLATE)
+    def _best_score(template_paths: list[str]) -> float:
+        best = 0.0
+        for path in template_paths:
+            tmpl = cv2.imread(path)
+            if tmpl is None:
+                continue
+            if tmpl.shape[0] > frame.shape[0] or tmpl.shape[1] > frame.shape[1]:
+                continue
+            res = cv2.matchTemplate(frame, tmpl, cv2.TM_CCOEFF_NORMED)
+            score = float(cv2.minMaxLoc(res)[1])
+            if score > best:
+                best = score
+        return best
 
-    eng_score = 0.0
-    hira_score = 0.0
-
-    if eng_tmpl is not None:
-        res = cv2.matchTemplate(roi, eng_tmpl, cv2.TM_CCOEFF_NORMED)
-        eng_score = float(cv2.minMaxLoc(res)[1])
-
-    if hira_tmpl is not None:
-        res = cv2.matchTemplate(roi, hira_tmpl, cv2.TM_CCOEFF_NORMED)
-        hira_score = float(cv2.minMaxLoc(res)[1])
+    eng_score = _best_score([ENGLISH_IME_TEMPLATE, ENGLISH_IME_TEMPLATE2])
+    hira_score = _best_score([HIRAGANA_IME_TEMPLATE, HIRAGANA_IME_TEMPLATE2])
 
     print(f"  [IME検出] 英語スコア: {eng_score:.3f}, ひらがなスコア: {hira_score:.3f}")
 
@@ -1186,6 +1285,25 @@ def type_japanese_sentence(text: str) -> None:
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             type_kanji_via_ime(seg_romaji, seg_text)
 
+        elif _is_katakana_only(seg_text):
+            # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Enter
+            current_mode = ensure_ime_mode("japanese", client, current_mode)
+            print(f"  カタカナ直接入力: {seg_romaji!r}")
+            ok = client.type_text(seg_romaji)
+            print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("f7")  # 全角カタカナに変換
+            print(f"key:f7 -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
+
+        elif seg_text in ("「", "」", "『", "』"):
+            # 日本語括弧: ひらがなモードで lbracket/rbracket キーを押す
+            # JIS キーボードの日本語モードでは [ → 「、] → 」 になる
+            current_mode = ensure_ime_mode("japanese", client, current_mode)
+            key_name = "lbracket" if seg_text in ("「", "『") else "rbracket"
+            ok = client.press_key(key_name)
+            print(f"key:{key_name} ({seg_text}) -> {'OK' if ok else 'NG'}")
+
         else:
             # ひらがな・カタカナのみ: ひらがなモードでローマ字を直接入力して Enter で確定
             current_mode = ensure_ime_mode("japanese", client, current_mode)
@@ -1269,7 +1387,12 @@ def _run_cli(args: list[str]) -> int:
 
     if len(args) == 1:
         text = _resolve_text_argument(args[0])
-        _input_resolved_text(text)
+        try:
+            _input_resolved_text(text)
+        except OllamaSegmentationError as exc:
+            print(f"Ollama文節分割エラー: {exc}")
+            print("Ollamaの動作確認: python -m automation.ollama_segment_probe")
+            return 1
         return 0
 
     if len(args) >= 2 and args[0] == "open test":
@@ -1277,7 +1400,12 @@ def _run_cli(args: list[str]) -> int:
         text = _resolve_text_argument(args[1])
         print(f"テスト患者カルテを開いてから入力: {text!r}")
         open_test_patient_chart()
-        _input_resolved_text(text)
+        try:
+            _input_resolved_text(text)
+        except OllamaSegmentationError as exc:
+            print(f"Ollama文節分割エラー: {exc}")
+            print("Ollamaの動作確認: python -m automation.ollama_segment_probe")
+            return 1
         return 0
 
     print("使い方:")
