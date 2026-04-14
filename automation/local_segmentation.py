@@ -49,19 +49,28 @@ _PUNCTUATION_ROMAJI = {
     "］": "]",
     "【": "[",
     "】": "]",
+    "「": "[",   # 日本語モードで lbracket キー → 「
+    "」": "]",   # 日本語モードで rbracket キー → 」
+    "『": "[",   # 同上
+    "』": "]",
 }
 
 # Windows IME が一語として認識しにくい医療用語を手動で分割するテーブル。
 # セグメントが丸ごとこのテーブルのキーに一致した場合、代わりにここで定義した
 # (text, romaji) のリストに展開する。
 _MANUAL_WORD_SPLITS: dict[str, list[tuple[str, str]]] = {
-    "咽頭痛":  [("咽頭", "intou"), ("痛", "tsuu")],
-    "関節痛":  [("関節", "kansetsu"), ("痛", "tsuu")],
-    "筋肉痛":  [("筋肉", "kinniku"), ("痛", "tsuu")],
-    "頭痛":    [("頭", "atama"), ("痛", "tsuu")],   # ずつう は IME に入りにくい
-    "腹痛":    [("腹", "hara"), ("痛", "tsuu")],
-    "胸痛":    [("胸", "mune"), ("痛", "tsuu")],
-    "背部痛":  [("背部", "haibu"), ("痛", "tsuu")],
+    "咽頭痛":      [("咽頭", "intou"), ("痛", "tsuu")],
+    "関節痛":      [("関節", "kansetsu"), ("痛", "tsuu")],
+    "筋肉痛":      [("筋肉", "kinniku"), ("痛", "tsuu")],
+    "頭痛":        [("頭", "atama"), ("痛", "tsuu")],   # ずつう は IME に入りにくい
+    "腹痛":        [("腹", "hara"), ("痛", "tsuu")],
+    "胸痛":        [("胸", "mune"), ("痛", "tsuu")],
+    "背部痛":      [("背部", "haibu"), ("痛", "tsuu")],
+    # 長い複合動詞: Windows IME が一語として変換できないため分割する
+    "吸えなくなった": [("吸え", "sue"), ("なくなった", "nakunatta")],
+    "使ったが":    [("使った", "tsukatta"), ("が", "ga")],
+    "改善しない":  [("改善", "kaizen"), ("しない", "shinai")],
+    "改善しないため": [("改善", "kaizen"), ("しない", "shinai"), ("ため", "tame")],
 }
 
 
@@ -71,9 +80,15 @@ def _should_merge(pos: tuple[str, ...]) -> bool:
 
 
 def _katakana_to_romaji(kana: str) -> str:
-    """カタカナ読みをヘボン式ローマ字に変換する。"""
+    """カタカナ読みをヘボン式ローマ字に変換する。
+
+    カタカナ長音符 ー (U+30FC) は日本語IMEで「-」キーで入力するため、
+    pykakasi に渡す前に「-」に置換する。
+    （pykakasi はー を直前の母音の繰り返し "ee" などに変換してしまうため。）
+    """
+    kana_normalized = kana.replace("ー", "-")
     kks = _get_kks()
-    return "".join(item["hepburn"] for item in kks.convert(kana))
+    return "".join(item["hepburn"] for item in kks.convert(kana_normalized))
 
 
 def segment_japanese_text_locally(

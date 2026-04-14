@@ -155,10 +155,13 @@ def _mock_match_template(scores: dict):
 
 def test_detect_ime_mode_returns_japanese_when_hiragana_template_wins():
     frame = _make_frame()
+    # 各テンプレートグループ (english×2, hiragana×2) に対して matchTemplate が呼ばれる
     with patch("cv2.imread", return_value=np.zeros((20, 159, 3), dtype=np.uint8)), \
          patch("cv2.matchTemplate", side_effect=[
-             np.full((1, 1), 0.5, dtype=np.float32),   # english score
-             np.full((1, 1), 0.9, dtype=np.float32),   # hiragana score
+             np.full((1, 1), 0.5, dtype=np.float32),   # english_ime score
+             np.full((1, 1), 0.4, dtype=np.float32),   # english_ime2 score
+             np.full((1, 1), 0.9, dtype=np.float32),   # hiragana_ime score
+             np.full((1, 1), 0.8, dtype=np.float32),   # hiragana_ime2 score
          ]):
         assert ehr_input.detect_ime_mode(frame) == "japanese"
 
@@ -167,8 +170,10 @@ def test_detect_ime_mode_returns_english_when_english_template_wins():
     frame = _make_frame()
     with patch("cv2.imread", return_value=np.zeros((28, 156, 3), dtype=np.uint8)), \
          patch("cv2.matchTemplate", side_effect=[
-             np.full((1, 1), 0.85, dtype=np.float32),  # english score
-             np.full((1, 1), 0.4, dtype=np.float32),   # hiragana score
+             np.full((1, 1), 0.85, dtype=np.float32),  # english_ime score
+             np.full((1, 1), 0.80, dtype=np.float32),  # english_ime2 score
+             np.full((1, 1), 0.4, dtype=np.float32),   # hiragana_ime score
+             np.full((1, 1), 0.3, dtype=np.float32),   # hiragana_ime2 score
          ]):
         assert ehr_input.detect_ime_mode(frame) == "english"
 
@@ -179,5 +184,7 @@ def test_detect_ime_mode_returns_none_when_both_below_threshold():
          patch("cv2.matchTemplate", side_effect=[
              np.full((1, 1), 0.3, dtype=np.float32),
              np.full((1, 1), 0.2, dtype=np.float32),
+             np.full((1, 1), 0.2, dtype=np.float32),
+             np.full((1, 1), 0.1, dtype=np.float32),
          ]):
         assert ehr_input.detect_ime_mode(frame) is None

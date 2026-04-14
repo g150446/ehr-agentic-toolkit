@@ -166,12 +166,14 @@ bool pressNamedKey(const String &keyName) {
     return true;
   }
   if (keyName == "lparen" || keyName == "left_paren") {
-    tapShiftedAscii('9');
+    // JIS keyboard: Shift+8 = '(' (US layout has Shift+9 = '(', but JIS differs)
+    tapShiftedAscii('8');
     Serial.println("-> key: (");
     return true;
   }
   if (keyName == "rparen" || keyName == "right_paren") {
-    tapShiftedAscii('0');
+    // JIS keyboard: Shift+9 = ')' (US layout has Shift+0 = ')', but JIS differs)
+    tapShiftedAscii('9');
     Serial.println("-> key: )");
     return true;
   }
@@ -186,11 +188,26 @@ bool pressNamedKey(const String &keyName) {
     return true;
   }
   if (keyName == "zenkaku") {
-    // ASCII 0x60 (backtick) maps to HID keycode 0x35 via en_US layout table.
+    // ASCII 0x60 (backtick) maps to HID keycode 0.x35 via en_US layout table.
     // On Windows with Japanese 106/109 keyboard layout, HID 0x35 = 半角/全角 key,
     // which toggles the IME between hiragana and alphanumeric input mode.
     Keyboard.write('`');
     Serial.println("-> key: zenkaku (半角/全角)");
+    return true;
+  }
+  if (keyName == "f7") {
+    Keyboard.write(KEY_F7);
+    Serial.println("-> key: F7 (全角カタカナ変換)");
+    return true;
+  }
+  if (keyName == "f8") {
+    Keyboard.write(KEY_F8);
+    Serial.println("-> key: F8 (半角カタカナ変換)");
+    return true;
+  }
+  if (keyName == "f6") {
+    Keyboard.write(KEY_F6);
+    Serial.println("-> key: F6 (全角ひらがな変換)");
     return true;
   }
   return false;
