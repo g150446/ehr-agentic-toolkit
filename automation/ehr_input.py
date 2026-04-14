@@ -835,15 +835,22 @@ def type_kanji_via_ime(
     print(f"type:{romaji} -> {'OK' if ok else 'NG'}")
     time.sleep(0.3)  # IMEがローマ字処理するまで待機
 
-    # 1回目の Space: インライン変換（ひらがな→候補に変わる）
-    print("[Space] インライン変換...")
+    # Space #1 の前にフレームをキャプチャ（インライン変換との差分検出用）
+    pre_frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if pre_frame is None:
+        raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
+
+    # 1回目の Space: インライン変換（ひらがな→第1候補に変わる、ポップアップなし）
+    print("[Space] インライン変換 (第1候補)...")
     ok = client.press_key("space")
     print(f"key:space -> {'OK' if ok else 'NG'}")
     time.sleep(wait_sec)
 
-    # ここでベースフレームをキャプチャ（インライン変換後・ポップアップ前）
-    # → 差分検出でポップアップ領域だけを正確に切り出せる
-    print("ベースフレームをキャプチャ中（ポップアップ前）...")
+    # 第1候補をキャプチャしてOCR確認
     base_frame = capture_screen(
         device_index=config.capture_device_index,
         width=config.capture_width,
@@ -852,7 +859,34 @@ def type_kanji_via_ime(
     if base_frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    # 2回目の Space: ポップアップ候補リストを開く
+    # 反転ブロック（ポップアップ）を優先し、なければ差分領域でインライン候補を検出
+    inline_roi = _find_ime_candidate_region(base_frame)
+    if inline_roi is None:
+        inline_roi = _find_changed_region(pre_frame, base_frame)
+    inline_vlm: Optional[str] = None
+    inline_combined = ""
+    if inline_roi is not None:
+        _save_debug_image(inline_roi, f"ime_inline_{target_kanji}")
+        try:
+            inline_vlm = _read_ime_candidate_with_vlm(inline_roi, target_kanji)
+            print(f"  [第1候補] Qwen読取: {inline_vlm!r}")
+        except RuntimeError as exc:
+            print(f"  [第1候補] Qwen読取失敗: {exc}")
+        ocr_results_inline = _request_ocr_results(inline_roi, config)
+        inline_combined = "".join(t for (_, t, _) in ocr_results_inline)
+        print(f"  [第1候補] OCR結合: {inline_combined!r}")
+    else:
+        print(f"  [第1候補] 変化領域を検出できませんでした")
+
+    if _ime_candidate_matches(target_kanji, inline_vlm or "") or _ime_candidate_matches(target_kanji, inline_combined):
+        print(f"  「{target_kanji}」第1候補を確認 → Enter で確定")
+        ok = client.press_key("enter")
+        print(f"key:enter -> {'OK' if ok else 'NG'}")
+        print("完了")
+        return
+
+    # 第1候補が不一致 → Space #2 でポップアップを開く（base_frame は差分検出に使用）
+    print(f"  第1候補が「{target_kanji}」と不一致。ポップアップを開きます...")
     ok = client.press_key("space")
     print(f"key:space (popup) -> {'OK' if ok else 'NG'}")
     time.sleep(wait_sec)
