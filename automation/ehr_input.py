@@ -770,8 +770,9 @@ def _parse_ime_candidate_response(content: str) -> Optional[str]:
 
 
 def _read_ime_candidate_with_vlm(frame: np.ndarray, target_kanji: str) -> Optional[str]:
+    # NOTE: Do NOT include target_kanji in the prompt — it causes the VLM to hallucinate
+    # the expected kanji even when a different candidate (e.g. 官房 vs 感冒) is highlighted.
     prompt = (
-        f"探している変換候補は「{target_kanji}」です。"
         "この画像は Windows IME の変換候補ウィンドウです。"
         "黒く反転（ハイライト）されている行の文字列だけを正確に読み取ってください。"
         "前後に余計な句読点や記号を付け足さないでください。"
@@ -914,6 +915,7 @@ def type_kanji_via_ime(
         # 全フレームをデバッグ用に保存
         _save_debug_image(popup_init_frame, f"ime_popup_{target_kanji}")
         found_pos = None
+        found_key = None  # 1-based position number shown in popup
         try:
             # 全フレームをVLMに渡して候補リストを読取（ROI検出をスキップ）
             vlm_candidates = _read_ime_popup_candidates_with_vlm(popup_init_frame)
@@ -921,17 +923,35 @@ def type_kanji_via_ime(
             for i, c in enumerate(vlm_candidates):
                 if _ime_candidate_matches(target_kanji, c):
                     found_pos = i
-                    print(f"  [VLM一致] 「{target_kanji}」を候補位置 {i} で発見 (読取: {c!r})")
+                    # Candidates may have numeric prefixes like "3感冒" or "1日前" from IME display.
+                    # Use that prefix digit as the 1-based popup position; otherwise use list index+1.
+                    m = re.match(r'^([1-9])', c)
+                    found_key = int(m.group(1)) if m else (i + 1)
+                    print(f"  [VLM一致] 「{target_kanji}」を候補位置 {i} で発見 (読取: {c!r}, ポップアップ位置: {found_key})")
                     break
         except Exception as exc:
             print(f"  VLM候補読取失敗: {exc}")
 
-        if found_pos is not None:
-            # ポップアップ開封時点での選択位置は 0。位置 found_pos へ Space×found_pos で移動。
-            print(f"  「{target_kanji}」→ Space×{found_pos}+Enter でナビゲート")
-            for _ in range(found_pos):
-                client.press_key("space")
+        if found_pos is not None and found_key is not None:
+            # IME popup opens with cursor at position 2 (1-indexed), because the
+            # 2nd Space both opens the popup AND advances the cursor from pos 1 → pos 2.
+            # Navigation strategy (no arrow keys needed):
+            #   Position 1 → Esc (back to inline pos-1) + Enter
+            #   Position 2 → Enter immediately (cursor already here)
+            #   Position N≥3 → Space×(N-2) + Enter
+            target_1based = found_key
+            if target_1based == 1:
+                print(f"  「{target_kanji}」→ Esc + Enter (ポップアップ位置 1, インライン候補に戻る)")
+                client.press_key("esc")
                 time.sleep(wait_sec)
+            elif target_1based >= 3:
+                spaces_needed = target_1based - 2  # from cursor pos 2 to target
+                print(f"  「{target_kanji}」→ Space×{spaces_needed} + Enter (ポップアップ位置 {target_1based})")
+                for _ in range(spaces_needed):
+                    client.press_key("space")
+                    time.sleep(wait_sec)
+            else:
+                print(f"  「{target_kanji}」→ Enter (ポップアップ位置 2, カーソル既存)")
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
             print("完了")

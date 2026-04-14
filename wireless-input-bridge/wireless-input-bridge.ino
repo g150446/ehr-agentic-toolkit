@@ -27,6 +27,7 @@
   - "key:lbracket" / "key:rbracket" (JIS-aware: outputs '[' / ']')
   - "key:lbrace" / "key:rbrace" (JIS-aware: outputs '{' / '}')
   - "key:lparen" / "key:rparen" / "key:percent" / "key:colon" / "key:newline"
+  - "key:up" / "key:down" / "key:left" / "key:right" (arrow keys)
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -208,6 +209,26 @@ bool pressNamedKey(const String &keyName) {
   if (keyName == "f6") {
     Keyboard.write(KEY_F6);
     Serial.println("-> key: F6 (全角ひらがな変換)");
+    return true;
+  }
+  if (keyName == "up") {
+    Keyboard.write(KEY_UP_ARROW);
+    Serial.println("-> key: Up Arrow");
+    return true;
+  }
+  if (keyName == "down") {
+    Keyboard.write(KEY_DOWN_ARROW);
+    Serial.println("-> key: Down Arrow");
+    return true;
+  }
+  if (keyName == "left") {
+    Keyboard.write(KEY_LEFT_ARROW);
+    Serial.println("-> key: Left Arrow");
+    return true;
+  }
+  if (keyName == "right") {
+    Keyboard.write(KEY_RIGHT_ARROW);
+    Serial.println("-> key: Right Arrow");
     return true;
   }
   return false;
