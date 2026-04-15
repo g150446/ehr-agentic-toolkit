@@ -40,8 +40,24 @@ def build_segmentation_prompt(text: str) -> str:
     )
 
 
+def _repair_json_array(raw: str) -> str:
+    """Fix common malformed JSON patterns from VLM output.
+
+    Handles cases like: [{"text": "x", "romaji": "y"], {"text": ...}]
+    where a closing `]` appears instead of `},` between objects.
+    """
+    # Replace `], {` (missing closing brace) with `}, {`
+    raw = re.sub(r'"\s*\]\s*,\s*\{', '"}, {', raw)
+    # Replace `"x"] }` style endings within an object
+    raw = re.sub(r'"\s*\]\s*\}', '"}', raw)
+    return raw
+
+
 def parse_segment_response(content: str) -> list[dict[str, str]]:
     """Extract and validate the JSON segment array from mlx_vlm text output."""
+    # Strip <think>...</think> blocks (Qwen3 thinking output)
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
     start = content.find("[")
     end = content.rfind("]") + 1
     if start == -1 or end == 0:
@@ -49,12 +65,18 @@ def parse_segment_response(content: str) -> list[dict[str, str]]:
             f"mlx_vlm応答からJSON配列を抽出できませんでした: {content!r}"
         )
 
+    raw = content[start:end]
     try:
-        payload = json.loads(content[start:end])
-    except json.JSONDecodeError as exc:
-        raise MlxVlmSegmentationError(
-            f"mlx_vlm応答のJSON配列を解析できませんでした: {content!r}"
-        ) from exc
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        # Try repairing common malformed patterns
+        repaired = _repair_json_array(raw)
+        try:
+            payload = json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            raise MlxVlmSegmentationError(
+                f"mlx_vlm応答のJSON配列を解析できませんでした: {content!r}"
+            ) from exc
 
     if not isinstance(payload, list):
         raise MlxVlmSegmentationError(
