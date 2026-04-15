@@ -140,19 +140,21 @@ def _resolve_text_argument(raw: str) -> str:
     return resolved
 
 
-def _input_resolved_text(text: str, windows_version: str = "windows7") -> None:
+def _input_resolved_text(
+    text: str, windows_version: str = "windows7", clear_field: bool = False
+) -> None:
     """Route already-resolved text through the existing input pipeline."""
     if _is_japanese(text):
         if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
             romaji = _kanji_to_romaji(text)
             print(f"IME変換: {romaji} → {text}")
-            type_kanji_via_ime(romaji, text, windows_version=windows_version)
+            type_kanji_via_ime(romaji, text, windows_version=windows_version, clear_field=clear_field)
         else:
-            type_japanese_sentence(text, windows_version=windows_version)
+            type_japanese_sentence(text, windows_version=windows_version, clear_field=clear_field)
         return
 
     print(f"英語入力: {text!r}")
-    _type_english_text(text, windows_version=windows_version)
+    _type_english_text(text, windows_version=windows_version, clear_field=clear_field)
 
 
 def _normalize_text_for_typing(text: str) -> str:
@@ -795,6 +797,7 @@ def type_kanji_via_ime(
     max_attempts: int = 5,
     wait_sec: float = 0.5,
     windows_version: str = "windows7",
+    clear_field: bool = False,
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -812,6 +815,7 @@ def type_kanji_via_ime(
         max_attempts: Space サイクルの最大試行回数
         wait_sec: Space 押下後に候補が表示されるまでの待機秒数
         windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
+        clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
 
     Raises:
         RuntimeError: BLE サーバー未起動、またはキャプチャ失敗の場合
@@ -820,6 +824,12 @@ def type_kanji_via_ime(
     config = load_config(skip_password=True)
 
     client = _wait_for_ble_connected()
+
+    if clear_field:
+        print("フィールドをクリア中 (Backspace x50)...")
+        for _ in range(50):
+            client.press_key("backspace")
+        time.sleep(0.3)
 
     # IME をひらがな入力モードに確保してからローマ字入力
     ime_frame = capture_screen(
@@ -1356,7 +1366,7 @@ def _segment_japanese_locally(text: str) -> list:
     return segments
 
 
-def type_japanese_sentence(text: str, windows_version: str = "windows7") -> None:
+def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_field: bool = False) -> None:
     """
     日本語・英語混在文を文節単位で入力する。
 
@@ -1372,18 +1382,20 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7") -> None
     Args:
         text: 入力するテキスト（日本語・英語混在可）
         windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
+        clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
     """
     print(f"文節分割中 (Qwen優先): {text!r}")
     config = load_config(skip_password=True)
 
     client = _wait_for_ble_connected()
 
-    # 入力前にフィールドをクリア（Backspace を送信）
-    print("フィールドをクリア中 (Backspace x50)...")
-    import time as _time
-    for _ in range(50):
-        client.press_key("backspace")
-    _time.sleep(0.3)
+    if clear_field:
+        # 入力前にフィールドをクリア（Backspace を送信）
+        print("フィールドをクリア中 (Backspace x50)...")
+        import time as _time
+        for _ in range(50):
+            client.press_key("backspace")
+        _time.sleep(0.3)
     # 開始時に1回だけ IME モードを検出し、以降は内部変数でトラッキングする
     print("現在の IME モードを検出中...")
     init_frame = capture_screen(
@@ -1459,7 +1471,7 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7") -> None
     print("\n文章入力完了")
 
 
-def _type_english_text(text: str, windows_version: str = "windows7") -> None:
+def _type_english_text(text: str, windows_version: str = "windows7", clear_field: bool = False) -> None:
     """
     英語テキストを英数字モードで直接入力する。
 
@@ -1469,10 +1481,17 @@ def _type_english_text(text: str, windows_version: str = "windows7") -> None:
     Args:
         text: 入力する英数字文字列
         windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
+        clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
     """
     config = load_config(skip_password=True)
 
     client = _wait_for_ble_connected()
+
+    if clear_field:
+        print("フィールドをクリア中 (Backspace x50)...")
+        for _ in range(50):
+            client.press_key("backspace")
+        time.sleep(0.3)
 
     frame = capture_screen(
         device_index=config.capture_device_index,
@@ -1499,6 +1518,7 @@ def _print_usage() -> None:
     print()
     print("オプション:")
     print("  --win10              Windows 10 の IME テンプレートを使用（デフォルト: Windows 7）")
+    print("  --clear              入力前に Backspace を 50 回送信してフィールドをクリアする")
     print("  --help, -h, help     このヘルプを表示")
     print()
     print("コマンド:")
@@ -1517,6 +1537,8 @@ def _print_usage() -> None:
     print("例:")
     print('  python -m automation.ehr_input 肺炎')
     print('  python -m automation.ehr_input --win10 肺炎')
+    print('  python -m automation.ehr_input --clear 肺炎')
+    print('  python -m automation.ehr_input --win10 --clear 肺炎')
     print('  python -m automation.ehr_input "COVID-19の検査"')
     print('  python -m automation.ehr_input note.txt')
     print('  python -m automation.ehr_input "open test" 肺炎')
@@ -1530,10 +1552,11 @@ def _print_usage() -> None:
 
 def _run_cli(args: list[str]) -> int:
     """CLI entry point for manual EHR input automation."""
-    # --win10 フラグを先頭で抽出（残りの args はそのまま処理）
+    # --win10 / --clear フラグを先頭で抽出（残りの args はそのまま処理）
     win10 = "--win10" in args
-    if win10:
-        args = [a for a in args if a != "--win10"]
+    clear_field = "--clear" in args
+    if win10 or clear_field:
+        args = [a for a in args if a not in ("--win10", "--clear")]
     windows_version = "windows10" if win10 else "windows7"
 
     if not args:
@@ -1590,7 +1613,7 @@ def _run_cli(args: list[str]) -> int:
             print(f"key:{key_name} -> {'OK' if ok else 'NG'}")
             return 0
         try:
-            _input_resolved_text(text, windows_version=windows_version)
+            _input_resolved_text(text, windows_version=windows_version, clear_field=clear_field)
         except MlxVlmSegmentationError as exc:
             print(f"mlx_vlm文節分割エラー: {exc}")
             print("mlx_vlmサーバーの動作確認: ./scripts/start_mlx_vlm_server.sh")
@@ -1603,7 +1626,7 @@ def _run_cli(args: list[str]) -> int:
         print(f"テスト患者カルテを開いてから入力: {text!r}")
         open_test_patient_chart()
         try:
-            _input_resolved_text(text, windows_version=windows_version)
+            _input_resolved_text(text, windows_version=windows_version, clear_field=clear_field)
         except MlxVlmSegmentationError as exc:
             print(f"mlx_vlm文節分割エラー: {exc}")
             print("mlx_vlmサーバーの動作確認: ./scripts/start_mlx_vlm_server.sh")
