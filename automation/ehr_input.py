@@ -8,16 +8,12 @@ Uses the same AsyncBLERunner pattern as ble_test_cli.py to ensure
 identical BLE event-loop behaviour on macOS CoreBluetooth.
 """
 
-import base64
 import json
 import cv2
 import re
-import socket
 import tempfile
 import os
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -37,19 +33,14 @@ from automation.mlx_vlm_segmentation import (
     segment_japanese_text_with_mlx_vlm,
 )
 from automation.ollama_segmentation import OllamaSegmentationError
+from automation.ollama_vlm_ime import (
+    OllamaVlmImeError,
+    read_inline_candidate_context,
+    read_inline_candidate_roi,
+    read_popup_candidates,
+)
 
 
-MLX_VLM_IME_URL = os.getenv(
-    "MLX_VLM_IME_URL",
-    os.getenv("MLX_VLM_SEGMENTATION_URL", "http://localhost:8181/v1/chat/completions"),
-)
-MLX_VLM_IME_MODEL = os.getenv(
-    "MLX_VLM_IME_MODEL",
-    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit"),
-)
-MLX_VLM_IME_TIMEOUT = float(
-    os.getenv("MLX_VLM_IME_TIMEOUT", os.getenv("MLX_VLM_SEGMENTATION_TIMEOUT", "120"))
-)
 
 _TEXT_NORMALIZATION_MAP = str.maketrans({
     "（": "(",
@@ -702,16 +693,9 @@ def _find_changed_region(
     largest = max(contours, key=cv2.contourArea)
     x, y, w, h_ = cv2.boundingRect(largest)
     # 最小サイズフィルタ
-    if w < 10 or h_ < 10:
+    if w < 32 or h_ < 32:
         return None
     return current[y:y + h_, x:x + w]
-
-
-def _encode_frame_as_data_url(frame: np.ndarray) -> str:
-    ok, encoded = cv2.imencode(".png", frame)
-    if not ok:
-        raise RuntimeError("IME候補画像の PNG エンコードに失敗しました")
-    return "data:image/png;base64," + base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
 def _save_debug_image(frame: np.ndarray, name: str) -> None:
@@ -766,97 +750,32 @@ def _parse_ime_candidate_response(content: str) -> Optional[str]:
     quoted = re.search(r'"candidate"\s*:\s*"([^"]+)"', content)
     if quoted:
         return quoted.group(1).strip() or None
-    return content.strip() or None
+    # Handle Python-dict-style single-quoted responses (e.g. {'candidate': '通'})
+    single_quoted = re.search(r"'candidate'\s*:\s*'([^']+)'", content)
+    if single_quoted:
+        return single_quoted.group(1).strip() or None
+    # Last resort: return None rather than raw content (which would cause false positives)
+    return None
 
 
 def _read_ime_candidate_with_vlm(frame: np.ndarray, target_kanji: str) -> Optional[str]:
     # NOTE: Do NOT include target_kanji in the prompt — it causes the VLM to hallucinate
     # the expected kanji even when a different candidate (e.g. 官房 vs 感冒) is highlighted.
-    prompt = (
-        "この画像は Windows IME の変換候補ウィンドウです。"
-        "黒く反転（ハイライト）されている行の文字列だけを正確に読み取ってください。"
-        "前後に余計な句読点や記号を付け足さないでください。"
-        "読めない場合は null を返してください。"
-        "JSONのみで回答してください。"
-        ' 形式: {"candidate": "候補文字列"} または {"candidate": null}'
-    )
-    payload = {
-        "model": MLX_VLM_IME_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": _encode_frame_as_data_url(frame)}},
-            ],
-        }],
-        "stream": False,
-    }
-    req = urllib.request.Request(
-        MLX_VLM_IME_URL,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=MLX_VLM_IME_TIMEOUT) as resp:
-            result = json.loads(resp.read())
-    except (TimeoutError, socket.timeout) as exc:
-        raise RuntimeError(
-            f"IME候補確認の mlx_vlm リクエストが {MLX_VLM_IME_TIMEOUT:g} 秒でタイムアウトしました"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"IME候補確認の mlx_vlm 接続に失敗しました: {exc.reason}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("IME候補確認の mlx_vlm 応答 JSON を解析できませんでした") from exc
-
-    content = _extract_vlm_text_content(result)
-    return _parse_ime_candidate_response(content)
+        return read_inline_candidate_roi(frame)
+    except OllamaVlmImeError as exc:
+        raise RuntimeError(f"IME候補確認の Ollama VLM 呼び出しが失敗しました: {exc}") from exc
 
 
 def _read_ime_inline_candidate_fullframe(frame: np.ndarray, target_kanji: str) -> Optional[str]:
-    """フルフレームからインライン変換候補を読み取る（ROI検出失敗時のフォールバック）。
+    """全画面フレームからインライン変換候補を読み取る（ROI検出失敗時のフォールバック）。
 
-    インラインIME変換では入力文字列の一部が白黒反転（黒背景・白文字）で表示される。
-    ROIが小さすぎてVLMが失敗する場合、全体フレームから反転テキストを探す。
+    フレームを中央帯にクロップしてから Ollama qwen3.5:9b に送信する。
     """
-    prompt = (
-        "この画像はWindowsの画面です。"
-        "テキスト入力フィールドの中で、黒背景・白文字で反転表示されている文字列を読み取ってください。"
-        "それはIMEインライン変換候補です（ポップアップではなく、入力中のテキスト内に表示されています）。"
-        "見つかった場合はその文字列のみを返してください。見つからない場合は null を返してください。"
-        "JSONのみで回答してください。"
-        ' 形式: {"candidate": "文字列"} または {"candidate": null}'
-    )
-    payload = {
-        "model": MLX_VLM_IME_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": _encode_frame_as_data_url(frame)}},
-            ],
-        }],
-        "stream": False,
-    }
-    req = urllib.request.Request(
-        MLX_VLM_IME_URL,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=MLX_VLM_IME_TIMEOUT) as resp:
-            result = json.loads(resp.read())
-    except (TimeoutError, socket.timeout) as exc:
-        raise RuntimeError(
-            f"インライン候補フルフレームVLMが {MLX_VLM_IME_TIMEOUT:g} 秒でタイムアウトしました"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"インライン候補フルフレームVLM接続失敗: {exc.reason}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("インライン候補フルフレームVLM応答JSONを解析できませんでした") from exc
-
-    content = _extract_vlm_text_content(result)
-    return _parse_ime_candidate_response(content)
+        return read_inline_candidate_context(frame)
+    except OllamaVlmImeError as exc:
+        raise RuntimeError(f"インライン候補フルフレーム Ollama VLM 呼び出しが失敗しました: {exc}") from exc
 
 
 def type_kanji_via_ime(
@@ -961,7 +880,7 @@ def type_kanji_via_ime(
 
     if (_ime_candidate_matches(target_kanji, inline_vlm or "")
             or _ime_candidate_matches(target_kanji, inline_combined)
-            or _ime_candidate_matches(target_kanji, inline_fullframe_vlm or "")):
+            or _ime_fullframe_exact_match(target_kanji, inline_fullframe_vlm or "")):
         print(f"  「{target_kanji}」第1候補を確認 → Enter で確定")
         ok = client.press_key("enter")
         print(f"key:enter -> {'OK' if ok else 'NG'}")
@@ -1062,59 +981,14 @@ def type_kanji_via_ime(
 
 
 def _read_ime_popup_candidates_with_vlm(frame: np.ndarray) -> list[str]:
-    """VLM（Qwen）を使って IME ポップアップ候補リスト全体を読み取る。
+    """Ollama VLM を使って IME ポップアップ候補リスト全体を読み取る。
+
+    ポップアップ領域を自動検出してクロップしてから qwen3.5:9b に送信する。
 
     Returns:
         候補文字列のリスト（表示順、0-indexed）。失敗時は空リスト。
     """
-    prompt = (
-        "この画面には Windows 日本語IME の変換候補リストが表示されています。"
-        "候補リスト（縦に並んだ変換候補のポップアップ）を探し、"
-        "上から下の順に、番号なしの純粋なテキストとして配列で返してください。"
-        "候補リスト以外のテキスト（入力中の文章や画面上の他のテキスト）は含めないでください。"
-        "JSONのみで回答してください。"
-        ' 形式: {"candidates": ["候補1", "候補2", "候補3", ...]}'
-    )
-    payload = {
-        "model": MLX_VLM_IME_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": _encode_frame_as_data_url(frame)}},
-            ],
-        }],
-        "stream": False,
-    }
-    req = urllib.request.Request(
-        MLX_VLM_IME_URL,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=MLX_VLM_IME_TIMEOUT) as resp:
-            result = json.loads(resp.read())
-    except Exception as exc:
-        print(f"  [VLM候補リスト] 取得失敗: {exc}")
-        return []
-
-    content = _extract_vlm_text_content(result)
-    if not content:
-        return []
-    # JSON から candidates 配列を抽出
-    try:
-        # コードブロックを除去してJSONパース
-        cleaned = re.sub(r"```[a-z]*\n?", "", content).strip().rstrip("```").strip()
-        # JSONオブジェクトを検索
-        m = re.search(r'\{.*\}', cleaned, re.DOTALL)
-        if m:
-            parsed = json.loads(m.group())
-            candidates = parsed.get("candidates", [])
-            if isinstance(candidates, list):
-                return [str(c).strip() for c in candidates if str(c).strip()]
-    except (json.JSONDecodeError, AttributeError):
-        pass
-    return []
+    return read_popup_candidates(frame)
 
 
 def _extract_ime_candidates(ocr_texts: list[str]) -> list[str]:
@@ -1152,6 +1026,18 @@ def _ime_candidate_matches(target: str, combined: str) -> bool:
             if mismatches <= 1:
                 return True
     return False
+
+
+def _ime_fullframe_exact_match(target: str, fullframe_result: str) -> bool:
+    """フルフレームVLM結果との厳格な一致判定。
+
+    フルフレームVLMは前後の入力済み文字列まで含めて返すことがあるため、
+    部分一致は使わず、完全一致のみを許容する。
+    """
+    if not fullframe_result or not target:
+        return False
+    return fullframe_result.strip() == target
+
 
 
 def _is_ascii_only(text: str) -> bool:
@@ -1325,6 +1211,12 @@ def type_japanese_sentence(text: str) -> None:
 
     client = _wait_for_ble_connected()
 
+    # 入力前にフィールドをクリア（Backspace を送信）
+    print("フィールドをクリア中 (Backspace x50)...")
+    import time as _time
+    for _ in range(50):
+        client.press_key("backspace")
+    _time.sleep(0.3)
     # 開始時に1回だけ IME モードを検出し、以降は内部変数でトラッキングする
     print("現在の IME モードを検出中...")
     init_frame = capture_screen(
