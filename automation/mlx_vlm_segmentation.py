@@ -17,7 +17,7 @@ MLX_VLM_SEGMENTATION_URL = os.getenv(
 )
 MLX_VLM_SEGMENTATION_MODEL = os.getenv(
     "MLX_VLM_SEGMENTATION_MODEL",
-    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit"),
+    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3-VL-8B-Instruct-4bit"),
 )
 MLX_VLM_SEGMENTATION_TIMEOUT = float(os.getenv("MLX_VLM_SEGMENTATION_TIMEOUT", "120"))
 

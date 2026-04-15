@@ -11,8 +11,8 @@ else
 fi
 
 case "$MODEL_INPUT" in
-    qwen)
-        MODEL="mlx-community/Qwen3.5-4B-MLX-4bit"
+    qwen|qwen3vl)
+        MODEL="mlx-community/Qwen3-VL-8B-Instruct-4bit"
         ;;
     gemma)
         MODEL="mlx-community/gemma-4-e2b-it-4bit"

@@ -231,6 +231,32 @@ bool pressNamedKey(const String &keyName) {
     Serial.println("-> key: Right Arrow");
     return true;
   }
+  if (keyName == "end") {
+    Keyboard.write(KEY_END);
+    Serial.println("-> key: End");
+    return true;
+  }
+  if (keyName == "home") {
+    Keyboard.write(KEY_HOME);
+    Serial.println("-> key: Home");
+    return true;
+  }
+  if (keyName == "ctrl_a" || keyName == "select_all") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press('a');
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+A");
+    return true;
+  }
+  if (keyName == "ctrl_z" || keyName == "undo") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press('z');
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+Z");
+    return true;
+  }
   return false;
 }
 

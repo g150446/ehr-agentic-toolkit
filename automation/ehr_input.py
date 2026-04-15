@@ -32,9 +32,8 @@ from automation.mlx_vlm_segmentation import (
     MlxVlmSegmentationError,
     segment_japanese_text_with_mlx_vlm,
 )
-from automation.ollama_segmentation import OllamaSegmentationError
-from automation.ollama_vlm_ime import (
-    OllamaVlmImeError,
+from automation.mlx_vlm_ime import (
+    MlxVlmImeError,
     read_inline_candidate_context,
     read_inline_candidate_roi,
     read_popup_candidates,
@@ -140,19 +139,19 @@ def _resolve_text_argument(raw: str) -> str:
     return resolved
 
 
-def _input_resolved_text(text: str) -> None:
+def _input_resolved_text(text: str, windows_version: str = "windows7") -> None:
     """Route already-resolved text through the existing input pipeline."""
     if _is_japanese(text):
         if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
             romaji = _kanji_to_romaji(text)
             print(f"IME変換: {romaji} → {text}")
-            type_kanji_via_ime(romaji, text)
+            type_kanji_via_ime(romaji, text, windows_version=windows_version)
         else:
-            type_japanese_sentence(text)
+            type_japanese_sentence(text, windows_version=windows_version)
         return
 
     print(f"英語入力: {text!r}")
-    _type_english_text(text)
+    _type_english_text(text, windows_version=windows_version)
 
 
 def _normalize_text_for_typing(text: str) -> str:
@@ -553,11 +552,18 @@ _MATCH_TEMPLATES_DIR = os.path.join(
     "match_templates",
 )
 EDIT_BUTTON_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "edit_button.jpg")
-ENGLISH_IME_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "english_ime.png")
-HIRAGANA_IME_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "hiragana_ime.png")
-# 新デザイン（ime2）のテンプレート（存在する場合のみ使用）
-ENGLISH_IME_TEMPLATE2 = os.path.join(_MATCH_TEMPLATES_DIR, "english_ime2.png")
-HIRAGANA_IME_TEMPLATE2 = os.path.join(_MATCH_TEMPLATES_DIR, "hiragana_ime2.png")
+
+# Windows バージョン別 IME テンプレート
+_ENGLISH_IME_TEMPLATE_WIN7   = os.path.join(_MATCH_TEMPLATES_DIR, "windows7",  "english_ime.png")
+_HIRAGANA_IME_TEMPLATE_WIN7  = os.path.join(_MATCH_TEMPLATES_DIR, "windows7",  "hiragana_ime.png")
+_ENGLISH_IME_TEMPLATE_WIN10  = os.path.join(_MATCH_TEMPLATES_DIR, "windows10", "english_ime2.png")
+_HIRAGANA_IME_TEMPLATE_WIN10 = os.path.join(_MATCH_TEMPLATES_DIR, "windows10", "hiragana_ime2.png")
+
+# バージョン名 → (英語テンプレート, ひらがなテンプレート) の対応表
+_IME_TEMPLATES: dict[str, tuple[str, str]] = {
+    "windows7":  (_ENGLISH_IME_TEMPLATE_WIN7,  _HIRAGANA_IME_TEMPLATE_WIN7),
+    "windows10": (_ENGLISH_IME_TEMPLATE_WIN10, _HIRAGANA_IME_TEMPLATE_WIN10),
+}
 
 
 def _find_button_with_template(
@@ -763,19 +769,19 @@ def _read_ime_candidate_with_vlm(frame: np.ndarray, target_kanji: str) -> Option
     # the expected kanji even when a different candidate (e.g. 官房 vs 感冒) is highlighted.
     try:
         return read_inline_candidate_roi(frame)
-    except OllamaVlmImeError as exc:
-        raise RuntimeError(f"IME候補確認の Ollama VLM 呼び出しが失敗しました: {exc}") from exc
+    except MlxVlmImeError as exc:
+        raise RuntimeError(f"IME候補確認の mlx_vlm 呼び出しが失敗しました: {exc}") from exc
 
 
 def _read_ime_inline_candidate_fullframe(frame: np.ndarray, target_kanji: str) -> Optional[str]:
     """全画面フレームからインライン変換候補を読み取る（ROI検出失敗時のフォールバック）。
 
-    フレームを中央帯にクロップしてから Ollama qwen3.5:9b に送信する。
+    フレームを中央帯にクロップしてから mlx_vlm サーバーに送信する。
     """
     try:
         return read_inline_candidate_context(frame)
-    except OllamaVlmImeError as exc:
-        raise RuntimeError(f"インライン候補フルフレーム Ollama VLM 呼び出しが失敗しました: {exc}") from exc
+    except MlxVlmImeError as exc:
+        raise RuntimeError(f"インライン候補フルフレーム mlx_vlm 呼び出しが失敗しました: {exc}") from exc
 
 
 def type_kanji_via_ime(
@@ -783,6 +789,7 @@ def type_kanji_via_ime(
     target_kanji: str,
     max_attempts: int = 5,
     wait_sec: float = 0.5,
+    windows_version: str = "windows7",
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -799,6 +806,7 @@ def type_kanji_via_ime(
         target_kanji: 確定したい漢字（例: "肺炎"）
         max_attempts: Space サイクルの最大試行回数
         wait_sec: Space 押下後に候補が表示されるまでの待機秒数
+        windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
 
     Raises:
         RuntimeError: BLE サーバー未起動、またはキャプチャ失敗の場合
@@ -815,7 +823,7 @@ def type_kanji_via_ime(
         height=config.capture_height,
     )
     if ime_frame is not None:
-        current_mode = detect_ime_mode(ime_frame)
+        current_mode = detect_ime_mode(ime_frame, windows_version=windows_version)
         ensure_ime_mode("japanese", client, current_mode)
     else:
         print("  [警告] IMEモード確認用キャプチャ失敗 — ひらがなモードと仮定")
@@ -981,9 +989,9 @@ def type_kanji_via_ime(
 
 
 def _read_ime_popup_candidates_with_vlm(frame: np.ndarray) -> list[str]:
-    """Ollama VLM を使って IME ポップアップ候補リスト全体を読み取る。
+    """mlx_vlm を使って IME ポップアップ候補リスト全体を読み取る。
 
-    ポップアップ領域を自動検出してクロップしてから qwen3.5:9b に送信する。
+    ポップアップ領域を自動検出してクロップしてから Qwen3-VL に送信する。
 
     Returns:
         候補文字列のリスト（表示順、0-indexed）。失敗時は空リスト。
@@ -1053,17 +1061,24 @@ def _is_katakana_only(text: str) -> bool:
     )
 
 
-def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
+def detect_ime_mode(
+    frame: np.ndarray,
+    config=None,
+    windows_version: str = "windows7",
+) -> Optional[str]:
     """
     OpenCV テンプレートマッチングで IME モードを検出する。
 
     Windows IME は画面下部（タスクバー付近）に現在のモードを示す小さなインジケーターを
     表示する。ひらがなモードでは「あ」、英数字モードでは「A」が表示される。
-    複数のテンプレートデザイン（ime.png / ime2.png）に対応し、最大スコアを採用する。
+    windows_version に応じたテンプレートセットのみを使用することで
+    Windows バージョン間の誤マッチを防ぐ。
 
     Args:
         frame: HDMI キャプチャフレーム（BGR numpy 配列）
         config: 未使用（互換性維持のため残す）
+        windows_version: 使用するテンプレートの Windows バージョン。
+                         "windows7"（デフォルト）または "windows10"。
 
     Returns:
         'japanese': ひらがな入力モード
@@ -1072,27 +1087,32 @@ def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
     """
     _IME_TEMPLATE_THRESHOLD = 0.7
     h = frame.shape[0]
-    # Search only the bottom 250px where the IME toolbar resides.
-    # The Windows IME toolbar appears at y≈868 in 1080p (≈210px from bottom).
-    # Restricting the ROI prevents false matches in the document body.
     roi = frame[max(0, h - 250):h, :]
 
     def _best_score(template_paths: list[str]) -> float:
         best = 0.0
         for path in template_paths:
+            name = os.path.basename(path)
             tmpl = cv2.imread(path)
             if tmpl is None:
+                print(f"    [IMEテンプレート] {name}: 読み込み失敗（ファイルが見つからないか無効）")
                 continue
             if tmpl.shape[0] > roi.shape[0] or tmpl.shape[1] > roi.shape[1]:
+                print(f"    [IMEテンプレート] {name}: ROIより大きいためスキップ (tmpl={tmpl.shape[:2]}, roi={roi.shape[:2]})")
                 continue
             res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCOEFF_NORMED)
             score = float(cv2.minMaxLoc(res)[1])
+            print(f"    [IMEテンプレート] {name}: スコア={score:.3f}")
             if score > best:
                 best = score
         return best
 
-    eng_score = _best_score([ENGLISH_IME_TEMPLATE, ENGLISH_IME_TEMPLATE2])
-    hira_score = _best_score([HIRAGANA_IME_TEMPLATE, HIRAGANA_IME_TEMPLATE2])
+    if windows_version not in _IME_TEMPLATES:
+        raise ValueError(f"未対応の windows_version: {windows_version!r}。'windows7' または 'windows10' を指定してください。")
+    eng_tmpl, hira_tmpl = _IME_TEMPLATES[windows_version]
+
+    eng_score  = _best_score([eng_tmpl])
+    hira_score = _best_score([hira_tmpl])
 
     print(f"  [IME検出] 英語スコア: {eng_score:.3f}, ひらがなスコア: {hira_score:.3f}")
 
@@ -1190,7 +1210,7 @@ def _segment_japanese_locally(text: str) -> list:
     return segments
 
 
-def type_japanese_sentence(text: str) -> None:
+def type_japanese_sentence(text: str, windows_version: str = "windows7") -> None:
     """
     日本語・英語混在文を文節単位で入力する。
 
@@ -1205,6 +1225,7 @@ def type_japanese_sentence(text: str) -> None:
 
     Args:
         text: 入力するテキスト（日本語・英語混在可）
+        windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
     """
     print(f"文節分割中 (Qwen優先): {text!r}")
     config = load_config(skip_password=True)
@@ -1226,7 +1247,7 @@ def type_japanese_sentence(text: str) -> None:
     )
     current_mode: Optional[str] = None
     if init_frame is not None:
-        current_mode = detect_ime_mode(init_frame, config)
+        current_mode = detect_ime_mode(init_frame, config, windows_version=windows_version)
     print(f"初期 IME モード: {current_mode!r}")
 
     for seg in _iter_segments_for_input(text):
@@ -1259,7 +1280,7 @@ def type_japanese_sentence(text: str) -> None:
         elif _has_kanji(seg_text):
             # 漢字を含む文節: ひらがなモードで IME 変換候補を確認してから確定
             current_mode = ensure_ime_mode("japanese", client, current_mode)
-            type_kanji_via_ime(seg_romaji, seg_text)
+            type_kanji_via_ime(seg_romaji, seg_text, windows_version=windows_version)
 
         elif _is_katakana_only(seg_text):
             # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Enter
@@ -1292,7 +1313,7 @@ def type_japanese_sentence(text: str) -> None:
     print("\n文章入力完了")
 
 
-def _type_english_text(text: str) -> None:
+def _type_english_text(text: str, windows_version: str = "windows7") -> None:
     """
     英語テキストを英数字モードで直接入力する。
 
@@ -1301,6 +1322,7 @@ def _type_english_text(text: str) -> None:
 
     Args:
         text: 入力する英数字文字列
+        windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
     """
     config = load_config(skip_password=True)
 
@@ -1314,7 +1336,7 @@ def _type_english_text(text: str) -> None:
     if frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    current_mode = detect_ime_mode(frame, config)
+    current_mode = detect_ime_mode(frame, config, windows_version=windows_version)
     ensure_ime_mode("english", client, current_mode)
 
     print(f"英語入力: {text!r}")
@@ -1322,11 +1344,59 @@ def _type_english_text(text: str) -> None:
     print("完了")
 
 
+def _print_usage() -> None:
+    """使い方を表示する。"""
+    print("EHR Input Automation")
+    print()
+    print("使い方:")
+    print("  python -m automation.ehr_input [オプション] [コマンド/テキスト]")
+    print()
+    print("オプション:")
+    print("  --win10              Windows 10 の IME テンプレートを使用（デフォルト: Windows 7）")
+    print("  --help, -h, help     このヘルプを表示")
+    print()
+    print("コマンド:")
+    print("  (引数なし)                         テスト患者カルテを開く")
+    print("  open test                          テスト患者カルテを開く")
+    print("  close record                       取り消し[F9]ボタンをクリックしてカルテを閉じる")
+    print("  click history <yyyymmdd>           過去カルテの指定日付をクリック")
+    print("  edit history <yyyymmdd>            過去カルテ日付クリック後に修正ボタンをクリック")
+    print("  detect                             IMEモードを検出して表示")
+    print()
+    print("テキスト入力:")
+    print("  <テキスト>                         テキストを入力（日本語はIME変換）")
+    print("  <ファイル.txt>                     テキストファイルの内容を入力")
+    print("  open test <テキスト/ファイル>      カルテを開いてからテキスト入力")
+    print()
+    print("例:")
+    print('  python -m automation.ehr_input 肺炎')
+    print('  python -m automation.ehr_input --win10 肺炎')
+    print('  python -m automation.ehr_input "COVID-19の検査"')
+    print('  python -m automation.ehr_input note.txt')
+    print('  python -m automation.ehr_input "open test" 肺炎')
+    print('  python -m automation.ehr_input --win10 "open test" "MRI所見"')
+    print('  python -m automation.ehr_input "click history 20190502"')
+    print()
+    print("IMEテンプレート:")
+    print("  Windows 7:  match_templates/windows7/english_ime.png, hiragana_ime.png")
+    print("  Windows 10: match_templates/windows10/english_ime2.png, hiragana_ime2.png")
+
+
 def _run_cli(args: list[str]) -> int:
     """CLI entry point for manual EHR input automation."""
+    # --win10 フラグを先頭で抽出（残りの args はそのまま処理）
+    win10 = "--win10" in args
+    if win10:
+        args = [a for a in args if a != "--win10"]
+    windows_version = "windows10" if win10 else "windows7"
+
     if not args:
         # 引数なし: デフォルト動作（後方互換）
         open_test_patient_chart()
+        return 0
+
+    if len(args) == 1 and args[0] in ("help", "--help", "-h"):
+        _print_usage()
         return 0
 
     if len(args) == 1 and args[0] == "open test":
@@ -1374,10 +1444,10 @@ def _run_cli(args: list[str]) -> int:
             print(f"key:{key_name} -> {'OK' if ok else 'NG'}")
             return 0
         try:
-            _input_resolved_text(text)
-        except OllamaSegmentationError as exc:
-            print(f"Ollama文節分割エラー: {exc}")
-            print("Ollamaの動作確認: python -m automation.ollama_segment_probe")
+            _input_resolved_text(text, windows_version=windows_version)
+        except MlxVlmSegmentationError as exc:
+            print(f"mlx_vlm文節分割エラー: {exc}")
+            print("mlx_vlmサーバーの動作確認: ./scripts/start_mlx_vlm_server.sh")
             return 1
         return 0
 
@@ -1387,26 +1457,14 @@ def _run_cli(args: list[str]) -> int:
         print(f"テスト患者カルテを開いてから入力: {text!r}")
         open_test_patient_chart()
         try:
-            _input_resolved_text(text)
-        except OllamaSegmentationError as exc:
-            print(f"Ollama文節分割エラー: {exc}")
-            print("Ollamaの動作確認: python -m automation.ollama_segment_probe")
+            _input_resolved_text(text, windows_version=windows_version)
+        except MlxVlmSegmentationError as exc:
+            print(f"mlx_vlm文節分割エラー: {exc}")
+            print("mlx_vlmサーバーの動作確認: ./scripts/start_mlx_vlm_server.sh")
             return 1
         return 0
 
-    print("使い方:")
-    print('  python -m automation.ehr_input                         # テスト患者カルテを開く')
-    print('  python -m automation.ehr_input "open test"             # テスト患者カルテを開く')
-    print('  python -m automation.ehr_input "close record"          # 取り消し[F9]ボタンをクリックしてカルテを閉じる')
-    print('  python -m automation.ehr_input "click history 20190502"  # 過去カルテの指定日付をクリック')
-    print('  python -m automation.ehr_input "edit history 20190502"   # 過去カルテ日付クリック後に修正ボタンをクリック')
-    print('  python -m automation.ehr_input 肺炎                    # IME変換のみ')
-    print('  python -m automation.ehr_input note.txt                # テキストファイル内容を入力')
-    print('  python -m automation.ehr_input "COVID-19の検査"        # 日英混在入力')
-    print('  python -m automation.ehr_input tesuto                  # 英語直接入力')
-    print('  python -m automation.ehr_input "open test" 肺炎        # カルテを開いてからIME変換')
-    print('  python -m automation.ehr_input "open test" note.txt    # カルテを開いてからファイル内容を入力')
-    print('  python -m automation.ehr_input "open test" "MRI所見"   # カルテを開いてから混在入力')
+    _print_usage()
     return 1
 
 

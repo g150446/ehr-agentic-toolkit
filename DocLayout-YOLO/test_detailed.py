@@ -12,7 +12,7 @@ args = parser.parse_args()
 start_time = time.time()
 
 # Load the pre-trained model
-model = YOLOv10("./models/doclayout.pt")
+model = YOLOv10("./models/doclayout_docstructbench.pt")
 
 # Perform prediction with adjusted parameters
 det_res = model.predict(

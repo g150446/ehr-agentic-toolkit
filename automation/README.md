@@ -26,11 +26,19 @@ Automated EHR field input and patient chart opening via HDMI screen capture, OCR
 # 引数なし: テスト患者カルテを開く
 python -m automation.ehr_input
 
-# 日本語テキスト: IME変換のみ実行（カルテは開かない）
+# ヘルプを表示
+python -m automation.ehr_input help
+python -m automation.ehr_input --help
+
+# 日本語テキスト: IME変換のみ実行（Windows 7 モード、デフォルト）
 python -m automation.ehr_input 肺炎
+
+# Windows 10 モード: Windows 10 の IME テンプレートを使用
+python -m automation.ehr_input --win10 肺炎
 
 # 英語テキスト: 英数字モードで直接入力
 python -m automation.ehr_input tesuto
+python -m automation.ehr_input --win10 tesuto
 
 # テキストファイル: 内容を読み込んで入力
 python -m automation.ehr_input data/patient_records/asthma_1.txt
@@ -45,9 +53,10 @@ python -m automation.ehr_input "close record"
 python -m automation.ehr_input "open test" 肺炎
 python -m automation.ehr_input "open test" "MRI所見"
 python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
+python -m automation.ehr_input --win10 "open test" "MRI所見"
 ```
 
-日本語テキストを渡すと、`ehr_input.py` は **Qwen 3.5 4B MLX を優先して文節分割**し、ローマ字はローカル辞書で補正してから IME 入力します。Qwen の分割が細かすぎて IME 候補を不安定化させる場合は、`sudachipy + pykakasi` のローカル分割へ自動フォールバックします。引数が読み取り可能なテキストファイルなら、その**ファイル内容**を同じ入力フローに流します。
+日本語テキストを渡すと、`ehr_input.py` は **Qwen3-VL-8B-Instruct（mlx_vlm）を優先して文節分割**し、ローマ字はローカル辞書で補正してから IME 入力します。Qwen の分割が細かすぎて IME 候補を不安定化させる場合は、`sudachipy + pykakasi` のローカル分割へ自動フォールバックします。引数が読み取り可能なテキストファイルなら、その**ファイル内容**を同じ入力フローに流します。
 
 4文字を超える文章や助詞を含む文は `type_japanese_sentence()` で文節単位に分割して**逐次入力**します。句読点（`、` → `,` / `。` → `.` + Enter）に加えて、改行・`[` `]` `(` `)` `%` `:` も専用キー送信に切り替えて処理します。
 
@@ -88,10 +97,10 @@ python -m automation.mlx_vlm_segment_probe "肺炎に対して抗菌薬による
 
 ### Ollama 文節分割プローブ（参考実装）
 
-Ollama (`gemma4:e2b`) を使った実装です。`ehr_input.py` では使用していませんが、Ollama の動作確認に利用できます。
+> **Ollama サポートは削除されました。** 代わりに mlx_vlm を使用してください。
 
 ```bash
-python -m automation.ollama_segment_probe "肺炎に対して抗菌薬による治療を行う"
+python -m automation.mlx_vlm_segment_probe "肺炎に対して抗菌薬による治療を行う"
 ```
 
 ### click_history
@@ -232,7 +241,13 @@ type_kanji_via_ime(romaji, "肺炎")
 
 Windows IME の現在入力モードをスクリーンキャプチャから判定し、必要に応じて切替える。
 
-**`detect_ime_mode(frame)`**: 画面下部（タスクバー付近・下100px）に対して OpenCV テンプレートマッチング（`TM_CCOEFF_NORMED`）を行い、`match_templates/english_ime.png` と `match_templates/hiragana_ime.png` のスコアを比較する。閾値 0.7 を超えた方のモードを返し、どちらも届かなければ `None` を返す。EasyOCR は使用しない。
+**`detect_ime_mode(frame, config, windows_version)`**: 画面下部（タスクバー付近・下250px）に対して OpenCV テンプレートマッチング（`TM_CCOEFF_NORMED`）を行い、Windows バージョンに対応した IME テンプレート画像のスコアを比較する。閾値 0.7 を超えた方のモードを返し、どちらも届かなければ `None` を返す。EasyOCR は使用しない。
+
+**Windows バージョン別テンプレート**:
+- `match_templates/windows7/english_ime.png`, `hiragana_ime.png` — Windows 7 用（デフォルト）
+- `match_templates/windows10/english_ime2.png`, `hiragana_ime2.png` — Windows 10 用（`--win10` オプション）
+
+異なる Windows バージョンでは IME インジケーターのデザインが異なるため、テンプレートをバージョンごとに分離している。`--win10` フラグを指定しない限り、Windows 7 テンプレートが使用される。
 
 **`ensure_ime_mode(target_mode, client, current_mode)`**: 現在モードが目標と異なる場合のみ `key:zenkaku`（半角/全角キー）を送信してトグルし、新しいモード文字列を返す。画面再キャプチャはしない設計で、呼び出し元がモードをトラッキングする。
 
@@ -242,7 +257,8 @@ from automation.screen_analyzer import capture_screen
 from automation.ble_client import BLEClient
 
 frame = capture_screen(0)
-current = detect_ime_mode(frame)       # 'japanese' / 'english' / None
+current = detect_ime_mode(frame)                          # 'japanese' / 'english' / None
+current = detect_ime_mode(frame, windows_version="windows10")  # Windows 10 モード
 client = BLEClient()
 current = ensure_ime_mode("english", client, current)  # 必要なら半角/全角を送信
 ```
@@ -595,8 +611,7 @@ All outputs are saved to `automation_outputs/`:
 - `mlx_vlm_history.py`: `mlx_vlm.server` を使う過去カルテ日付検出（`click_history()` が使用）。Qwen に過去カルテ欄の日付一覧を上から順に読ませ、対象日付の順位を EasyOCR 候補の縦順へ対応づけてクリック座標を決める。CLI実行時は修正ボタンのテンプレートマッチングも実施
 - `mlx_vlm_segmentation.py`: `mlx_vlm.server` を使った日本語文節分割ヘルパー (参考実装、こちらもテキスト入力のみ)
 - `mlx_vlm_segment_probe.py`: mlx_vlm 文節分割 CLI プローブ
-- `ollama_segmentation.py`: Ollama を使った日本語文節分割ヘルパー (参考実装)
-- `ollama_segment_probe.py`: Ollama 文節分割 CLI プローブ
+- `mlx_vlm_ime.py`: `mlx_vlm.server`（Qwen3-VL-8B-Instruct）を使った IME 変換候補読み取りヘルパー（`ehr_input.py` が使用）
 
 ### Adding Features
 
