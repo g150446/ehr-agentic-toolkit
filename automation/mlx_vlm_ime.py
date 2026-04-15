@@ -334,6 +334,68 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
     return _parse_candidate_response(content)
 
 
+def read_popup_candidates_numbered(frame: np.ndarray) -> list[tuple[int, str]]:
+    """IME ポップアップ候補リストを番号付きで読み取る（1回のVLMコールで番号+テキストを取得）。
+
+    VLM に番号とテキストの両方を返すよう指示し、表示番号の信頼性を高める。
+    `read_popup_candidates()` + `read_candidate_display_number()` の2コール相当を1コールで実現。
+
+    Args:
+        frame: 全画面フレーム（ポップアップ表示中）
+
+    Returns:
+        (display_number, candidate_text) のリスト。表示番号順。失敗時は空リスト。
+    """
+    cropped = _crop_popup_region(crop_to_input_region(frame))
+    prompt = (
+        "この画像はWindows日本語IMEの変換候補ポップアップです。"
+        "ポップアップ内の各候補に付いた数字（1〜9）とテキストを正確に読んでください。"
+        "各行に「数字. テキスト」の形式で表示されています（例: 1. イン, 2. 院）。"
+        "数字とテキストのペアをJSONで返してください。"
+        '形式: {"candidates": [{"n": 1, "text": "イン"}, {"n": 2, "text": "院"}, {"n": 3, "text": "員"}, {"n": 4, "text": "咽頭"}]}'
+        "候補リスト以外のテキストは含めないでください。JSONのみ返してください。"
+    )
+    data_url = _encode_image_data_url(cropped)
+    try:
+        content = _call_mlx_vlm_with_image(data_url, prompt)
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        cleaned = re.sub(r"```[a-z]*\n?", "", content).strip().rstrip("`").strip()
+
+        # Try JSON parse first (fix missing commas between objects)
+        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if m:
+            json_str = m.group()
+            # Fix common VLM JSON issue: missing commas between array objects
+            json_str = re.sub(r"\}\s*\{", "}, {", json_str)
+            try:
+                parsed = json.loads(json_str)
+                items = parsed.get("candidates", [])
+                result = []
+                for item in items:
+                    n = item.get("n")
+                    text = item.get("text", "")
+                    if isinstance(n, int) and 1 <= n <= 9 and text:
+                        result.append((n, text))
+                if result:
+                    return result
+            except json.JSONDecodeError:
+                pass  # fall through to regex extraction
+
+        # Regex fallback: extract {"n": X, "text": "Y"} or "n": X ... "text": "Y" patterns
+        pairs = re.findall(r'"n"\s*:\s*(\d+)[^}]{0,80}?"text"\s*:\s*"([^"]+)"', cleaned)
+        if not pairs:
+            # Also try "text": "Y" ... "n": X order
+            pairs_rev = re.findall(r'"text"\s*:\s*"([^"]+)"[^}]{0,80}?"n"\s*:\s*(\d+)', cleaned)
+            pairs = [(n, text) for text, n in pairs_rev]
+        if pairs:
+            result = [(int(n), text) for n, text in pairs if 1 <= int(n) <= 9 and text]
+            if result:
+                return result
+    except Exception as exc:
+        print(f"  [mlx_vlm 番号付き候補取得] 失敗: {exc}")
+    return []
+
+
 def read_popup_candidates(frame: np.ndarray) -> list[str]:
     """全画面フレームから IME ポップアップ候補リスト全体を読み取る。
 

@@ -37,6 +37,7 @@ from automation.mlx_vlm_ime import (
     read_inline_candidate_context,
     read_inline_candidate_roi,
     read_popup_candidates,
+    read_popup_candidates_numbered,
 )
 
 
@@ -914,30 +915,27 @@ def type_kanji_via_ime(
     if popup_init_frame is not None:
         # 全フレームをデバッグ用に保存
         _save_debug_image(popup_init_frame, f"ime_popup_{target_kanji}")
-        found_pos = None
+
+        # 番号付き候補リストを1回のVLMコールで取得（番号とテキストの両方）
+        numbered: list[tuple[int, str]] = []
         try:
-            # 全フレームをVLMに渡して候補リストを読取（ROI検出をスキップ）
-            vlm_candidates = _read_ime_popup_candidates_with_vlm(popup_init_frame)
-            print(f"  ポップアップ候補解析(VLM全フレーム): {vlm_candidates}")
-            for i, c in enumerate(vlm_candidates):
-                if _ime_candidate_matches(target_kanji, c):
-                    found_pos = i
-                    print(f"  [VLM一致] 「{target_kanji}」を候補位置 {i} で発見 (読取: {c!r}, 表示番号: {i + 1})")
-                    break
+            numbered = read_popup_candidates_numbered(popup_init_frame)
+            print(f"  ポップアップ候補解析(VLM番号付き): {numbered}")
         except Exception as exc:
-            print(f"  VLM候補読取失敗: {exc}")
+            print(f"  VLM番号付き候補読取失敗: {exc}")
 
-        if found_pos is not None:
-            # list is returned top-to-bottom, so list index directly maps to popup display number
-            display_num = found_pos + 1  # index 0 = display#1, index 1 = display#2, ...
+        # --- 完全一致 ---
+        exact_match = _find_best_candidate_match(target_kanji, numbered)
 
+        if exact_match is not None:
+            display_num, matched_text = exact_match
+            print(f"  [VLM一致] 「{target_kanji}」→ 表示番号 {display_num} (読取: {matched_text!r})")
             if display_num <= 9:
-                print(f"  「{target_kanji}」→ type:{display_num} (表示番号 {display_num}, リスト位置 {found_pos})")
+                print(f"  「{target_kanji}」→ type:{display_num}")
                 client.send_command(f"type:{display_num}")
                 time.sleep(wait_sec)
                 print("完了")
             else:
-                # Beyond 9: navigate with Space from cursor pos 2
                 spaces_needed = display_num - 2
                 print(f"  「{target_kanji}」→ Space×{spaces_needed} + Enter (表示番号 {display_num})")
                 for _ in range(spaces_needed):
@@ -947,7 +945,128 @@ def type_kanji_via_ime(
                 print(f"key:enter -> {'OK' if ok else 'NG'}")
                 print("完了")
             return
-        print(f"  候補リストに「{target_kanji}」なし → 試行ループへ")
+        print(f"  候補リストに「{target_kanji}」なし → プレフィックス一致を試みます")
+
+        # --- プレフィックス一致: 候補の中にターゲットの前半部分があれば選択して残りを変換 ---
+        prefix_match: Optional[tuple[int, str]] = None
+        for n, c in numbered:
+            if c and 0 < len(c) < len(target_kanji) and target_kanji.startswith(c):
+                prefix_match = (n, c)
+                break
+
+        if prefix_match is not None:
+            display_num, prefix_text = prefix_match
+            remaining_target = target_kanji[len(prefix_text):]
+            print(f"  [プレフィックス一致] 「{prefix_text}」を候補で発見（表示番号: {display_num}、残り: 「{remaining_target}」）")
+            # プレフィックス候補を選択
+            if display_num <= 9:
+                print(f"  「{prefix_text}」→ type:{display_num}")
+                client.send_command(f"type:{display_num}")
+            else:
+                spaces_needed = display_num - 2
+                for _ in range(spaces_needed):
+                    client.press_key("space")
+                    time.sleep(wait_sec)
+                client.press_key("enter")
+            time.sleep(max(wait_sec, 2.0))  # ポップアップが閉じるまで待機
+
+            # プレフィックス選択後の画面を確認（デバッグ用）
+            pre_space_frame = capture_screen(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if pre_space_frame is not None:
+                _save_debug_image(pre_space_frame, f"ime_popup_{target_kanji}_after_prefix")
+
+            # 右矢印で次のセグメントに移動してからポップアップを開く
+            # （Space を押すと現在のセグメントのポップアップが再表示されるため）
+            print(f"  次セグメント「{remaining_target}」へ移動...")
+            ok = client.press_key("right")
+            print(f"key:right (次セグメント移動) -> {'OK' if ok else 'NG'}")
+            time.sleep(0.5)
+            print(f"  次セグメント「{remaining_target}」のポップアップを開きます...")
+            ok = client.press_key("space")
+            print(f"key:space (次セグメント) -> {'OK' if ok else 'NG'}")
+            time.sleep(max(wait_sec, 2.0))
+
+            rem_frame = capture_screen(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if rem_frame is None:
+                client.press_key("enter")
+                print("完了（残りフレーム取得失敗 → Enterで確定）")
+                return
+            _save_debug_image(rem_frame, f"ime_popup_{target_kanji}_remaining")
+            try:
+                rem_numbered = read_popup_candidates_numbered(rem_frame)
+                print(f"  残りポップアップ候補: {rem_numbered}")
+                rem_match = _find_best_candidate_match(remaining_target, rem_numbered)
+                if rem_match is not None:
+                    rem_display, matched_rem = rem_match
+                    print(f"  「{remaining_target}」→ 表示番号 {rem_display} (読取: {matched_rem!r})")
+                    if rem_display <= 9:
+                        print(f"  「{remaining_target}」→ type:{rem_display}")
+                        client.send_command(f"type:{rem_display}")
+                        time.sleep(wait_sec)
+                    else:
+                        spaces_needed = rem_display - 2
+                        for _ in range(spaces_needed):
+                            client.press_key("space")
+                            time.sleep(wait_sec)
+                        ok = client.press_key("enter")
+                        print(f"key:enter -> {'OK' if ok else 'NG'}")
+                    print("完了")
+                    return
+                print(f"  残りポップアップに「{remaining_target}」なし → Enterで仮確定")
+            except Exception as exc:
+                print(f"  残りポップアップVLM読取失敗: {exc}")
+            client.press_key("enter")
+            print("完了（残り部分はEnterで確定）")
+            return
+
+        # セグメント拡張 (Shift+Right) で再試行（firmware に key:shift_right サポートが必要）
+        print(f"  プレフィックス一致なし → Shift+Right でセグメント拡張を試みます")
+        for ext in range(4):
+            client.press_key("escape")
+            time.sleep(0.3)
+            client.press_key("shift_right")
+            time.sleep(0.3)
+            ok = client.press_key("space")
+            print(f"  [拡張{ext+1}] Escape+Shift+Right+Space -> {'OK' if ok else 'NG'}")
+            time.sleep(max(wait_sec, 1.0))
+
+            ext_frame = capture_screen(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if ext_frame is None:
+                continue
+            try:
+                ext_numbered = read_popup_candidates_numbered(ext_frame)
+                print(f"  [拡張{ext+1}] 候補: {ext_numbered}")
+                ext_match = _find_best_candidate_match(target_kanji, ext_numbered)
+                if ext_match is not None:
+                    display_num, c = ext_match
+                    if display_num <= 9:
+                        print(f"  「{target_kanji}」→ type:{display_num}")
+                        client.send_command(f"type:{display_num}")
+                        time.sleep(wait_sec)
+                    else:
+                        spaces_needed = display_num - 2
+                        for _ in range(spaces_needed):
+                            client.press_key("space")
+                            time.sleep(wait_sec)
+                        ok = client.press_key("enter")
+                        print(f"key:enter -> {'OK' if ok else 'NG'}")
+                    print("完了")
+                    return
+            except Exception as exc:
+                print(f"  [拡張{ext+1}] VLM読取失敗: {exc}")
+        print(f"  セグメント拡張でも「{target_kanji}」なし → 試行ループへ")
 
     for attempt in range(1, max_attempts + 1):
         # フレームキャプチャ
@@ -1038,6 +1157,29 @@ def _ime_candidate_matches(target: str, combined: str) -> bool:
             if mismatches <= 1:
                 return True
     return False
+
+
+def _find_best_candidate_match(
+    target: str, numbered: list[tuple[int, str]]
+) -> Optional[tuple[int, str]]:
+    """番号付き候補リストからターゲットに最もよく一致する候補を返す。
+
+    完全一致を優先し、なければファジーマッチを試みる。
+    例: target="痛", candidates=[(1,'通'),(2,'疼痛'),(5,'痛')] → (5, '痛')
+    """
+    # First pass: exact match (including fuzzy OCR noise, same length)
+    for n, c in numbered:
+        if c == target:
+            return (n, c)
+    # Second pass: fuzzy same-length match (OCR noise tolerance)
+    for n, c in numbered:
+        if len(c) == len(target) and _ime_candidate_matches(target, c):
+            return (n, c)
+    # Third pass: general substring/fuzzy match (e.g., target is part of candidate)
+    for n, c in numbered:
+        if _ime_candidate_matches(target, c):
+            return (n, c)
+    return None
 
 
 def _ime_fullframe_exact_match(target: str, fullframe_result: str) -> bool:

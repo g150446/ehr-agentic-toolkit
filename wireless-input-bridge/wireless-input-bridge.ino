@@ -28,6 +28,7 @@
   - "key:lbrace" / "key:rbrace" (JIS-aware: outputs '{' / '}')
   - "key:lparen" / "key:rparen" / "key:percent" / "key:colon" / "key:newline"
   - "key:up" / "key:down" / "key:left" / "key:right" (arrow keys)
+  - "key:shift_right" : Shift+Right (IME segment extension)
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -239,6 +240,15 @@ bool pressNamedKey(const String &keyName) {
   if (keyName == "home") {
     Keyboard.write(KEY_HOME);
     Serial.println("-> key: Home");
+    return true;
+  }
+  if (keyName == "shift_right") {
+    Keyboard.press(KEY_LEFT_SHIFT);
+    delay(5);
+    Keyboard.press(KEY_RIGHT_ARROW);
+    delay(5);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Shift+Right");
     return true;
   }
   if (keyName == "ctrl_a" || keyName == "select_all") {
