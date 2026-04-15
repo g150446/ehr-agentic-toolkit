@@ -34,6 +34,7 @@ from automation.mlx_vlm_segmentation import (
 )
 from automation.mlx_vlm_ime import (
     MlxVlmImeError,
+    detect_ime_mode_from_typed_a,
     read_inline_candidate_context,
     read_inline_candidate_roi,
     read_popup_candidates,
@@ -75,6 +76,24 @@ _ASCII_SPECIAL_KEYS = {
 _JP_PUNCTUATION = {
     "、": ",",
     "。": ".",
+}
+
+# 特殊日本語記号 → IME で入力するときの読み（ローマ字）
+_JP_SYMBOL_IME_READINGS: dict[str, str] = {
+    "※": "kome",
+    "〒": "yuubin",
+    "〇": "maru",
+    "〆": "shime",
+    "♪": "onpu",
+    "★": "hoshi",
+    "☆": "hoshi",
+}
+
+# BLE キーボード (ASCII のみ) では直接送信できない非 ASCII 文字の代替マッピング。
+# /μL → /uL のように医療文書で慣例的に使われる ASCII 表記で代替する。
+_CHAR_ASCII_FALLBACK: dict[str, str] = {
+    "μ": "u",   # マイクロ記号 → ASCII u (/μL → /uL)
+    "°": "",    # 度記号 → 省略（℃ は直接入力されるため通常不要）
 }
 
 
@@ -204,6 +223,34 @@ def _tokenize_text_for_input(text: str) -> list[dict[str, str]]:
     return tokens
 
 
+# セグメント単位の分割オーバーライド: Qwen/ローカル分割で1トークンにまとまる語を
+# 複数の IME 入力単位に強制分割する。IME の候補ポップアップが単体で出にくい語に対して使う。
+_SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
+    "歳頃": [{"text": "歳", "romaji": "sai"}, {"text": "頃", "romaji": "koro"}],
+    "吸入剤": [{"text": "吸入", "romaji": "kyuunyuu"}, {"text": "剤", "romaji": "zai"}],
+    "過膨張": [{"text": "過", "romaji": "ka"}, {"text": "膨張", "romaji": "bouchou"}],
+    # 肺野 (はいや) は標準 IME 辞書にない医療用語 → 肺(hai)+野(ya) に分割
+    "肺野": [{"text": "肺", "romaji": "hai"}, {"text": "野", "romaji": "ya"}],
+    # 認めるが → 認める(mitomeru) + が(ga) に分割
+    "認めるが": [{"text": "認める", "romaji": "mitomeru"}, {"text": "が", "romaji": "ga"}],
+    # 動脈血ガス → 動脈血(doumyakuchi) + ガス(gasu) に分割
+    "動脈血ガス": [{"text": "動脈血", "romaji": "doumyakuchi"}, {"text": "ガス", "romaji": "gasu"}],
+    # 動脈血 単体でもオーバーライド
+    "動脈血": [{"text": "動脈血", "romaji": "doumyakuchi"}],
+}
+
+
+def _expand_segment_overrides(segments: list[dict[str, str]]) -> list[dict[str, str]]:
+    """_SEGMENT_OVERRIDES に登録されたトークンを複数サブセグメントに展開する。"""
+    result: list[dict[str, str]] = []
+    for seg in segments:
+        if seg["text"] in _SEGMENT_OVERRIDES:
+            result.extend(_SEGMENT_OVERRIDES[seg["text"]])
+        else:
+            result.append(seg)
+    return result
+
+
 def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
     try:
         raw_content, segments = segment_japanese_text_with_mlx_vlm(text)
@@ -220,6 +267,7 @@ def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
             segment_text = segment["text"]
             romaji = _kanji_to_romaji(segment_text)
             normalized_segments.append({"text": segment_text, "romaji": romaji})
+        normalized_segments = _expand_segment_overrides(normalized_segments)
         print(f"Qwen分割結果: {raw_content}")
         print(f"Qwen分割補正後: {normalized_segments}")
         return normalized_segments
@@ -227,7 +275,7 @@ def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
         print(f"Qwen分割失敗 → ローカル分割へフォールバック: {exc}")
         summary, segments = segment_japanese_text_locally(text)
         print(f"ローカル分割サマリ: {summary}")
-        return segments
+        return _expand_segment_overrides(segments)
 
 
 def _is_single_kanji(text: str) -> bool:
@@ -556,18 +604,6 @@ _MATCH_TEMPLATES_DIR = os.path.join(
 )
 EDIT_BUTTON_TEMPLATE = os.path.join(_MATCH_TEMPLATES_DIR, "edit_button.jpg")
 
-# Windows バージョン別 IME テンプレート
-_ENGLISH_IME_TEMPLATE_WIN7   = os.path.join(_MATCH_TEMPLATES_DIR, "windows7",  "english_ime.png")
-_HIRAGANA_IME_TEMPLATE_WIN7  = os.path.join(_MATCH_TEMPLATES_DIR, "windows7",  "hiragana_ime.png")
-_ENGLISH_IME_TEMPLATE_WIN10  = os.path.join(_MATCH_TEMPLATES_DIR, "windows10", "english_ime2.png")
-_HIRAGANA_IME_TEMPLATE_WIN10 = os.path.join(_MATCH_TEMPLATES_DIR, "windows10", "hiragana_ime2.png")
-
-# バージョン名 → (英語テンプレート, ひらがなテンプレート) の対応表
-_IME_TEMPLATES: dict[str, tuple[str, str]] = {
-    "windows7":  (_ENGLISH_IME_TEMPLATE_WIN7,  _HIRAGANA_IME_TEMPLATE_WIN7),
-    "windows10": (_ENGLISH_IME_TEMPLATE_WIN10, _HIRAGANA_IME_TEMPLATE_WIN10),
-}
-
 
 def _find_button_with_template(
     frame: np.ndarray,
@@ -798,6 +834,7 @@ def type_kanji_via_ime(
     wait_sec: float = 0.5,
     windows_version: str = "windows7",
     clear_field: bool = False,
+    _current_ime_mode: Optional[str] = None,
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -816,6 +853,7 @@ def type_kanji_via_ime(
         wait_sec: Space 押下後に候補が表示されるまでの待機秒数
         windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
+        _current_ime_mode: 呼び出し元が既に検出した IME モード。指定時は内部で再検出しない。
 
     Raises:
         RuntimeError: BLE サーバー未起動、またはキャプチャ失敗の場合
@@ -832,16 +870,13 @@ def type_kanji_via_ime(
         time.sleep(0.3)
 
     # IME をひらがな入力モードに確保してからローマ字入力
-    ime_frame = capture_screen(
-        device_index=config.capture_device_index,
-        width=config.capture_width,
-        height=config.capture_height,
-    )
-    if ime_frame is not None:
-        current_mode = detect_ime_mode(ime_frame, windows_version=windows_version)
+    # _current_ime_mode が渡された場合は呼び出し元が既に切替済みなので再検出しない
+    if _current_ime_mode is None:
+        current_mode = detect_ime_mode(client, config, windows_version=windows_version)
         ensure_ime_mode("japanese", client, current_mode)
     else:
-        print("  [警告] IMEモード確認用キャプチャ失敗 — ひらがなモードと仮定")
+        # 呼び出し元が既に Japanese モードを確保済み
+        print(f"  [IME] 呼び出し元が {_current_ime_mode!r} を確認済み → 再検出スキップ")
 
     # ローマ字入力
     print(f"ローマ字入力: {romaji}")
@@ -873,44 +908,51 @@ def type_kanji_via_ime(
     if base_frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
 
-    # インライン候補を検出: ROI検出を試み、非日本語なら失敗とみなしてポップアップへ
-    inline_roi = _find_ime_candidate_region(base_frame)
-    if inline_roi is None:
-        inline_roi = _find_changed_region(pre_frame, base_frame)
+    # Windows 10 では下線表示のインライン変換はVLM/OCRで読み取れないためスキップ。
+    # Windows 7 のみ反転ブロック検出 + VLM/OCR を試みる。
+    skip_inline = (windows_version == "windows10")
+
     inline_vlm: Optional[str] = None
     inline_combined = ""
-    if inline_roi is not None:
-        _save_debug_image(inline_roi, f"ime_inline_{target_kanji}")
-        try:
-            inline_vlm = _read_ime_candidate_with_vlm(inline_roi, target_kanji)
-            print(f"  [第1候補] Qwen読取(ROI): {inline_vlm!r}")
-        except RuntimeError as exc:
-            print(f"  [第1候補] Qwen読取失敗: {exc}")
-        ocr_results_inline = _request_ocr_results(inline_roi, config)
-        inline_combined = "".join(t for (_, t, _) in ocr_results_inline)
-        print(f"  [第1候補] OCR結合: {inline_combined!r}")
+    if not skip_inline:
+        # インライン候補を検出: ROI検出を試み、非日本語なら失敗とみなしてポップアップへ
+        inline_roi = _find_ime_candidate_region(base_frame)
+        if inline_roi is None:
+            inline_roi = _find_changed_region(pre_frame, base_frame)
+        if inline_roi is not None:
+            _save_debug_image(inline_roi, f"ime_inline_{target_kanji}")
+            try:
+                inline_vlm = _read_ime_candidate_with_vlm(inline_roi, target_kanji)
+                print(f"  [第1候補] Qwen読取(ROI): {inline_vlm!r}")
+            except RuntimeError as exc:
+                print(f"  [第1候補] Qwen読取失敗: {exc}")
+            ocr_results_inline = _request_ocr_results(inline_roi, config)
+            inline_combined = "".join(t for (_, t, _) in ocr_results_inline)
+            print(f"  [第1候補] OCR結合: {inline_combined!r}")
+        else:
+            print(f"  [第1候補] 変化領域を検出できませんでした")
+
+        # インラインROIでVLM/OCRが両方失敗した場合、フルフレームVLMでフォールバック
+        inline_fullframe_vlm: Optional[str] = None
+        if not _ime_candidate_matches(target_kanji, inline_vlm or "") and not _ime_candidate_matches(target_kanji, inline_combined):
+            try:
+                inline_fullframe_vlm = _read_ime_inline_candidate_fullframe(base_frame, target_kanji)
+                print(f"  [第1候補] Qwen読取(全フレーム): {inline_fullframe_vlm!r}")
+            except RuntimeError as exc:
+                print(f"  [第1候補] Qwen全フレーム読取失敗: {exc}")
+
+        if (_ime_candidate_matches(target_kanji, inline_vlm or "")
+                or _ime_candidate_matches(target_kanji, inline_combined)
+                or _ime_fullframe_exact_match(target_kanji, inline_fullframe_vlm or "")):
+            print(f"  「{target_kanji}」第1候補を確認 → Enter で確定")
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
+            print("完了")
+            return
     else:
-        print(f"  [第1候補] 変化領域を検出できませんでした")
+        print(f"  [Win10] インライン読取スキップ → ポップアップへ直行")
 
-    # インラインROIでVLM/OCRが両方失敗した場合、フルフレームVLMでフォールバック
-    inline_fullframe_vlm: Optional[str] = None
-    if not _ime_candidate_matches(target_kanji, inline_vlm or "") and not _ime_candidate_matches(target_kanji, inline_combined):
-        try:
-            inline_fullframe_vlm = _read_ime_inline_candidate_fullframe(base_frame, target_kanji)
-            print(f"  [第1候補] Qwen読取(全フレーム): {inline_fullframe_vlm!r}")
-        except RuntimeError as exc:
-            print(f"  [第1候補] Qwen全フレーム読取失敗: {exc}")
-
-    if (_ime_candidate_matches(target_kanji, inline_vlm or "")
-            or _ime_candidate_matches(target_kanji, inline_combined)
-            or _ime_fullframe_exact_match(target_kanji, inline_fullframe_vlm or "")):
-        print(f"  「{target_kanji}」第1候補を確認 → Enter で確定")
-        ok = client.press_key("enter")
-        print(f"key:enter -> {'OK' if ok else 'NG'}")
-        print("完了")
-        return
-
-    # 第1候補が不一致 → Space #2 でポップアップを開く（base_frame は差分検出に使用）
+    # 第1候補が不一致（または Win10 でスキップ）→ Space #2 でポップアップを開く
     print(f"  第1候補が「{target_kanji}」と不一致。ポップアップを開きます...")
     ok = client.press_key("space")
     print(f"key:space (popup) -> {'OK' if ok else 'NG'}")
@@ -933,6 +975,30 @@ def type_kanji_via_ime(
             print(f"  ポップアップ候補解析(VLM番号付き): {numbered}")
         except Exception as exc:
             print(f"  VLM番号付き候補読取失敗: {exc}")
+
+        # --- 句読点幅選択ポップアップ（全/半）を誤検出した場合は Escape で閉じて再試行 ---
+        _WIDTH_ONLY_TEXTS = {"全", "半", "全角", "半角"}
+        if numbered and all(t in _WIDTH_ONLY_TEXTS for _, t in numbered):
+            print(f"  [警告] 句読点幅選択ポップアップを検出 → Escape で閉じてリトライします")
+            client.press_key("escape")
+            time.sleep(0.5)
+            # IME をひらがな入力に戻してからポップアップを直接開く（Space 1回）
+            client.press_key("escape")
+            time.sleep(0.3)
+            ok = client.press_key("space")
+            print(f"key:space (リトライ popup) -> {'OK' if ok else 'NG'}")
+            time.sleep(max(wait_sec, 1.0))
+            retry_frame = capture_screen(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if retry_frame is not None:
+                try:
+                    numbered = read_popup_candidates_numbered(retry_frame)
+                    print(f"  リトライ後候補: {numbered}")
+                except Exception as exc:
+                    print(f"  リトライVLM失敗: {exc}")
 
         # --- 完全一致 ---
         exact_match = _find_best_candidate_match(target_kanji, numbered)
@@ -1218,63 +1284,56 @@ def _is_katakana_only(text: str) -> bool:
 
 
 def detect_ime_mode(
-    frame: np.ndarray,
+    client: "BLEClient",
     config=None,
     windows_version: str = "windows7",
 ) -> Optional[str]:
     """
-    OpenCV テンプレートマッチングで IME モードを検出する。
+    'a' を1文字入力し、Qwen3-VL でスクリーンを読んで IME モードを検出する。
 
-    Windows IME は画面下部（タスクバー付近）に現在のモードを示す小さなインジケーターを
-    表示する。ひらがなモードでは「あ」、英数字モードでは「A」が表示される。
-    windows_version に応じたテンプレートセットのみを使用することで
-    Windows バージョン間の誤マッチを防ぐ。
+    英語入力モードなら 'a' が、日本語（ひらがな）入力モードなら「あ」が表示される。
+    VLM で判定後に Backspace で入力した文字を削除する。
 
     Args:
-        frame: HDMI キャプチャフレーム（BGR numpy 配列）
-        config: 未使用（互換性維持のため残す）
-        windows_version: 使用するテンプレートの Windows バージョン。
-                         "windows7"（デフォルト）または "windows10"。
+        client: BLEClient インスタンス（キー送信に使用）
+        config: キャプチャ設定（None の場合は load_config() で取得）
+        windows_version: 未使用（互換性維持のため残す）
 
     Returns:
         'japanese': ひらがな入力モード
         'english':  英数字入力モード
-        None:       どちらのテンプレートも閾値に達しない場合
+        None:       判定不能
     """
-    _IME_TEMPLATE_THRESHOLD = 0.7
-    h = frame.shape[0]
-    roi = frame[max(0, h - 250):h, :]
+    if config is None:
+        config = load_config(skip_password=True)
 
-    def _best_score(template_paths: list[str]) -> float:
-        best = 0.0
-        for path in template_paths:
-            name = os.path.basename(path)
-            tmpl = cv2.imread(path)
-            if tmpl is None:
-                print(f"    [IMEテンプレート] {name}: 読み込み失敗（ファイルが見つからないか無効）")
-                continue
-            if tmpl.shape[0] > roi.shape[0] or tmpl.shape[1] > roi.shape[1]:
-                print(f"    [IMEテンプレート] {name}: ROIより大きいためスキップ (tmpl={tmpl.shape[:2]}, roi={roi.shape[:2]})")
-                continue
-            res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCOEFF_NORMED)
-            score = float(cv2.minMaxLoc(res)[1])
-            print(f"    [IMEテンプレート] {name}: スコア={score:.3f}")
-            if score > best:
-                best = score
-        return best
+    # 'a' を1文字入力してIMEの反応を確認
+    client.type_text("a")
+    time.sleep(0.4)
 
-    if windows_version not in _IME_TEMPLATES:
-        raise ValueError(f"未対応の windows_version: {windows_version!r}。'windows7' または 'windows10' を指定してください。")
-    eng_tmpl, hira_tmpl = _IME_TEMPLATES[windows_version]
+    frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
 
-    eng_score  = _best_score([eng_tmpl])
-    hira_score = _best_score([hira_tmpl])
+    result: Optional[str] = None
+    if frame is not None:
+        result = detect_ime_mode_from_typed_a(frame)
+        print(f"  [IME検出/VLM] 結果: {result!r}")
+    else:
+        print("  [IME検出] キャプチャ失敗")
 
-    print(f"  [IME検出] 英語スコア: {eng_score:.3f}, ひらがなスコア: {hira_score:.3f}")
+    # Backspace で入力した 'a' または 'あ' を削除
+    client.press_key("backspace")
+    time.sleep(0.2)
+    # 日本語モードでは 'あ' → Enterで確定されてしまう前にEscapeでキャンセルも試みる
+    if result == "japanese":
+        # IME の未確定文字をキャンセル（Backspaceで消えていない場合の保険）
+        client.press_key("escape")
+        time.sleep(0.1)
 
-    if eng_score < _IME_TEMPLATE_THRESHOLD and hira_score < _IME_TEMPLATE_THRESHOLD:
-        return None
-    return "japanese" if hira_score >= eng_score else "english"
+    return result
 
 
 def toggle_ime(client: "BLEClient") -> None:
@@ -1319,7 +1378,7 @@ def _kanji_to_romaji(text: str) -> str:
     """漢字・かな文字列をヘボン式ローマ字に変換する。"""
     # 医療用語など pykakasi が誤読みするケースの手動オーバーライド
     _ROMAJI_OVERRIDES: dict[str, str] = {
-        "鼻汁": "hanajiru",
+        "鼻汁": "bijuu",
         "咳嗽": "gaisou",
         "嘔吐": "outo",
         "浮腫": "fushuu",
@@ -1390,22 +1449,23 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
     client = _wait_for_ble_connected()
 
     if clear_field:
-        # 入力前にフィールドをクリア（Backspace を送信）
+        # 入力前にフィールドをクリア（Backspace を一括送信）
         print("フィールドをクリア中 (Backspace x50)...")
-        import time as _time
-        for _ in range(50):
-            client.press_key("backspace")
-        _time.sleep(0.3)
+        # 個別 press_key×50 は BLE で遅いため type_text でバッチ送信
+        client.type_text("\x08" * 50)
     # 開始時に1回だけ IME モードを検出し、以降は内部変数でトラッキングする
     print("現在の IME モードを検出中...")
-    init_frame = capture_screen(
-        device_index=config.capture_device_index,
-        width=config.capture_width,
-        height=config.capture_height,
-    )
-    current_mode: Optional[str] = None
-    if init_frame is not None:
-        current_mode = detect_ime_mode(init_frame, config, windows_version=windows_version)
+    current_mode: Optional[str] = detect_ime_mode(client, config, windows_version=windows_version)
+    # 検出失敗(None)の場合: 前回の中断でポップアップが残っている可能性があるため
+    # Escape を複数回送ってクリアし、再検出する
+    if current_mode is None:
+        print("  [IME回復] モード不明 → Escape×3 でクリアして再検出します")
+        for _ in range(3):
+            client.press_key("escape")
+            time.sleep(0.2)
+        time.sleep(0.5)
+        current_mode = detect_ime_mode(client, config, windows_version=windows_version)
+        print(f"  [IME回復] 再検出結果: {current_mode!r}")
     print(f"初期 IME モード: {current_mode!r}")
 
     for seg in _iter_segments_for_input(text):
@@ -1420,12 +1480,13 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
 
         elif seg_text in ("、", "。"):
             # 句読点: ひらがなモードで IME が自動変換するキー（,/.）を送る。
-            # 「。」はIMEの変換バッファに残るため Enter で確定が必要。
+            # Windows 10 では「、」「。」ともに変換候補ポップアップが表示されるため
+            # Enter で確定が必要。Windows 7 では「。」のみ必要。
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             print(f"  句読点入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
-            if seg_text == "。":
+            if seg_text == "。" or windows_version == "windows10":
                 ok = client.press_key("enter")
                 print(f"key:enter -> {'OK' if ok else 'NG'}")
 
@@ -1438,7 +1499,11 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
         elif _has_kanji(seg_text):
             # 漢字を含む文節: ひらがなモードで IME 変換候補を確認してから確定
             current_mode = ensure_ime_mode("japanese", client, current_mode)
-            type_kanji_via_ime(seg_romaji, seg_text, windows_version=windows_version)
+            type_kanji_via_ime(
+                seg_romaji, seg_text,
+                windows_version=windows_version,
+                _current_ime_mode=current_mode,
+            )
 
         elif _is_katakana_only(seg_text):
             # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Enter
@@ -1458,6 +1523,37 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
             key_name = "lbracket" if seg_text in ("「", "『") else "rbracket"
             ok = client.press_key(key_name)
             print(f"key:{key_name} ({seg_text}) -> {'OK' if ok else 'NG'}")
+
+        elif any(ch in _JP_SYMBOL_IME_READINGS or ch in _CHAR_ASCII_FALLBACK for ch in seg_text):
+            # ※ などの特殊記号、または μ などの ASCII 代替文字を含む: 文字単位で処理
+            # ASCII 部分は英数字モードで直接入力、特殊記号は IME で読み変換
+            for ch in seg_text:
+                if ch in _JP_SYMBOL_IME_READINGS:
+                    reading = _JP_SYMBOL_IME_READINGS[ch]
+                    current_mode = ensure_ime_mode("japanese", client, current_mode)
+                    print(f"  [特殊記号] {ch!r} を IME読み {reading!r} で入力")
+                    type_kanji_via_ime(
+                        reading, ch,
+                        windows_version=windows_version,
+                        _current_ime_mode=current_mode,
+                    )
+                elif ch in _CHAR_ASCII_FALLBACK:
+                    # μ など BLE 経由で直接送れない文字は ASCII 代替文字で入力
+                    fallback = _CHAR_ASCII_FALLBACK[ch]
+                    if fallback:
+                        current_mode = ensure_ime_mode("english", client, current_mode)
+                        print(f"  [ASCII代替] {ch!r} → {fallback!r}")
+                        _type_ascii_text_precisely(client, fallback)
+                    else:
+                        print(f"  [スキップ] {ch!r} (ASCII代替なし)")
+                elif _is_ascii_only(ch):
+                    current_mode = ensure_ime_mode("english", client, current_mode)
+                    _type_ascii_text_precisely(client, ch)
+                else:
+                    current_mode = ensure_ime_mode("japanese", client, current_mode)
+                    ok = client.type_text(ch)
+                    if ok:
+                        client.press_key("enter")
 
         else:
             # ひらがな・カタカナのみ: ひらがなモードでローマ字を直接入力して Enter で確定
@@ -1493,15 +1589,7 @@ def _type_english_text(text: str, windows_version: str = "windows7", clear_field
             client.press_key("backspace")
         time.sleep(0.3)
 
-    frame = capture_screen(
-        device_index=config.capture_device_index,
-        width=config.capture_width,
-        height=config.capture_height,
-    )
-    if frame is None:
-        raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
-
-    current_mode = detect_ime_mode(frame, config, windows_version=windows_version)
+    current_mode = detect_ime_mode(client, config, windows_version=windows_version)
     ensure_ime_mode("english", client, current_mode)
 
     print(f"英語入力: {text!r}")
@@ -1517,7 +1605,7 @@ def _print_usage() -> None:
     print("  python -m automation.ehr_input [オプション] [コマンド/テキスト]")
     print()
     print("オプション:")
-    print("  --win10              Windows 10 の IME テンプレートを使用（デフォルト: Windows 7）")
+    print("  --win10              Windows 10 モードで実行（カンマ後 Enter、インライン変換スキップ等）")
     print("  --clear              入力前に Backspace を 50 回送信してフィールドをクリアする")
     print("  --help, -h, help     このヘルプを表示")
     print()
@@ -1544,10 +1632,6 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input "open test" 肺炎')
     print('  python -m automation.ehr_input --win10 "open test" "MRI所見"')
     print('  python -m automation.ehr_input "click history 20190502"')
-    print()
-    print("IMEテンプレート:")
-    print("  Windows 7:  match_templates/windows7/english_ime.png, hiragana_ime.png")
-    print("  Windows 10: match_templates/windows10/english_ime2.png, hiragana_ime2.png")
 
 
 def _run_cli(args: list[str]) -> int:

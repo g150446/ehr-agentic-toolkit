@@ -220,7 +220,23 @@ python scripts/capture_windows.py myshot
 ```bash
 python -m automation.ehr_input data/patient_records/asthma_1.txt
 python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
+python -m automation.ehr_input --win10 data/patient_records/asthma_1.txt   # Windows 10 環境
 ```
+
+ヘルプを表示するには:
+
+```bash
+python -m automation.ehr_input --help
+```
+
+#### IME モード検出
+
+入力時に `a` を 1 文字タイプし、スクリーンキャプチャを Qwen3-VL に渡して `a`（英語モード）か `あ`（日本語モード）かを判定します。判定後は Backspace で削除します。Windows バージョン固有の動作には `--win10` フラグを使用します。
+
+| オプション | 説明 |
+|---|---|
+| `--win10` | Windows 10 固有の動作（カンマ後 Enter、インライン変換スキップ）を有効化 |
+| `--clear` | 入力前に Backspace を 50 回送信してフィールドをクリア |
 
 > **既知の問題**: `data/patient_records/asthma_1.txt` での再検証では、空白のまま止まる問題は解消しましたが、`咽頭痛` のような語でまだ誤変換が残ります。特に長文冒頭では `[` のような記号未反映や、`昨晩` / `咳嗽` 付近の変換揺れが残っています。
 

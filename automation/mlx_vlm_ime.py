@@ -27,6 +27,9 @@ MLX_VLM_IME_MODEL = os.getenv(
     os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3-VL-8B-Instruct-4bit"),
 )
 MLX_VLM_IME_TIMEOUT = float(os.getenv("MLX_VLM_IME_TIMEOUT", "90"))
+# Shorter timeout for inline candidate reads (ROI/fullframe).
+# When the server is slow, we want to quickly fall through to popup mode.
+MLX_VLM_INLINE_TIMEOUT = float(os.getenv("MLX_VLM_INLINE_TIMEOUT", "15"))
 
 
 class MlxVlmImeError(RuntimeError):
@@ -306,7 +309,7 @@ def read_inline_candidate_roi(roi: np.ndarray) -> Optional[str]:
         ' 形式: {"candidate": "候補文字列"} または {"candidate": null}'
     )
     data_url = _encode_image_data_url(roi)
-    content = _call_mlx_vlm_with_image(data_url, prompt)
+    content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
     return _parse_candidate_response(content)
 
 
@@ -330,7 +333,7 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
         ' 形式: {"candidate": "文字列"} または {"candidate": null}'
     )
     data_url = _encode_image_data_url(cropped)
-    content = _call_mlx_vlm_with_image(data_url, prompt)
+    content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
     return _parse_candidate_response(content)
 
 
@@ -375,7 +378,10 @@ def read_popup_candidates_numbered(frame: np.ndarray) -> list[tuple[int, str]]:
                     n = item.get("n")
                     text = item.get("text", "")
                     if isinstance(n, int) and 1 <= n <= 9 and text:
-                        result.append((n, text))
+                        # Sanity check: real IME candidates are short (≤25 chars).
+                        # Longer strings indicate Windows Search results leaked in.
+                        if len(text) <= 25:
+                            result.append((n, text))
                 if result:
                     return result
             except json.JSONDecodeError:
@@ -388,7 +394,7 @@ def read_popup_candidates_numbered(frame: np.ndarray) -> list[tuple[int, str]]:
             pairs_rev = re.findall(r'"text"\s*:\s*"([^"]+)"[^}]{0,80}?"n"\s*:\s*(\d+)', cleaned)
             pairs = [(n, text) for text, n in pairs_rev]
         if pairs:
-            result = [(int(n), text) for n, text in pairs if 1 <= int(n) <= 9 and text]
+            result = [(int(n), text) for n, text in pairs if 1 <= int(n) <= 9 and text and len(text) <= 25]
             if result:
                 return result
     except Exception as exc:
@@ -422,3 +428,42 @@ def read_popup_candidates(frame: np.ndarray) -> list[str]:
     except MlxVlmImeError as exc:
         print(f"  [mlx_vlm IME候補リスト] 取得失敗: {exc}")
         return []
+
+
+def detect_ime_mode_from_typed_a(frame: np.ndarray) -> Optional[str]:
+    """'a' を入力直後のスクリーンショットから IME モードを判定する。
+
+    呼び出し元が事前に 'a' を1文字入力し、このスクリーンキャプチャを渡す。
+    VLM でテキスト入力エリアを見て、'a'（英語モード）または「あ」（日本語モード）
+    が表示されているかを判定する。
+
+    Args:
+        frame: 'a' 入力直後の全画面 BGR フレーム
+
+    Returns:
+        'japanese': ひらがなモード（「あ」が表示されている）
+        'english':  英数字モード（'a' が表示されている）
+        None:       判定不能
+    """
+    cropped = crop_to_input_region(frame)
+    cropped = _ensure_min_size(cropped)
+    data_url = _encode_image_data_url(cropped)
+    prompt = (
+        "テキスト入力フィールドに 'a' というキーを1回押しました。"
+        "画像の入力エリアに何が表示されていますか？"
+        "英語入力モードなら半角の 'a' が、日本語入力モードなら平仮名の「あ」が表示されます。"
+        "'a' が表示されているなら 'english'、「あ」が表示されているなら 'japanese' とだけ答えてください。"
+        "それ以外のテキストや説明は不要です。"
+    )
+    try:
+        content = _call_mlx_vlm_with_image(data_url, prompt, timeout=10.0)
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        print(f"  [VLM IME検出/typed-a] 応答: {content!r}")
+        if "japanese" in content.lower() or "あ" in content:
+            return "japanese"
+        if "english" in content.lower():
+            return "english"
+        return None
+    except MlxVlmImeError as exc:
+        print(f"  [VLM IME検出/typed-a] 失敗: {exc}")
+        return None

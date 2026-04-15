@@ -7,8 +7,10 @@
 
 実行方法:
   python scripts/test_asthma_input.py
-  python scripts/test_asthma_input.py --start 3   # 3番目から再開
-  python scripts/test_asthma_input.py --dry-run    # フラグメント一覧のみ表示
+  python scripts/test_asthma_input.py --win10          # Windows 10 IME モード
+  python scripts/test_asthma_input.py --start 3        # 3番目から再開
+  python scripts/test_asthma_input.py --win10 --start 3
+  python scripts/test_asthma_input.py --dry-run        # フラグメント一覧のみ表示
 """
 
 from __future__ import annotations
@@ -43,15 +45,19 @@ def _build_fragments(path: Path) -> list[str]:
     return fragments
 
 
-def _run_fragment(fragment: str, index: int, total: int) -> bool:
+def _run_fragment(fragment: str, index: int, total: int, win10: bool = False) -> bool:
     """1フラグメントを ehr_input で実行する。成功時は True を返す。"""
     print(f"\n{'='*60}")
     print(f"[{index}/{total}] {fragment!r}")
     print('='*60)
+    cmd = [_PYTHON, "-m", "automation.ehr_input"]
+    if win10:
+        cmd.append("--win10")
+    cmd.append(fragment)
     result = subprocess.run(
-        [_PYTHON, "-m", "automation.ehr_input", fragment],
+        cmd,
         cwd=_PROJECT_ROOT,
-        timeout=180,
+        timeout=900,
     )
     ok = result.returncode == 0
     status = "✅ OK" if ok else f"❌ FAIL (returncode={result.returncode})"
@@ -64,6 +70,7 @@ def main() -> int:
     parser.add_argument("--start", type=int, default=1, metavar="N", help="N番目のフラグメントから開始（1始まり）")
     parser.add_argument("--end", type=int, default=None, metavar="N", help="N番目のフラグメントで終了（1始まり、含む）")
     parser.add_argument("--dry-run", action="store_true", help="フラグメント一覧のみ表示して終了")
+    parser.add_argument("--win10", action="store_true", help="Windows 10 の IME テンプレートを使用")
     parser.add_argument("--delay", type=float, default=2.0, metavar="SEC", help="フラグメント間の待機秒数（デフォルト: 2.0）")
     args = parser.parse_args()
 
@@ -89,9 +96,9 @@ def main() -> int:
     for rel_i, fragment in enumerate(target):
         abs_i = start + rel_i
         try:
-            ok = _run_fragment(fragment, abs_i, total)
+            ok = _run_fragment(fragment, abs_i, total, win10=args.win10)
         except subprocess.TimeoutExpired:
-            print(f"[{abs_i}/{total}] ⏰ TIMEOUT (180s)")
+            print(f"[{abs_i}/{total}] ⏰ TIMEOUT (900s)")
             ok = False
         except KeyboardInterrupt:
             print("\n中断されました。")
