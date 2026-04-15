@@ -639,8 +639,8 @@ def _find_ime_candidate_region(frame: np.ndarray) -> Optional[np.ndarray]:
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # 暗い領域（黒背景）を検出: ピクセル値 30 以下を白に
-    _, dark_mask = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY_INV)
+    # 暗い領域（黒背景または紺色背景）を検出: ピクセル値 80 以下を白に
+    _, dark_mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
 
     # ノイズ除去: 小さな孤立点を消す
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
@@ -813,6 +813,52 @@ def _read_ime_candidate_with_vlm(frame: np.ndarray, target_kanji: str) -> Option
     return _parse_ime_candidate_response(content)
 
 
+def _read_ime_inline_candidate_fullframe(frame: np.ndarray, target_kanji: str) -> Optional[str]:
+    """フルフレームからインライン変換候補を読み取る（ROI検出失敗時のフォールバック）。
+
+    インラインIME変換では入力文字列の一部が白黒反転（黒背景・白文字）で表示される。
+    ROIが小さすぎてVLMが失敗する場合、全体フレームから反転テキストを探す。
+    """
+    prompt = (
+        "この画像はWindowsの画面です。"
+        "テキスト入力フィールドの中で、黒背景・白文字で反転表示されている文字列を読み取ってください。"
+        "それはIMEインライン変換候補です（ポップアップではなく、入力中のテキスト内に表示されています）。"
+        "見つかった場合はその文字列のみを返してください。見つからない場合は null を返してください。"
+        "JSONのみで回答してください。"
+        ' 形式: {"candidate": "文字列"} または {"candidate": null}'
+    )
+    payload = {
+        "model": MLX_VLM_IME_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": _encode_frame_as_data_url(frame)}},
+            ],
+        }],
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        MLX_VLM_IME_URL,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=MLX_VLM_IME_TIMEOUT) as resp:
+            result = json.loads(resp.read())
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(
+            f"インライン候補フルフレームVLMが {MLX_VLM_IME_TIMEOUT:g} 秒でタイムアウトしました"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"インライン候補フルフレームVLM接続失敗: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("インライン候補フルフレームVLM応答JSONを解析できませんでした") from exc
+
+    content = _extract_vlm_text_content(result)
+    return _parse_ime_candidate_response(content)
+
+
 def type_kanji_via_ime(
     romaji: str,
     target_kanji: str,
@@ -842,6 +888,18 @@ def type_kanji_via_ime(
     config = load_config(skip_password=True)
 
     client = _wait_for_ble_connected()
+
+    # IME をひらがな入力モードに確保してからローマ字入力
+    ime_frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if ime_frame is not None:
+        current_mode = detect_ime_mode(ime_frame)
+        ensure_ime_mode("japanese", client, current_mode)
+    else:
+        print("  [警告] IMEモード確認用キャプチャ失敗 — ひらがなモードと仮定")
 
     # ローマ字入力
     print(f"ローマ字入力: {romaji}")
@@ -892,7 +950,18 @@ def type_kanji_via_ime(
     else:
         print(f"  [第1候補] 変化領域を検出できませんでした")
 
-    if _ime_candidate_matches(target_kanji, inline_vlm or "") or _ime_candidate_matches(target_kanji, inline_combined):
+    # インラインROIでVLM/OCRが両方失敗した場合、フルフレームVLMでフォールバック
+    inline_fullframe_vlm: Optional[str] = None
+    if not _ime_candidate_matches(target_kanji, inline_vlm or "") and not _ime_candidate_matches(target_kanji, inline_combined):
+        try:
+            inline_fullframe_vlm = _read_ime_inline_candidate_fullframe(base_frame, target_kanji)
+            print(f"  [第1候補] Qwen読取(全フレーム): {inline_fullframe_vlm!r}")
+        except RuntimeError as exc:
+            print(f"  [第1候補] Qwen全フレーム読取失敗: {exc}")
+
+    if (_ime_candidate_matches(target_kanji, inline_vlm or "")
+            or _ime_candidate_matches(target_kanji, inline_combined)
+            or _ime_candidate_matches(target_kanji, inline_fullframe_vlm or "")):
         print(f"  「{target_kanji}」第1候補を確認 → Enter で確定")
         ok = client.press_key("enter")
         print(f"key:enter -> {'OK' if ok else 'NG'}")
@@ -903,7 +972,7 @@ def type_kanji_via_ime(
     print(f"  第1候補が「{target_kanji}」と不一致。ポップアップを開きます...")
     ok = client.press_key("space")
     print(f"key:space (popup) -> {'OK' if ok else 'NG'}")
-    time.sleep(wait_sec)
+    time.sleep(max(wait_sec, 1.0))  # ポップアップが完全に表示されるまで待機
 
     # ポップアップ直後の候補リストをVLM（全フレーム）で解析してターゲットの位置を特定
     popup_init_frame = capture_screen(
@@ -915,7 +984,6 @@ def type_kanji_via_ime(
         # 全フレームをデバッグ用に保存
         _save_debug_image(popup_init_frame, f"ime_popup_{target_kanji}")
         found_pos = None
-        found_key = None  # 1-based position number shown in popup
         try:
             # 全フレームをVLMに渡して候補リストを読取（ROI検出をスキップ）
             vlm_candidates = _read_ime_popup_candidates_with_vlm(popup_init_frame)
@@ -923,38 +991,30 @@ def type_kanji_via_ime(
             for i, c in enumerate(vlm_candidates):
                 if _ime_candidate_matches(target_kanji, c):
                     found_pos = i
-                    # Candidates may have numeric prefixes like "3感冒" or "1日前" from IME display.
-                    # Use that prefix digit as the 1-based popup position; otherwise use list index+1.
-                    m = re.match(r'^([1-9])', c)
-                    found_key = int(m.group(1)) if m else (i + 1)
-                    print(f"  [VLM一致] 「{target_kanji}」を候補位置 {i} で発見 (読取: {c!r}, ポップアップ位置: {found_key})")
+                    print(f"  [VLM一致] 「{target_kanji}」を候補位置 {i} で発見 (読取: {c!r}, 表示番号: {i + 1})")
                     break
         except Exception as exc:
             print(f"  VLM候補読取失敗: {exc}")
 
-        if found_pos is not None and found_key is not None:
-            # IME popup opens with cursor at position 2 (1-indexed), because the
-            # 2nd Space both opens the popup AND advances the cursor from pos 1 → pos 2.
-            # Navigation strategy (no arrow keys needed):
-            #   Position 1 → Esc (back to inline pos-1) + Enter
-            #   Position 2 → Enter immediately (cursor already here)
-            #   Position N≥3 → Space×(N-2) + Enter
-            target_1based = found_key
-            if target_1based == 1:
-                print(f"  「{target_kanji}」→ Esc + Enter (ポップアップ位置 1, インライン候補に戻る)")
-                client.press_key("esc")
+        if found_pos is not None:
+            # list is returned top-to-bottom, so list index directly maps to popup display number
+            display_num = found_pos + 1  # index 0 = display#1, index 1 = display#2, ...
+
+            if display_num <= 9:
+                print(f"  「{target_kanji}」→ type:{display_num} (表示番号 {display_num}, リスト位置 {found_pos})")
+                client.send_command(f"type:{display_num}")
                 time.sleep(wait_sec)
-            elif target_1based >= 3:
-                spaces_needed = target_1based - 2  # from cursor pos 2 to target
-                print(f"  「{target_kanji}」→ Space×{spaces_needed} + Enter (ポップアップ位置 {target_1based})")
+                print("完了")
+            else:
+                # Beyond 9: navigate with Space from cursor pos 2
+                spaces_needed = display_num - 2
+                print(f"  「{target_kanji}」→ Space×{spaces_needed} + Enter (表示番号 {display_num})")
                 for _ in range(spaces_needed):
                     client.press_key("space")
                     time.sleep(wait_sec)
-            else:
-                print(f"  「{target_kanji}」→ Enter (ポップアップ位置 2, カーソル既存)")
-            ok = client.press_key("enter")
-            print(f"key:enter -> {'OK' if ok else 'NG'}")
-            print("完了")
+                ok = client.press_key("enter")
+                print(f"key:enter -> {'OK' if ok else 'NG'}")
+                print("完了")
             return
         print(f"  候補リストに「{target_kanji}」なし → 試行ループへ")
 
@@ -1010,10 +1070,10 @@ def _read_ime_popup_candidates_with_vlm(frame: np.ndarray) -> list[str]:
     prompt = (
         "この画面には Windows 日本語IME の変換候補リストが表示されています。"
         "候補リスト（縦に並んだ変換候補のポップアップ）を探し、"
-        "リストに表示されているすべての候補を、上から順に配列で返してください。"
-        "各候補は日本語のテキストです。候補リスト以外のテキストは含めないでください。"
+        "上から下の順に、番号なしの純粋なテキストとして配列で返してください。"
+        "候補リスト以外のテキスト（入力中の文章や画面上の他のテキスト）は含めないでください。"
         "JSONのみで回答してください。"
-        ' 形式: {"candidates": ["候補0", "候補1", "候補2", ...]}'
+        ' 形式: {"candidates": ["候補1", "候補2", "候補3", ...]}'
     )
     payload = {
         "model": MLX_VLM_IME_MODEL,
@@ -1126,6 +1186,10 @@ def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
     """
     _IME_TEMPLATE_THRESHOLD = 0.7
     h = frame.shape[0]
+    # Search only the bottom 250px where the IME toolbar resides.
+    # The Windows IME toolbar appears at y≈868 in 1080p (≈210px from bottom).
+    # Restricting the ROI prevents false matches in the document body.
+    roi = frame[max(0, h - 250):h, :]
 
     def _best_score(template_paths: list[str]) -> float:
         best = 0.0
@@ -1133,9 +1197,9 @@ def detect_ime_mode(frame: np.ndarray, config=None) -> Optional[str]:
             tmpl = cv2.imread(path)
             if tmpl is None:
                 continue
-            if tmpl.shape[0] > frame.shape[0] or tmpl.shape[1] > frame.shape[1]:
+            if tmpl.shape[0] > roi.shape[0] or tmpl.shape[1] > roi.shape[1]:
                 continue
-            res = cv2.matchTemplate(frame, tmpl, cv2.TM_CCOEFF_NORMED)
+            res = cv2.matchTemplate(roi, tmpl, cv2.TM_CCOEFF_NORMED)
             score = float(cv2.minMaxLoc(res)[1])
             if score > best:
                 best = score
@@ -1407,6 +1471,16 @@ def _run_cli(args: list[str]) -> int:
 
     if len(args) == 1:
         text = _resolve_text_argument(args[0])
+        # Named key shortcut: "esc", "backspace", "enter", "space", "tab", "delete",
+        # "f6", "f7", "f8", or generic "key:xxx" syntax → press the key directly.
+        _NAMED_KEYS = {"esc", "escape", "backspace", "enter", "return", "space", "tab",
+                       "delete", "f6", "f7", "f8", "f9", "up", "down", "left", "right"}
+        if text.lower() in _NAMED_KEYS or text.lower().startswith("key:"):
+            key_name = text[4:] if text.lower().startswith("key:") else text.lower()
+            client = _wait_for_ble_connected()
+            ok = client.press_key(key_name)
+            print(f"key:{key_name} -> {'OK' if ok else 'NG'}")
+            return 0
         try:
             _input_resolved_text(text)
         except OllamaSegmentationError as exc:
