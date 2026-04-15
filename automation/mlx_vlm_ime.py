@@ -127,18 +127,23 @@ def _crop_center_band(
 
 
 def _find_dark_region_y(frame: np.ndarray) -> Optional[int]:
-    """IME 反転表示（暗い背景）の y 座標を検出する。"""
+    """IME 反転表示（暗い背景または Windows 10 青色選択バー）の y 座標を検出する。"""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, dark_mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
+    # 閾値 150: 白背景(>200)を除く暗め・中間色（青選択バーも捕捉）
+    _, dark_mask = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, kernel)
     contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    fh = frame.shape[0]
     best = None
     best_area = 0
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
         if w < 20 or w > 800 or h < 12 or h > 100:
+            continue
+        # タスクバー除外（下15%）
+        if y > fh * 0.85:
             continue
         area = w * h
         if area > best_area:
@@ -157,11 +162,12 @@ def _crop_popup_region(frame: np.ndarray) -> np.ndarray:
     h = frame.shape[0]
 
     if center_y is not None:
-        y1 = max(0, center_y - 30)
-        y2 = min(h, center_y + 220)
+        # 選択中候補の上に他候補が表示されるため、上方向に十分なマージンを取る
+        y1 = max(0, center_y - 120)
+        y2 = min(h, center_y + 300)
         return frame[y1:y2, :]
 
-    return _crop_center_band(frame, top_ratio=0.20, bottom_ratio=0.80)
+    return _crop_center_band(frame, top_ratio=0.08, bottom_ratio=0.85)
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +319,7 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
     Returns:
         変換中の文字列のみ、または None
     """
-    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.25, bottom_ratio=0.75)
+    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.05, bottom_ratio=0.75)
     prompt = (
         "この画像はWindowsの画面の一部（入力フィールド周辺）です。"
         "テキスト入力フィールドの中で、下線または黒背景・白文字で強調表示されている、"

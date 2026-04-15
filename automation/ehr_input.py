@@ -645,12 +645,16 @@ def _find_ime_candidate_region(frame: np.ndarray) -> Optional[np.ndarray]:
 
     contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    fh = frame.shape[0]
     best = None
     best_area = 0
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
         # IME 候補ウィンドウのおよそのサイズ範囲でフィルタ
         if w < 20 or w > 800 or h < 12 or h > 100:
+            continue
+        # タスクバー・スタートボタン等の画面下部を除外（下15%以内）
+        if y > fh * 0.85:
             continue
         area = w * h
         if area > best_area:
