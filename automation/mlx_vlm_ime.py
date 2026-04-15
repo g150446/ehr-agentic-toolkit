@@ -456,7 +456,7 @@ def detect_ime_mode_from_typed_a(frame: np.ndarray) -> Optional[str]:
         "それ以外のテキストや説明は不要です。"
     )
     try:
-        content = _call_mlx_vlm_with_image(data_url, prompt, timeout=10.0)
+        content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         print(f"  [VLM IME検出/typed-a] 応答: {content!r}")
         if "japanese" in content.lower() or "あ" in content:
