@@ -61,6 +61,88 @@ def _frame_to_b64(frame: np.ndarray) -> str:
     return base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
+def detect_patient_record_panel3(
+    frame: np.ndarray,
+) -> Optional[tuple[int, int]]:
+    """患者記録画面の第3ペインの x 座標範囲を検出する。
+
+    患者記録画面は3本の垂直な仕切り線によって4つの領域に分割される。
+    左から3番目の領域（仕切り線[1]〜仕切り線[2]）がカルテ入力フィールドを含む。
+
+    Args:
+        frame: 全画面フレーム (BGR)
+
+    Returns:
+        (x1, x2): 第3ペインの左端・右端 x 座標。検出失敗時は None。
+    """
+    h, w = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=200,
+        minLineLength=h // 3,
+        maxLineGap=30,
+    )
+    if lines is None:
+        return None
+
+    vert_xs: list[int] = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle > 75:
+            vert_xs.append(int(x1))
+
+    if not vert_xs:
+        return None
+
+    vert_xs.sort()
+
+    # Cluster nearby x positions into single divider locations
+    clusters: list[int] = []
+    current: list[int] = [vert_xs[0]]
+    for x in vert_xs[1:]:
+        if x - current[-1] < 30:
+            current.append(x)
+        else:
+            clusters.append(int(np.mean(current)))
+            current = [x]
+    clusters.append(int(np.mean(current)))
+
+    # Remove screen edges (within 50px of left/right border)
+    main_dividers = [x for x in clusters if 50 < x < w - 50]
+
+    # Need at least 3 dividers to form 4 panels
+    if len(main_dividers) < 3:
+        return None
+
+    x1 = main_dividers[1]
+    x2 = main_dividers[2]
+    return (x1, x2)
+
+
+def crop_to_input_region(frame: np.ndarray) -> np.ndarray:
+    """フレームをテキスト入力領域にクロップする。
+
+    患者記録画面が検出された場合は第3ペインに絞る。
+    それ以外は全画面をそのまま返す。
+
+    Args:
+        frame: 全画面フレーム (BGR)
+
+    Returns:
+        テキスト入力領域の画像
+    """
+    panel = detect_patient_record_panel3(frame)
+    if panel is not None:
+        x1, x2 = panel
+        return frame[:, x1:x2]
+    return frame
+
+
 def _crop_center_band(
     frame: np.ndarray,
     top_ratio: float = 0.25,
@@ -271,7 +353,7 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
     Returns:
         変換中の文字列のみ、または None
     """
-    cropped = _crop_center_band(frame, top_ratio=0.25, bottom_ratio=0.75)
+    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.25, bottom_ratio=0.75)
     prompt = (
         "この画像はWindowsの画面の一部（入力フィールド周辺）です。"
         "テキスト入力フィールドの中で、下線または黒背景・白文字で強調表示されている、"
@@ -297,7 +379,7 @@ def read_popup_candidates(frame: np.ndarray) -> list[str]:
     Returns:
         候補文字列のリスト（表示順）。失敗時は空リスト。
     """
-    cropped = _crop_popup_region(frame)
+    cropped = _crop_popup_region(crop_to_input_region(frame))
     prompt = (
         "この画像には Windows 日本語IME の変換候補リストが表示されています。"
         "候補リスト（縦に並んだ変換候補のポップアップ）を探し、"

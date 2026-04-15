@@ -1,13 +1,22 @@
-"""Unit tests for automation.ollama_vlm_ime._ensure_min_size.
+"""Unit tests for automation.ollama_vlm_ime.
 
-Verifies that small images are upscaled to satisfy Qwen3VL's SmartResize
-requirement (both dimensions > factor:32) before being sent to the model runner.
+Tests cover:
+- _ensure_min_size: small image upscaling to satisfy Qwen3VL SmartResize
+- detect_patient_record_panel3: vertical divider detection for patient record screens
+- crop_to_input_region: crops to 3rd panel when patient record screen is detected
 """
 
 import numpy as np
 import pytest
+import cv2
 
-from automation.ollama_vlm_ime import _MIN_FRAME_HEIGHT, _MIN_FRAME_WIDTH, _ensure_min_size
+from automation.ollama_vlm_ime import (
+    _MIN_FRAME_HEIGHT,
+    _MIN_FRAME_WIDTH,
+    _ensure_min_size,
+    detect_patient_record_panel3,
+    crop_to_input_region,
+)
 
 
 def _make_frame(h: int, w: int) -> np.ndarray:
@@ -74,3 +83,69 @@ class TestEnsureMinSize:
         """MIN_FRAME constants must exceed Qwen3VL SmartResize factor:32."""
         assert _MIN_FRAME_HEIGHT > 32
         assert _MIN_FRAME_WIDTH > 32
+
+
+def _make_patient_record_frame(
+    h: int = 1080, w: int = 1920, divider_xs: list[int] | None = None
+) -> np.ndarray:
+    """Create a synthetic patient record screen with vertical dividers."""
+    if divider_xs is None:
+        divider_xs = [170, 720, 1440, 1720]
+    frame = np.full((h, w, 3), 200, dtype=np.uint8)  # light gray background
+    for x in divider_xs:
+        # Draw a dark vertical line spanning full height
+        cv2.line(frame, (x, 0), (x, h - 1), (60, 60, 60), 4)
+    return frame
+
+
+class TestDetectPatientRecordPanel3:
+    def test_detects_panel3_in_synthetic_frame(self):
+        """Synthetic frame with 4 clear dividers should return 3rd panel bounds."""
+        dividers = [170, 720, 1440, 1720]
+        frame = _make_patient_record_frame(divider_xs=dividers)
+        result = detect_patient_record_panel3(frame)
+        assert result is not None
+        x1, x2 = result
+        # Panel 3 is between divider[1] and divider[2] (within tolerance)
+        assert abs(x1 - dividers[1]) < 50
+        assert abs(x2 - dividers[2]) < 50
+
+    def test_returns_none_for_blank_frame(self):
+        """A plain uniform frame has no lines → should return None."""
+        frame = np.full((1080, 1920, 3), 200, dtype=np.uint8)
+        result = detect_patient_record_panel3(frame)
+        assert result is None
+
+    def test_returns_none_when_fewer_than_3_dividers(self):
+        """Only 2 dividers (not a 4-panel layout) → should return None."""
+        frame = _make_patient_record_frame(divider_xs=[400, 900])
+        result = detect_patient_record_panel3(frame)
+        assert result is None
+
+    def test_panel3_x2_greater_than_x1(self):
+        """Panel bounds must have x2 > x1 (non-empty region)."""
+        frame = _make_patient_record_frame()
+        result = detect_patient_record_panel3(frame)
+        if result is not None:
+            x1, x2 = result
+            assert x2 > x1
+
+
+class TestCropToInputRegion:
+    def test_crops_to_panel3_on_patient_record_screen(self):
+        """On a patient record screen, width should be reduced to panel 3."""
+        dividers = [170, 720, 1440, 1720]
+        frame = _make_patient_record_frame(divider_xs=dividers)
+        result = crop_to_input_region(frame)
+        full_w = frame.shape[1]
+        cropped_w = result.shape[1]
+        # Should be narrower than full frame
+        assert cropped_w < full_w
+        # Height unchanged
+        assert result.shape[0] == frame.shape[0]
+
+    def test_returns_full_frame_when_no_panel_detected(self):
+        """When no panels detected, input region equals the original frame."""
+        frame = np.full((1080, 1920, 3), 200, dtype=np.uint8)
+        result = crop_to_input_region(frame)
+        assert result.shape == frame.shape
