@@ -851,7 +851,7 @@ def type_kanji_via_ime(
         target_kanji: 確定したい漢字（例: "肺炎"）
         max_attempts: Space サイクルの最大試行回数
         wait_sec: Space 押下後に候補が表示されるまでの待機秒数
-        windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
+        windows_version: Windows バージョン（"windows7" または "windows10"）—Win10 固有の動作制御に使用
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
         _current_ime_mode: 呼び出し元が既に検出した IME モード。指定時は内部で再検出しない。
 
@@ -1440,7 +1440,7 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
 
     Args:
         text: 入力するテキスト（日本語・英語混在可）
-        windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
+        windows_version: Windows バージョン（"windows7" または "windows10"）—Win10 固有の動作制御に使用
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
     """
     print(f"文節分割中 (Qwen優先): {text!r}")
@@ -1576,7 +1576,7 @@ def _type_english_text(text: str, windows_version: str = "windows7", clear_field
 
     Args:
         text: 入力する英数字文字列
-        windows_version: IME テンプレートの Windows バージョン（"windows7" または "windows10"）
+        windows_version: Windows バージョン（"windows7" または "windows10"）—Win10 固有の動作制御に使用
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
     """
     config = load_config(skip_password=True)
