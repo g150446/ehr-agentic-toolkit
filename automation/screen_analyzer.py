@@ -41,7 +41,8 @@ class PasswordField:
     detection_method: str  # 'ocr_text', 'spatial', 'ui_class', 'manual'
 
 
-def capture_screen(device_index: int = 0, width: int = 1920, height: int = 1080) -> Optional[np.ndarray]:
+def capture_screen(device_index: int = 0, width: int = 1920, height: int = 1080,
+                   flush_duration: float = 1.5) -> Optional[np.ndarray]:
     """
     Capture screen from HDMI capture device.
 
@@ -49,10 +50,17 @@ def capture_screen(device_index: int = 0, width: int = 1920, height: int = 1080)
         device_index: Video capture device index (0 for MiraBox)
         width: Capture width in pixels
         height: Capture height in pixels
+        flush_duration: Seconds to spend reading frames before returning the
+                        latest one. USB HDMI capture devices (e.g. MiraBox)
+                        have an internal ring buffer; draining it for
+                        flush_duration seconds ensures the returned frame
+                        reflects the *current* screen state rather than a
+                        frame captured before the most recent BLE keystroke.
 
     Returns:
         Captured frame as numpy array, or None if capture failed
     """
+    import time as _time
     try:
         logger.info(f"Opening video capture device {device_index}...")
         cap = cv2.VideoCapture(device_index)
@@ -65,11 +73,17 @@ def capture_screen(device_index: int = 0, width: int = 1920, height: int = 1080)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
-        # Read frame
-        ret, frame = cap.read()
+        # Drain the device's ring-buffer for flush_duration seconds so the
+        # final frame reflects the current on-screen state.
+        frame = None
+        deadline = _time.time() + flush_duration
+        while _time.time() < deadline:
+            ret, f = cap.read()
+            if ret and f is not None:
+                frame = f
         cap.release()
 
-        if not ret or frame is None:
+        if frame is None:
             logger.error("Failed to read frame from capture device")
             return None
 

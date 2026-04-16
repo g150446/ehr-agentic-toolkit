@@ -198,11 +198,21 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
         is_horizontal_bar = w >= h * 2.0  # Win10 スタイル
         if not (is_vertical_bar or is_horizontal_bar):
             continue
-        # Win11縦バー: 幅3px程度まで許容。Win10横バー: 幅30-450px
-        if w < 3 or w > 450 or h < 8 or h > 80:
+        # Win11縦バー: 幅は実際 2-4px。誤検出防止のため最大8pxに制限。
+        # Win10横バー: 幅30-450px
+        if is_vertical_bar and (w < 1 or w > 8):
+            continue
+        if is_horizontal_bar and (w < 30 or w > 450):
+            continue
+        if h < 8 or h > 80:
             continue
         # タスクバー・画面上端付近を除外
-        if y < fh * 0.04 or y > fh * 0.92:
+        # アプリのツールバー (~8%) と タスクバー (~92%) を除外
+        if y < fh * 0.08 or y > fh * 0.92:
+            continue
+        # 画面右端 (5%) を除外: スクロールバーやウィンドウ枠の誤検出防止
+        # 左端は除外しない: Notepadなど左端揃えテキスト直下に現れるポップアップを失わないため
+        if x > fw * 0.95:
             continue
         area = w * h
         if area > best_area:
@@ -436,11 +446,94 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
     return _parse_candidate_response(content)
 
 
-def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
-    """IME ポップアップ候補リストを番号付きで読み取る（1回のVLMコールで番号+テキストを取得）。
+def read_popup_candidates_ocr(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
+    """OCRを使ってIMEポップアップ候補リストを読み取る。
 
-    VLM に番号とテキストの両方を返すよう指示し、表示番号の信頼性を高める。
-    `read_popup_candidates()` + `read_candidate_display_number()` の2コール相当を1コールで実現。
+    VLM（30-37秒）より高速（1-2秒）で安定。
+    EasyOCRで全画面をスキャンし、「数字+テキスト」パターンの候補を抽出する。
+
+    Args:
+        frame: 全画面フレーム（ポップアップ表示中）
+
+    Returns:
+        (display_number, candidate_text) のリスト。失敗時は空リスト。
+    """
+    # ポップアップ領域をクロップ（失敗時はスキップ）
+    cropped = crop_to_ime_popup_by_blue(frame)
+    if cropped is None:
+        # ポップアップが検出できない = まだ表示されていないか、フレームが古い。
+        # フルフレームでのEasyOCRは30秒以上かかるためスキップして空を返す。
+        return []
+
+    if debug_name:
+        _save_debug_popup(cropped, debug_name)
+
+    # 大きすぎるクロップはポップアップではなく背景 → スキップ
+    h, w = cropped.shape[:2]
+    if w > 600 or h > 600:
+        return []
+
+    try:
+        from automation.screen_analyzer import load_ocr_reader, run_ocr
+        reader = load_ocr_reader()
+        results = run_ocr(reader, cropped)
+    except Exception as exc:
+        print(f"  [OCR] 読取失敗: {exc}")
+        return []
+
+    if not results:
+        return []
+
+    # EasyOCR結果をY座標でソート
+    items: list[tuple[float, float, str]] = []
+    for entry in results:
+        if len(entry) == 3:
+            bbox, text, _ = entry
+        else:
+            bbox, text = entry[0], entry[1]
+        y = (bbox[0][1] + bbox[2][1]) / 2
+        x = (bbox[0][0] + bbox[2][0]) / 2
+        items.append((y, x, str(text).strip()))
+    items.sort()
+
+    candidates: list[tuple[int, str]] = []
+    i = 0
+    while i < len(items):
+        _, _, text = items[i]
+
+        # パターン1: 単独の数字の次の要素がテキスト（"1", "聴診" と別々のボックスの場合）
+        if re.match(r'^\d+$', text):
+            num = int(text)
+            if 1 <= num <= 9 and i + 1 < len(items):
+                _, _, next_text = items[i + 1]
+                if next_text and not re.match(r'^\d+$', next_text) and len(next_text) <= 25:
+                    candidates.append((num, next_text))
+                    i += 2
+                    continue
+
+        # パターン2: "1. テキスト" または "1 テキスト" が同一ボックス
+        m = re.match(r'^(\d+)[.。\s]+(.+)$', text)
+        if m:
+            num = int(m.group(1))
+            cand = m.group(2).strip()
+            if 1 <= num <= 9 and cand and len(cand) <= 25:
+                candidates.append((num, cand))
+        i += 1
+
+    # 重複除去してソート
+    seen: set[int] = set()
+    result = []
+    for num, text in sorted(candidates):
+        if num not in seen:
+            seen.add(num)
+            result.append((num, text))
+    return result
+
+
+def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
+    """IME ポップアップ候補リストを番号付きで読み取る。
+
+    OCRを優先（高速・安定）し、失敗時のみVLMにフォールバック。
 
     Args:
         frame: 全画面フレーム（ポップアップ表示中）
@@ -448,6 +541,16 @@ def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -
     Returns:
         (display_number, candidate_text) のリスト。表示番号順。失敗時は空リスト。
     """
+    # OCR優先: 1-2秒で完了、VLMサーバー不要
+    try:
+        ocr_result = read_popup_candidates_ocr(frame, debug_name=debug_name)
+        if ocr_result:
+            print(f"  [OCR番号付き候補] {ocr_result}")
+            return ocr_result
+    except Exception as exc:
+        print(f"  [OCR番号付き候補] 失敗: {exc}")
+
+    # VLMフォールバック（OCRで候補が見つからない場合）
     cropped = _crop_popup_region(frame, debug_name=debug_name)
     prompt = (
         "この画像はWindows日本語IMEの変換候補ポップアップです。"

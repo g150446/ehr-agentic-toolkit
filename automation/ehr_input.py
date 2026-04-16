@@ -902,7 +902,7 @@ def _read_ime_inline_candidate_fullframe(frame: np.ndarray, target_kanji: str) -
 def type_kanji_via_ime(
     romaji: str,
     target_kanji: str,
-    max_attempts: int = 5,
+    max_attempts: int = 1,
     wait_sec: float = 0.5,
     windows_version: str = "windows7",
     clear_field: bool = False,
@@ -1007,8 +1007,11 @@ def type_kanji_via_ime(
             print(f"  [第1候補] 変化領域を検出できませんでした")
 
         # インラインROIでVLM/OCRが両方失敗した場合、フルフレームVLMでフォールバック
+        # ただし ROI が取得できなかった場合はスキップ（タイムアウトでIME状態が崩れるのを防ぐ）
         inline_fullframe_vlm: Optional[str] = None
-        if not _ime_candidate_matches(target_kanji, inline_vlm or "") and not _ime_candidate_matches(target_kanji, inline_combined):
+        if (inline_roi is not None
+                and not _ime_candidate_matches(target_kanji, inline_vlm or "")
+                and not _ime_candidate_matches(target_kanji, inline_combined)):
             try:
                 inline_fullframe_vlm = _read_ime_inline_candidate_fullframe(base_frame, target_kanji)
                 print(f"  [第1候補] Qwen読取(全フレーム): {inline_fullframe_vlm!r}")
@@ -1330,7 +1333,8 @@ def _try_helper_word_fallback(
 
     for idx, suggestion in enumerate(suggestions):
         helper_word = suggestion["word"]
-        backspace_count = suggestion["backspace_count"]
+        # backspace_count はヘルパー単語長 - 対象文字長から確定的に計算する（Qwen3の提案値は使わない）
+        backspace_count = len(helper_word) - len(target_char)
         # ヘルパー単語確定後に残る先頭部分: word[:-backspace_count] or word全体
         covered_prefix = helper_word[:-backspace_count] if backspace_count > 0 else helper_word
         # ヘルパー単語のローマ字は _kanji_to_romaji で計算
@@ -1340,20 +1344,14 @@ def _try_helper_word_fallback(
             f"(romaji={helper_romaji!r}), covers={covered_prefix!r}, backspace={backspace_count}"
         )
 
-        # 現在の IME 状態をキャンセル
+        # 現在の IME 状態をキャンセル (Escape×2: popup→inline→完全解除)
         print("  [ヘルパー単語] Escape で IME 状態をキャンセル...")
         client.press_key("escape")
         time.sleep(0.3)
         client.press_key("escape")
-        time.sleep(0.2)
-        # 最初のイテレーションのみ: 元のローマ字変換の残留テキスト（ひらがな等）を削除
-        if idx == 0 and romaji:
-            backspace_clear = len(romaji)
-            print(f"  [ヘルパー単語] Backspace × {backspace_clear} で残留テキストを削除...")
-            for _ in range(backspace_clear):
-                client.press_key("backspace")
-                time.sleep(0.05)
-            time.sleep(0.2)
+        time.sleep(0.3)
+        # 注意: Escape×2 により IME 組成バッファは完全に解除されるため
+        # 追加の Backspace は不要（確定済みテキストを誤削除する恐れがある）
 
         # ヘルパー単語のローマ字を入力
         print(f"  [ヘルパー単語] ローマ字入力: {helper_romaji!r}")
@@ -1400,11 +1398,8 @@ def _try_helper_word_fallback(
             client.press_key("escape")
             time.sleep(0.2)
             client.press_key("escape")
-            time.sleep(0.2)
-            # ポップアップ用に入力したヘルパー romaji の残留テキストを削除
-            for _ in range(len(helper_romaji)):
-                client.press_key("backspace")
-                time.sleep(0.05)
+            time.sleep(0.3)
+            # 注意: Escape×2 により IME 組成バッファは完全に解除されるため追加 Backspace は不要
             continue
 
         display_num, matched_text = helper_match
@@ -1790,6 +1785,8 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
                 windows_version=windows_version,
                 _current_ime_mode=current_mode,
             )
+            # Enter確定後、WindowsのIMEが処理を完了するまで待機（タイミング競合防止）
+            time.sleep(0.25)
 
         elif _is_katakana_only(seg_text):
             # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Enter
@@ -1849,6 +1846,8 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
+            # Enter確定後、WindowsのIMEが処理を完了するまで待機
+            time.sleep(0.15)
 
     print("\n文章入力完了")
 
