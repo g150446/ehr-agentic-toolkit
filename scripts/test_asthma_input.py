@@ -45,7 +45,7 @@ def _build_fragments(path: Path) -> list[str]:
     return fragments
 
 
-def _run_fragment(fragment: str, index: int, total: int, win10: bool = False) -> bool:
+def _run_fragment(fragment: str, index: int, total: int, win10: bool = False, clear: bool = False) -> bool:
     """1フラグメントを ehr_input で実行する。成功時は True を返す。"""
     print(f"\n{'='*60}")
     print(f"[{index}/{total}] {fragment!r}")
@@ -53,6 +53,8 @@ def _run_fragment(fragment: str, index: int, total: int, win10: bool = False) ->
     cmd = [_PYTHON, "-m", "automation.ehr_input"]
     if win10:
         cmd.append("--win10")
+    if clear:
+        cmd.append("--clear")
     cmd.append(fragment)
     result = subprocess.run(
         cmd,
@@ -72,6 +74,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="フラグメント一覧のみ表示して終了")
     parser.add_argument("--win10", action="store_true", help="Windows 10 の IME テンプレートを使用")
     parser.add_argument("--delay", type=float, default=2.0, metavar="SEC", help="フラグメント間の待機秒数（デフォルト: 2.0）")
+    parser.add_argument("--clear", action="store_true", help="各フラグメント前にフィールドをクリアする（--clear を ehr_input に渡す）")
     args = parser.parse_args()
 
     fragments = _build_fragments(_ASTHMA_FILE)
@@ -96,7 +99,7 @@ def main() -> int:
     for rel_i, fragment in enumerate(target):
         abs_i = start + rel_i
         try:
-            ok = _run_fragment(fragment, abs_i, total, win10=args.win10)
+            ok = _run_fragment(fragment, abs_i, total, win10=args.win10, clear=args.clear)
         except subprocess.TimeoutExpired:
             print(f"[{abs_i}/{total}] ⏰ TIMEOUT (900s)")
             ok = False
