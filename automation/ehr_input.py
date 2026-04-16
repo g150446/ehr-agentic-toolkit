@@ -1524,6 +1524,19 @@ def _find_best_candidate_match(
     for n, c in numbered:
         if _ime_candidate_matches(target, c):
             return (n, c)
+    # Fourth pass: romaji comparison (OCR phonetically misreads kanji, e.g., '野菜'→'屋さい',
+    # '著者'→'ちょしゃ', '吸収'→'旧習'; both convert to the same romaji reading)
+    try:
+        target_romaji = _kanji_to_romaji(target)
+        for n, c in numbered:
+            try:
+                if _kanji_to_romaji(c) == target_romaji:
+                    print(f"  [候補照合/romaji] {c!r} → {_kanji_to_romaji(c)!r} ≈ {target!r} → 採用")
+                    return (n, c)
+            except Exception:
+                pass
+    except Exception:
+        pass
     return None
 
 
