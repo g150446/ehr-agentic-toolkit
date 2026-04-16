@@ -301,6 +301,34 @@ def _should_fallback_to_local_segmentation(segments: list[dict[str, str]]) -> bo
     return False
 
 
+def _presplit_japanese_for_overrides(text: str) -> list[str]:
+    """テキストを _SEGMENT_OVERRIDES のキーで事前分割する。
+
+    例: "動脈血ガス分析" + _SEGMENT_OVERRIDES["動脈血ガス"] →
+        ["動脈血ガス", "分析"]
+    """
+    keys = sorted(_SEGMENT_OVERRIDES.keys(), key=len, reverse=True)
+    chunks: list[str] = [text]
+    for key in keys:
+        new_chunks: list[str] = []
+        for chunk in chunks:
+            if chunk in _SEGMENT_OVERRIDES:
+                # already an override key; keep as-is
+                new_chunks.append(chunk)
+                continue
+            if key in chunk:
+                parts = chunk.split(key)
+                for i, part in enumerate(parts):
+                    if part:
+                        new_chunks.append(part)
+                    if i < len(parts) - 1:
+                        new_chunks.append(key)
+            else:
+                new_chunks.append(chunk)
+        chunks = new_chunks
+    return [c for c in chunks if c]
+
+
 def _segment_text_for_input(text: str) -> list[dict[str, str]]:
     segments: list[dict[str, str]] = []
     for segment in _iter_segments_for_input(text):
@@ -313,8 +341,13 @@ def _iter_segments_for_input(text: str):
         kind = token["kind"]
         value = token["text"]
         if kind == "japanese":
-            for segment in _segment_japanese_with_default_vlm(value):
-                yield segment
+            for chunk in _presplit_japanese_for_overrides(value):
+                if chunk in _SEGMENT_OVERRIDES:
+                    print(f"[事前オーバーライド] {chunk!r} → {_SEGMENT_OVERRIDES[chunk]}")
+                    yield from _SEGMENT_OVERRIDES[chunk]
+                else:
+                    for segment in _segment_japanese_with_default_vlm(chunk):
+                        yield segment
         elif kind == "jp_punct":
             yield {"text": value, "romaji": _JP_PUNCTUATION[value]}
         elif kind == "newline":
@@ -971,7 +1004,7 @@ def type_kanji_via_ime(
         # 番号付き候補リストを1回のVLMコールで取得（番号とテキストの両方）
         numbered: list[tuple[int, str]] = []
         try:
-            numbered = read_popup_candidates_numbered(popup_init_frame)
+            numbered = read_popup_candidates_numbered(popup_init_frame, debug_name=target_kanji)
             print(f"  ポップアップ候補解析(VLM番号付き): {numbered}")
         except Exception as exc:
             print(f"  VLM番号付き候補読取失敗: {exc}")
@@ -1324,14 +1357,24 @@ def detect_ime_mode(
     else:
         print("  [IME検出] キャプチャ失敗")
 
-    # Backspace で入力した 'a' または 'あ' を削除
-    client.press_key("backspace")
-    time.sleep(0.2)
-    # 日本語モードでは 'あ' → Enterで確定されてしまう前にEscapeでキャンセルも試みる
+    # 入力した 'a' または 'あ' を削除する
     if result == "japanese":
-        # IME の未確定文字をキャンセル（Backspaceで消えていない場合の保険）
+        # 日本語モード: IME の未確定「あ」を Escape でキャンセル（確実）
         client.press_key("escape")
-        time.sleep(0.1)
+        time.sleep(0.25)
+        # 念のため Backspace も送る（Escape が効かない場合への保険）
+        client.press_key("backspace")
+        time.sleep(0.2)
+    elif result == "english":
+        # 英語モード: 'a' を Backspace で削除
+        client.press_key("backspace")
+        time.sleep(0.2)
+    else:
+        # 判定不能: Escape と Backspace 両方送る
+        client.press_key("escape")
+        time.sleep(0.15)
+        client.press_key("backspace")
+        time.sleep(0.2)
 
     return result
 

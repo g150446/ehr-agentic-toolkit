@@ -159,18 +159,101 @@ def _find_dark_region_y(frame: np.ndarray) -> Optional[int]:
     return y + h // 2
 
 
-def _crop_popup_region(frame: np.ndarray) -> np.ndarray:
-    """IME ポップアップ候補リストの領域を切り出す。"""
-    center_y = _find_dark_region_y(frame)
-    h = frame.shape[0]
+def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
+    """Windows 10 IME ポップアップの青い選択バーを HSV 色検出で特定し、
+    そのバーを基準にポップアップ全体をクロップして返す。
+
+    Win10 IME の変換候補ポップアップは、選択中の候補に青いハイライトバーが表示される
+    (標準 Win10 アクセント色: RGB 0,120,215 → HSV H≈106, S≈182, V≈215)。
+    このバーの x/y 範囲からポップアップウィンドウ全体の矩形を推定する。
+
+    Returns:
+        クロップされたポップアップ領域。検出失敗時は None。
+    """
+    fh, fw = frame.shape[:2]
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # Win10 IME 選択バー (青: H 95-130, S 50+, V 60+)
+    lower_blue = np.array([95, 50, 60])
+    upper_blue = np.array([130, 255, 255])
+    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+
+    # 小ノイズ除去（OPEN は使わない: 選択バーの青画素が疎なため除去されてしまう）
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    best: Optional[tuple[int, int, int, int]] = None
+    best_area = 0
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        # IME 選択バーのサイズ: 幅 30-450px、高さ 8-55px
+        if w < 30 or w > 450 or h < 8 or h > 55:
+            continue
+        # タスクバー・画面上端付近を除外
+        if y < fh * 0.04 or y > fh * 0.92:
+            continue
+        area = w * h
+        if area > best_area:
+            best_area = area
+            best = (x, y, w, h)
+
+    if best is None:
+        return None
+
+    x, y, w, h = best
+    # 選択候補の上にある候補行は最大 1 行分のみ許可（ツールバーを除外するため浅めに切る）
+    # 下方向は最大 8 候補分（各行 ~25px = 200px）+ 余白
+    popup_y1 = max(0, y - 35)
+    popup_y2 = min(fh, y + h + 230)
+    popup_x1 = max(0, x - 6)
+    popup_x2 = min(fw, x + w + 6)
+
+    return frame[popup_y1:popup_y2, popup_x1:popup_x2]
+
+
+def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
+    """IME ポップアップ候補リストの領域を切り出す。
+
+    1. 全画面で青い選択バーを HSV 検出して精密クロップ（Win10 IME）
+    2. 失敗時は input_region にクロップして暗い領域を検出（Win7 反転）
+    3. それも失敗時は中央帯クロップ
+    """
+    # Win10: 全フレームで青いハイライトバーを精密クロップ
+    popup = crop_to_ime_popup_by_blue(frame)
+    if popup is not None:
+        if debug_name:
+            _save_debug_popup(popup, debug_name)
+        return popup
+
+    # フォールバック: 入力ペインに限定してグレースケール閾値で検出
+    roi = crop_to_input_region(frame)
+    center_y = _find_dark_region_y(roi)
+    fh = roi.shape[0]
 
     if center_y is not None:
-        # 選択中候補の上に他候補が表示されるため、上方向に十分なマージンを取る
         y1 = max(0, center_y - 120)
-        y2 = min(h, center_y + 300)
-        return frame[y1:y2, :]
+        y2 = min(fh, center_y + 300)
+        crop = roi[y1:y2, :]
+        if debug_name:
+            _save_debug_popup(crop, debug_name)
+        return crop
 
-    return _crop_center_band(frame, top_ratio=0.08, bottom_ratio=0.85)
+    crop = _crop_center_band(roi, top_ratio=0.08, bottom_ratio=0.85)
+    if debug_name:
+        _save_debug_popup(crop, debug_name)
+    return crop
+
+
+def _save_debug_popup(frame: np.ndarray, name: str) -> None:
+    """ポップアップクロップ画像をデバッグ用に保存する。"""
+    import os
+    captures_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "captures")
+    os.makedirs(captures_dir, exist_ok=True)
+    path = os.path.join(captures_dir, f"debug_popup_crop_{name}.png")
+    cv2.imwrite(path, frame)
+    print(f"  [debug] ポップアップクロップ保存: {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +420,7 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
     return _parse_candidate_response(content)
 
 
-def read_popup_candidates_numbered(frame: np.ndarray) -> list[tuple[int, str]]:
+def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
     """IME ポップアップ候補リストを番号付きで読み取る（1回のVLMコールで番号+テキストを取得）。
 
     VLM に番号とテキストの両方を返すよう指示し、表示番号の信頼性を高める。
@@ -349,7 +432,7 @@ def read_popup_candidates_numbered(frame: np.ndarray) -> list[tuple[int, str]]:
     Returns:
         (display_number, candidate_text) のリスト。表示番号順。失敗時は空リスト。
     """
-    cropped = _crop_popup_region(crop_to_input_region(frame))
+    cropped = _crop_popup_region(frame, debug_name=debug_name)
     prompt = (
         "この画像はWindows日本語IMEの変換候補ポップアップです。"
         "ポップアップ内の各候補に付いた数字（1〜9）とテキストを正確に読んでください。"
@@ -411,7 +494,7 @@ def read_popup_candidates(frame: np.ndarray) -> list[str]:
     Returns:
         候補文字列のリスト（表示順）。失敗時は空リスト。
     """
-    cropped = _crop_popup_region(crop_to_input_region(frame))
+    cropped = _crop_popup_region(frame)
     prompt = (
         "この画像には Windows 日本語IME の変換候補リストが表示されています。"
         "候補リスト（縦に並んだ変換候補のポップアップ）を探し、"
