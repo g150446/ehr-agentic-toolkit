@@ -13,12 +13,13 @@ import urllib.request
 
 MLX_VLM_SEGMENTATION_URL = os.getenv(
     "MLX_VLM_SEGMENTATION_URL",
-    "http://localhost:8181/v1/chat/completions",
+    "http://localhost:8000/v1/chat/completions",
 )
 MLX_VLM_SEGMENTATION_MODEL = os.getenv(
     "MLX_VLM_SEGMENTATION_MODEL",
-    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3-VL-8B-Instruct-4bit"),
+    os.getenv("MLX_VLM_SERVER_MODEL", "Qwen3-VL-8B-Instruct-4bit"),
 )
+MLX_VLM_SEGMENTATION_API_KEY = os.getenv("MLX_VLM_SEGMENTATION_API_KEY", "omlxkey")
 MLX_VLM_SEGMENTATION_TIMEOUT = float(os.getenv("MLX_VLM_SEGMENTATION_TIMEOUT", "120"))
 
 
@@ -136,6 +137,7 @@ def segment_japanese_text_with_mlx_vlm(
     model: str = MLX_VLM_SEGMENTATION_MODEL,
     url: str = MLX_VLM_SEGMENTATION_URL,
     timeout: float = MLX_VLM_SEGMENTATION_TIMEOUT,
+    api_key: str = MLX_VLM_SEGMENTATION_API_KEY,
 ) -> tuple[str, list[dict[str, str]]]:
     """Call local mlx_vlm server and return both raw text output and parsed segments."""
     payload = {
@@ -146,7 +148,10 @@ def segment_japanese_text_with_mlx_vlm(
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
     )
 
     try:

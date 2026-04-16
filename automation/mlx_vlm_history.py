@@ -32,12 +32,13 @@ from automation.screen_analyzer import load_ocr_reader, run_ocr
 
 MLX_VLM_HISTORY_URL = os.getenv(
     "MLX_VLM_HISTORY_URL",
-    "http://localhost:8181/v1/chat/completions",
+    "http://localhost:8000/v1/chat/completions",
 )
 MLX_VLM_HISTORY_MODEL = os.getenv(
     "MLX_VLM_HISTORY_MODEL",
-    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3.5-4B-MLX-4bit"),
+    os.getenv("MLX_VLM_SERVER_MODEL", "Qwen3.5-9B-MLX-4bit"),
 )
+MLX_VLM_HISTORY_API_KEY = os.getenv("MLX_VLM_HISTORY_API_KEY", "omlxkey")
 MLX_VLM_HISTORY_TIMEOUT = float(os.getenv("MLX_VLM_HISTORY_TIMEOUT", "120"))
 
 
@@ -224,6 +225,7 @@ def find_history_date_with_vlm(
     model: str = MLX_VLM_HISTORY_MODEL,
     url: str = MLX_VLM_HISTORY_URL,
     timeout: float = MLX_VLM_HISTORY_TIMEOUT,
+    api_key: str = MLX_VLM_HISTORY_API_KEY,
 ) -> Optional[Tuple[int, int]]:
     """Use local mlx_vlm to identify which OCR segment matches the target date.
 
@@ -298,7 +300,10 @@ def find_history_date_with_vlm(
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
     )
 
     try:
