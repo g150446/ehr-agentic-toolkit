@@ -1985,7 +1985,7 @@ def _run_cli(args: list[str]) -> int:
             _input_resolved_text(text, windows_version=windows_version, clear_field=clear_field)
         except MlxVlmSegmentationError as exc:
             print(f"mlx_vlm文節分割エラー: {exc}")
-            print("mlx_vlmサーバーの動作確認: ./scripts/start_mlx_vlm_server.sh")
+            print("omlxサーバーの動作確認: curl -s -H 'Authorization: Bearer omlxkey' http://localhost:8000/v1/models")
             return 1
         return 0
 
@@ -1998,7 +1998,7 @@ def _run_cli(args: list[str]) -> int:
             _input_resolved_text(text, windows_version=windows_version, clear_field=clear_field)
         except MlxVlmSegmentationError as exc:
             print(f"mlx_vlm文節分割エラー: {exc}")
-            print("mlx_vlmサーバーの動作確認: ./scripts/start_mlx_vlm_server.sh")
+            print("omlxサーバーの動作確認: curl -s -H 'Authorization: Bearer omlxkey' http://localhost:8000/v1/models")
             return 1
         return 0
 

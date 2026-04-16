@@ -201,13 +201,14 @@ python scripts/capture_windows.py myshot
 
 ---
 
-### MLX VLM サーバー
+### omlx VLM サーバー
+
+`automation.mlx_vlm_history`、`automation.mlx_vlm_segmentation`、`automation.mlx_vlm_ime` はすべて **omlx** (OpenAI 互換 API、ポート 8000) を使います。事前に omlx サーバーを起動しておいてください。
 
 ```bash
-./scripts/start_mlx_vlm_server.sh qwen
+# omlx サーバーの状態確認
+curl -s -H "Authorization: Bearer omlxkey" http://localhost:8000/v1/models
 ```
-
-`automation.mlx_vlm_history` と `automation.ehr_input "click history ..."` は、Qwen 3.5 4B MLX に**過去カルテ欄の日付一覧を上から順に読ませ**、対象日付の順位を決めます。EasyOCR は候補位置の推定と、その順位に対応するクリック座標の補助にのみ使います。
 
 > **既知の問題**: `click_history` / `mlx_vlm_history` は、過去カルテ欄の日付誤選択がまだ残っており、現時点では未解決です。
 

@@ -1,13 +1,12 @@
-"""History date finder backed by EasyOCR + local mlx_vlm.server.
+"""History date finder backed by EasyOCR + omlx VLM server.
 
 Runs full-image EasyOCR to collect coordinate anchors for date-like rows, then
-asks a local multimodal MLX VLM to read the visible history dates in top-to-
-bottom order from the screenshot itself. EasyOCR data is used only to estimate
-clickable positions and row ordering.
+asks a local multimodal VLM (omlx, port 8000) to read the visible history dates
+in top-to-bottom order from the screenshot itself. EasyOCR data is used only to
+estimate clickable positions and row ordering.
 
 Usage:
-    # Start mlx_vlm server first:
-    #   bash scripts/start_mlx_vlm_server.sh qwen
+    # Ensure omlx server is running at http://localhost:8000
     #
     # Test against a captured image:
     python -m automation.mlx_vlm_history captures/history.jpg 20260312
@@ -234,7 +233,7 @@ def find_history_date_with_vlm(
         ocr_results: List of (bbox, text, conf) from run_ocr().
         image:       Source screenshot for multimodal fallback.
         model:       mlx_vlm model identifier.
-        url:         Chat completion endpoint served by mlx_vlm.server.
+        url:         Chat completion endpoint served by omlx (http://localhost:8000).
         timeout:     Request timeout in seconds.
 
     Returns:

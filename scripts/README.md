@@ -79,35 +79,6 @@ This directory contains helper scripts for the EHR AI Bridge Toolkit automation 
 
 ---
 
-### `start_mlx_vlm_server.sh`
-
-**Purpose**: Start the local `mlx_vlm.server` process used by history matching and segmentation probes
-
-**What it does:**
-- Activates virtual environment
-- Starts `mlx_vlm.server` on port **8181**
-- Uses `mlx-community/Qwen3.5-4B-MLX-4bit` by default, or `gemma` / any model ID you pass
-- Provides an OpenAI-compatible API (`/v1/chat/completions`) for local LLM inference on Apple Silicon
-- `automation.mlx_vlm_history` sends **the history column image for ordered date reading + EasyOCR candidate positions for rank-to-coordinate mapping**
-- `automation.mlx_vlm_segment_probe` still uses text-only prompts
-
-**Usage:**
-```bash
-bash scripts/start_mlx_vlm_server.sh
-bash scripts/start_mlx_vlm_server.sh qwen
-bash scripts/start_mlx_vlm_server.sh gemma
-bash scripts/start_mlx_vlm_server.sh mlx-community/Qwen3.5-4B-MLX-4bit
-```
-
-Keep this running in a separate terminal before using `automation.mlx_vlm_segment_probe` or `automation.mlx_vlm_history`.
-
-**Verify server is up:**
-```bash
-curl -s http://127.0.0.1:8181/v1/models
-```
-
----
-
 ### `start_ble_server.sh`
 
 **Purpose**: Start the resident BLE server that manages the ESP32 connection

@@ -1,6 +1,6 @@
-"""mlx_vlm server を使った IME 候補読み取りヘルパー。
+"""omlx VLM サーバーを使った IME 候補読み取りヘルパー。
 
-mlx_vlm.server（OpenAI 互換 API）に画像を送信し、
+omlx（OpenAI 互換 API、ポート 8000）に画像を送信し、
 IME インライン変換候補やポップアップ候補リストを読み取る。
 """
 
@@ -296,7 +296,7 @@ def _call_mlx_vlm_with_image(
     timeout: float = MLX_VLM_IME_TIMEOUT,
     api_key: str = MLX_VLM_IME_API_KEY,
 ) -> str:
-    """mlx_vlm.server の OpenAI 互換エンドポイントに画像付きリクエストを送信する。"""
+    """omlx VLM サーバーの OpenAI 互換エンドポイントに画像付きリクエストを送信する。"""
     payload = {
         "model": model,
         "temperature": 0,
@@ -688,7 +688,7 @@ def _call_mlx_vlm_text_only(
     timeout: float = MLX_VLM_IME_TIMEOUT,
     api_key: str = MLX_VLM_IME_API_KEY,
 ) -> str:
-    """mlx_vlm.server に画像なしのテキストのみリクエストを送信する。"""
+    """omlx VLM サーバーに画像なしのテキストのみリクエストを送信する。"""
     payload = {
         "model": model,
         "temperature": 0,
