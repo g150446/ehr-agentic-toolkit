@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import numpy as np
 import automation.ehr_input as ehr_input
@@ -18,7 +18,7 @@ def test_run_cli_uses_file_contents_for_direct_input(monkeypatch, tmp_path):
     note.write_text("肺炎に対する治療", encoding="utf-8")
     events = []
 
-    monkeypatch.setattr(ehr_input, "_input_resolved_text", lambda text: events.append(text))
+    monkeypatch.setattr(ehr_input, "_input_resolved_text", lambda text, **kw: events.append(text))
 
     assert ehr_input._run_cli([str(note)]) == 0
     assert events == ["肺炎に対する治療"]
@@ -30,7 +30,7 @@ def test_run_cli_uses_file_contents_for_open_test(monkeypatch, tmp_path):
     events = []
 
     monkeypatch.setattr(ehr_input, "open_test_patient_chart", lambda: events.append("open"))
-    monkeypatch.setattr(ehr_input, "_input_resolved_text", lambda text: events.append(text))
+    monkeypatch.setattr(ehr_input, "_input_resolved_text", lambda text, **kw: events.append(text))
 
     assert ehr_input._run_cli(["open test", str(note)]) == 0
     assert events == ["open", "COVID-19の感染を確認した"]
@@ -141,50 +141,48 @@ def _make_frame(h=200, w=400) -> np.ndarray:
     return np.zeros((h, w, 3), dtype=np.uint8)
 
 
-def _mock_match_template(scores: dict):
-    """Return a cv2.matchTemplate mock that yields scores by call order."""
-    call_iter = iter(scores.values())
 
-    def fake_match(src, tmpl, method):
-        score = next(call_iter)
-        result = np.full((1, 1), score, dtype=np.float32)
-        return result
+def test_detect_ime_mode_returns_japanese_via_vlm(monkeypatch):
+    """detect_ime_mode は VLM が 'あ' を返せば 'japanese' を返す。"""
+    client = MagicMock()
+    config = MagicMock()
+    config.capture_device_index = 0
+    config.capture_width = 1920
+    config.capture_height = 1080
 
-    return fake_match
-
-
-def test_detect_ime_mode_returns_japanese_when_hiragana_template_wins():
     frame = _make_frame()
-    # 各テンプレートグループ (english×2, hiragana×2) に対して matchTemplate が呼ばれる
-    with patch("cv2.imread", return_value=np.zeros((20, 159, 3), dtype=np.uint8)), \
-         patch("cv2.matchTemplate", side_effect=[
-             np.full((1, 1), 0.5, dtype=np.float32),   # english_ime score
-             np.full((1, 1), 0.4, dtype=np.float32),   # english_ime2 score
-             np.full((1, 1), 0.9, dtype=np.float32),   # hiragana_ime score
-             np.full((1, 1), 0.8, dtype=np.float32),   # hiragana_ime2 score
-         ]):
-        assert ehr_input.detect_ime_mode(frame) == "japanese"
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: frame)
+    monkeypatch.setattr(ehr_input, "detect_ime_mode_from_typed_a", lambda f: "japanese")
+
+    assert ehr_input.detect_ime_mode(client, config) == "japanese"
+    client.type_text.assert_called_once_with("a")
+    client.press_key.assert_any_call("escape")
 
 
-def test_detect_ime_mode_returns_english_when_english_template_wins():
+def test_detect_ime_mode_returns_english_via_vlm(monkeypatch):
+    """detect_ime_mode は VLM が 'a' を返せば 'english' を返す。"""
+    client = MagicMock()
+    config = MagicMock()
+    config.capture_device_index = 0
+    config.capture_width = 1920
+    config.capture_height = 1080
+
     frame = _make_frame()
-    with patch("cv2.imread", return_value=np.zeros((28, 156, 3), dtype=np.uint8)), \
-         patch("cv2.matchTemplate", side_effect=[
-             np.full((1, 1), 0.85, dtype=np.float32),  # english_ime score
-             np.full((1, 1), 0.80, dtype=np.float32),  # english_ime2 score
-             np.full((1, 1), 0.4, dtype=np.float32),   # hiragana_ime score
-             np.full((1, 1), 0.3, dtype=np.float32),   # hiragana_ime2 score
-         ]):
-        assert ehr_input.detect_ime_mode(frame) == "english"
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: frame)
+    monkeypatch.setattr(ehr_input, "detect_ime_mode_from_typed_a", lambda f: "english")
+
+    assert ehr_input.detect_ime_mode(client, config) == "english"
+    client.press_key.assert_called_with("backspace")
 
 
-def test_detect_ime_mode_returns_none_when_both_below_threshold():
-    frame = _make_frame()
-    with patch("cv2.imread", return_value=np.zeros((20, 156, 3), dtype=np.uint8)), \
-         patch("cv2.matchTemplate", side_effect=[
-             np.full((1, 1), 0.3, dtype=np.float32),
-             np.full((1, 1), 0.2, dtype=np.float32),
-             np.full((1, 1), 0.2, dtype=np.float32),
-             np.full((1, 1), 0.1, dtype=np.float32),
-         ]):
-        assert ehr_input.detect_ime_mode(frame) is None
+def test_detect_ime_mode_returns_none_when_capture_fails(monkeypatch):
+    """capture_screen が None を返すと detect_ime_mode は None を返す。"""
+    client = MagicMock()
+    config = MagicMock()
+    config.capture_device_index = 0
+    config.capture_width = 1920
+    config.capture_height = 1080
+
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: None)
+
+    assert ehr_input.detect_ime_mode(client, config) is None
