@@ -39,6 +39,7 @@ from automation.mlx_vlm_ime import (
     read_inline_candidate_roi,
     read_popup_candidates,
     read_popup_candidates_numbered,
+    suggest_ime_helper_word,
 )
 
 
@@ -260,7 +261,7 @@ def _tokenize_text_for_input(text: str) -> list[dict[str, str]]:
 _SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
     "歳頃": [{"text": "歳", "romaji": "sai"}, {"text": "頃", "romaji": "koro"}],
     "吸入剤": [{"text": "吸入", "romaji": "kyuunyuu"}, {"text": "剤", "romaji": "zai"}],
-    "過膨張": [{"text": "過", "romaji": "ka"}, {"text": "膨張", "romaji": "bouchou"}],
+    "過膨張": [{"text": "過膨張", "romaji": "kabouchou"}],
     # 肺野 (はいや) は標準 IME 辞書にない医療用語 → 肺(hai)+野(ya) に分割
     "肺野": [{"text": "肺", "romaji": "hai"}, {"text": "野", "romaji": "ya"}],
     # 認めるが → 認める(mitomeru) + が(ga) に分割
@@ -906,6 +907,7 @@ def type_kanji_via_ime(
     windows_version: str = "windows7",
     clear_field: bool = False,
     _current_ime_mode: Optional[str] = None,
+    _no_helper_fallback: bool = False,
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -925,6 +927,7 @@ def type_kanji_via_ime(
         windows_version: Windows バージョン（"windows7" または "windows10"）—Win10 固有の動作制御に使用
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
         _current_ime_mode: 呼び出し元が既に検出した IME モード。指定時は内部で再検出しない。
+        _no_helper_fallback: True の場合、ヘルパー単語フォールバックを使わない（再帰防止用）。
 
     Raises:
         RuntimeError: BLE サーバー未起動、またはキャプチャ失敗の場合
@@ -1099,6 +1102,8 @@ def type_kanji_via_ime(
                 print(f"  「{target_kanji}」→ type:{display_num}")
                 client.send_command(f"type:{display_num}")
                 time.sleep(wait_sec)
+                ok = client.press_key("enter")
+                print(f"key:enter -> {'OK' if ok else 'NG'}")
                 print("完了")
             else:
                 spaces_needed = display_num - 2
@@ -1192,46 +1197,54 @@ def type_kanji_via_ime(
             print("完了（残り部分はEnterで確定）")
             return
 
-        # セグメント拡張 (Shift+Right) で再試行（firmware に key:shift_right サポートが必要）
-        print(f"  プレフィックス一致なし → Shift+Right でセグメント拡張を試みます")
-        for ext in range(4):
-            client.press_key("escape")
-            time.sleep(0.3)
-            client.press_key("shift_right")
-            time.sleep(0.3)
-            ok = client.press_key("space")
-            print(f"  [拡張{ext+1}] Escape+Shift+Right+Space -> {'OK' if ok else 'NG'}")
-            time.sleep(max(wait_sec, 1.0))
+        # セグメント拡張 (Shift+Right) で再試行 — 現在は無効化
+        # print(f"  プレフィックス一致なし → Shift+Right でセグメント拡張を試みます")
+        # for ext in range(4):
+        #     client.press_key("escape")
+        #     time.sleep(0.3)
+        #     client.press_key("shift_right")
+        #     time.sleep(0.3)
+        #     ok = client.press_key("space")
+        #     print(f"  [拡張{ext+1}] Escape+Shift+Right+Space -> {'OK' if ok else 'NG'}")
+        #     time.sleep(max(wait_sec, 1.0))
+        #
+        #     ext_frame = capture_screen(
+        #         device_index=config.capture_device_index,
+        #         width=config.capture_width,
+        #         height=config.capture_height,
+        #     )
+        #     if ext_frame is None:
+        #         continue
+        #     try:
+        #         ext_numbered = read_popup_candidates_numbered(ext_frame)
+        #         print(f"  [拡張{ext+1}] 候補: {ext_numbered}")
+        #         ext_match = _find_best_candidate_match(target_kanji, ext_numbered)
+        #         if ext_match is not None:
+        #             display_num, c = ext_match
+        #             if display_num <= 9:
+        #                 print(f"  「{target_kanji}」→ type:{display_num}")
+        #                 client.send_command(f"type:{display_num}")
+        #                 time.sleep(wait_sec)
+        #             else:
+        #                 spaces_needed = display_num - 2
+        #                 for _ in range(spaces_needed):
+        #                     client.press_key("space")
+        #                     time.sleep(wait_sec)
+        #                 ok = client.press_key("enter")
+        #                 print(f"key:enter -> {'OK' if ok else 'NG'}")
+        #             print("完了")
+        #             return
+        #     except Exception as exc:
+        #         print(f"  [拡張{ext+1}] VLM読取失敗: {exc}")
+        # print(f"  セグメント拡張でも「{target_kanji}」なし → 試行ループへ")
 
-            ext_frame = capture_screen(
-                device_index=config.capture_device_index,
-                width=config.capture_width,
-                height=config.capture_height,
-            )
-            if ext_frame is None:
-                continue
-            try:
-                ext_numbered = read_popup_candidates_numbered(ext_frame)
-                print(f"  [拡張{ext+1}] 候補: {ext_numbered}")
-                ext_match = _find_best_candidate_match(target_kanji, ext_numbered)
-                if ext_match is not None:
-                    display_num, c = ext_match
-                    if display_num <= 9:
-                        print(f"  「{target_kanji}」→ type:{display_num}")
-                        client.send_command(f"type:{display_num}")
-                        time.sleep(wait_sec)
-                    else:
-                        spaces_needed = display_num - 2
-                        for _ in range(spaces_needed):
-                            client.press_key("space")
-                            time.sleep(wait_sec)
-                        ok = client.press_key("enter")
-                        print(f"key:enter -> {'OK' if ok else 'NG'}")
-                    print("完了")
-                    return
-            except Exception as exc:
-                print(f"  [拡張{ext+1}] VLM読取失敗: {exc}")
-        print(f"  セグメント拡張でも「{target_kanji}」なし → 試行ループへ")
+    # --- ヘルパー単語フォールバック ---
+    # ポップアップ候補にターゲットが存在しない場合、Qwen3 に「目標漢字を含む
+    # 一般的な日本語単語」を提案してもらい、変換後に余分な文字を削除して得る。
+    if not _no_helper_fallback:
+        print(f"  ヘルパー単語フォールバックを試みます...")
+        if _try_helper_word_fallback(client, config, target_kanji, wait_sec, windows_version, romaji=romaji):
+            return
 
     for attempt in range(1, max_attempts + 1):
         # フレームキャプチャ
@@ -1276,7 +1289,181 @@ def type_kanji_via_ime(
     client.press_key("enter")
 
 
-def _read_ime_popup_candidates_with_vlm(frame: np.ndarray) -> list[str]:
+def _try_helper_word_fallback(
+    client: "BLEClient",
+    config,
+    target_kanji: str,
+    wait_sec: float,
+    windows_version: str,
+    romaji: str = "",
+) -> bool:
+    """ヘルパー単語フォールバック: Qwen3にヘルパー単語を問い合わせ、
+    変換後に余分な文字を削除して目標漢字を入力する。
+
+    IMEポップアップ候補に目標漢字が現れない場合のラストリゾート。
+    Qwen3 に「目標漢字を含む一般的な日本語単語」を提案してもらい、
+    その単語を変換確定後に余分な末尾文字を削除することで目標漢字を得る。
+
+    例: target_kanji="過膨張"
+        Qwen3 が {"word": "過去", "romaji": "kako", "covered_prefix": "過", "delete_count": 1} を提案
+        → "kako" を入力 → "過去" に変換確定 → Backspace × 1 で "去" 削除 → "過" 確定済み
+        → 残り "膨張" を type_kanji_via_ime で入力
+
+    Args:
+        client: BLEClient インスタンス
+        config: キャプチャ設定
+        target_kanji: 変換しようとしている漢字/語句
+        wait_sec: 変換待機秒数
+        windows_version: Windows バージョン
+
+    Returns:
+        True: ヘルパー単語アプローチで全体の入力が成功した
+        False: 失敗（呼び出し元が次のフォールバックへ進む）
+    """
+    # suggest_ime_helper_word は対象の最初の1文字を渡す
+    target_char = target_kanji[0]
+    print(f"  [ヘルパー単語] 「{target_char}」のヘルパー単語をQwen3に問い合わせ中...")
+    suggestions = suggest_ime_helper_word(target_char)
+    if not suggestions:
+        print(f"  [ヘルパー単語] 提案なし → フォールバック失敗")
+        return False
+
+    for idx, suggestion in enumerate(suggestions):
+        helper_word = suggestion["word"]
+        backspace_count = suggestion["backspace_count"]
+        # ヘルパー単語確定後に残る先頭部分: word[:-backspace_count] or word全体
+        covered_prefix = helper_word[:-backspace_count] if backspace_count > 0 else helper_word
+        # ヘルパー単語のローマ字は _kanji_to_romaji で計算
+        helper_romaji = _kanji_to_romaji(helper_word)
+        print(
+            f"  [ヘルパー単語] 提案{idx+1}/{len(suggestions)}: {helper_word!r} "
+            f"(romaji={helper_romaji!r}), covers={covered_prefix!r}, backspace={backspace_count}"
+        )
+
+        # 現在の IME 状態をキャンセル
+        print("  [ヘルパー単語] Escape で IME 状態をキャンセル...")
+        client.press_key("escape")
+        time.sleep(0.3)
+        client.press_key("escape")
+        time.sleep(0.2)
+        # 最初のイテレーションのみ: 元のローマ字変換の残留テキスト（ひらがな等）を削除
+        if idx == 0 and romaji:
+            backspace_clear = len(romaji)
+            print(f"  [ヘルパー単語] Backspace × {backspace_clear} で残留テキストを削除...")
+            for _ in range(backspace_clear):
+                client.press_key("backspace")
+                time.sleep(0.05)
+            time.sleep(0.2)
+
+        # ヘルパー単語のローマ字を入力
+        print(f"  [ヘルパー単語] ローマ字入力: {helper_romaji!r}")
+        ok = client.type_text(helper_romaji)
+        print(f"  type:{helper_romaji} -> {'OK' if ok else 'NG'}")
+        time.sleep(0.3)
+
+        # Space でインライン変換 → さらに Space でポップアップを開く
+        ok = client.press_key("space")
+        print(f"  key:space (インライン変換) -> {'OK' if ok else 'NG'}")
+        time.sleep(wait_sec)
+        ok = client.press_key("space")
+        print(f"  key:space (ポップアップ) -> {'OK' if ok else 'NG'}")
+        time.sleep(max(wait_sec, 1.0))
+
+        # ポップアップ候補を読取
+        helper_frame = capture_screen(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if helper_frame is None:
+            print("  [ヘルパー単語] フレーム取得失敗 → 次の提案を試みます")
+            client.press_key("escape")
+            time.sleep(0.2)
+            client.press_key("escape")
+            continue
+
+        _save_debug_image(helper_frame, f"ime_helper_{target_kanji}_{helper_word}")
+
+        helper_numbered: list[tuple[int, str]] = []
+        try:
+            helper_numbered = read_popup_candidates_numbered(
+                helper_frame, debug_name=f"helper_{target_kanji}"
+            )
+            print(f"  [ヘルパー単語] ポップアップ候補: {helper_numbered}")
+        except Exception as exc:
+            print(f"  [ヘルパー単語] 候補読取失敗: {exc}")
+
+        # ヘルパー単語を候補から検索
+        helper_match = _find_best_candidate_match(helper_word, helper_numbered)
+        if helper_match is None:
+            print(f"  [ヘルパー単語] 「{helper_word}」が候補に見つかりません → 次の提案を試みます")
+            client.press_key("escape")
+            time.sleep(0.2)
+            client.press_key("escape")
+            time.sleep(0.2)
+            # ポップアップ用に入力したヘルパー romaji の残留テキストを削除
+            for _ in range(len(helper_romaji)):
+                client.press_key("backspace")
+                time.sleep(0.05)
+            continue
+
+        display_num, matched_text = helper_match
+        print(f"  [ヘルパー単語] 「{helper_word}」→ 表示番号 {display_num} (読取: {matched_text!r})")
+
+        # ヘルパー単語を選択して確定
+        if display_num <= 9:
+            print(f"  [ヘルパー単語] type:{display_num}")
+            client.send_command(f"type:{display_num}")
+            time.sleep(wait_sec)
+        else:
+            spaces_needed = display_num - 2
+            for _ in range(spaces_needed):
+                client.press_key("space")
+                time.sleep(wait_sec)
+            client.press_key("enter")
+            time.sleep(wait_sec)
+
+        # 余分な文字を削除
+        if backspace_count > 0:
+            print(f"  [ヘルパー単語] Backspace × {backspace_count} で余分な文字を削除...")
+            for _ in range(backspace_count):
+                client.press_key("backspace")
+                time.sleep(0.15)
+
+        # 数字キー選択（display_num <= 9）の場合、候補は未確定状態のため Enter で確定する。
+        # Space 循環＋Enter（display_num > 9）の場合は Enter で既にコミット済みなので不要。
+        if display_num <= 9:
+            print(f"  [ヘルパー単語] Enter で確定...")
+            ok = client.press_key("enter")
+            print(f"  key:enter (helper confirm) -> {'OK' if ok else 'NG'}")
+            time.sleep(0.3)
+
+        print(f"  [ヘルパー単語] 「{covered_prefix}」の入力完了")
+
+        # 残りの文字列を入力
+        remaining = target_kanji[len(covered_prefix):]
+        if remaining:
+            print(f"  [ヘルパー単語] 残り「{remaining}」を続けて入力します...")
+            remaining_romaji = _kanji_to_romaji(remaining)
+            # ESP32がBackspace処理を完了するまで待機してから次のセグメントへ
+            time.sleep(1.0)
+            # _no_helper_fallback=True で無限再帰を防ぐ
+            type_kanji_via_ime(
+                remaining_romaji,
+                remaining,
+                wait_sec=wait_sec,
+                windows_version=windows_version,
+                _current_ime_mode="japanese",
+                _no_helper_fallback=True,
+            )
+
+        return True
+
+    print(f"  [ヘルパー単語] 全提案が失敗 → フォールバック失敗")
+    return False
+
+
+
     """mlx_vlm を使って IME ポップアップ候補リスト全体を読み取る。
 
     ポップアップ領域を自動検出してクロップしてから Qwen3-VL に送信する。
