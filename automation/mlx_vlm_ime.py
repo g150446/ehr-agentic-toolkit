@@ -635,6 +635,9 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
     確実に存在する一般的な単語を3つ提案してもらう。変換後に余分な末尾文字を
     Backspace で削除することで目標の漢字を得る。
 
+    backspace_count は Qwen3 には計算させず、
+    len(word) - len(target) で機械的に算出する。
+
     例: target="過" → [{"word": "過去", "backspace_count": 1}, ...]
 
     Args:
@@ -644,13 +647,12 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
         ヘルパー単語情報のリスト（空リストの場合は提案なし）
         各要素のキー:
             word (str): 提案する日本語単語
-            backspace_count (int): 単語確定後に Backspace で削除する文字数
+            backspace_count (int): len(word) - len(target) (算出値)
     """
     prompt = (
         f"{target}、という漢字をIMEで変換して入力したいです。"
         "この漢字を先頭に含む単語またはフレーズで、変換候補として出現しやすいものを三つ提案して。"
-        "その単語を選んだ際に、求める漢字のみを残すための、バックスペースの個数も出力して。"
-        "json形式で答えのみ出力して。keyは\"word\",\"backspace_count\""
+        "json形式で答えのみ出力して。keyは\"word\"のみ。"
     )
     try:
         raw = _call_mlx_vlm_text_only(prompt)
@@ -685,23 +687,13 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
         result = []
         for item in items:
             word = item.get("word", "")
-            backspace_count = item.get("backspace_count", 0)
             if not isinstance(word, str) or not word:
                 continue
-            if not isinstance(backspace_count, int) or backspace_count < 0:
+            # backspace_count は単語長 - ターゲット長で機械的に算出する
+            backspace_count = len(word) - len(target)
+            if backspace_count <= 0:
+                # ヘルパー単語がターゲット以下の長さ: 不適切なのでスキップ
                 continue
-            # backspace_count は len(word) - len(target) でなければならない
-            # Qwen3 が誤った値を返すことがあるため強制補正する
-            expected_backspace = len(word) - len(target)
-            if expected_backspace <= 0:
-                # helper word がターゲットより短い or 同じ: 不適切なのでスキップ
-                continue
-            if backspace_count != expected_backspace:
-                print(
-                    f"  [ヘルパー単語提案] backspace_count補正: {word!r} "
-                    f"{backspace_count} → {expected_backspace}"
-                )
-                backspace_count = expected_backspace
             result.append({"word": word, "backspace_count": backspace_count})
 
         print(f"  [ヘルパー単語提案] 有効な提案: {result}")
