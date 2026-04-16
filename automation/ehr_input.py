@@ -1442,14 +1442,12 @@ def _try_helper_word_fallback(
             remaining_romaji = _kanji_to_romaji(remaining)
             # ESP32がBackspace処理を完了するまで待機してから次のセグメントへ
             time.sleep(1.0)
-            # _no_helper_fallback=True で無限再帰を防ぐ
             type_kanji_via_ime(
                 remaining_romaji,
                 remaining,
                 wait_sec=wait_sec,
                 windows_version=windows_version,
                 _current_ime_mode="japanese",
-                _no_helper_fallback=True,
             )
 
         return True

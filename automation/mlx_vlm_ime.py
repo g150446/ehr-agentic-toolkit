@@ -30,7 +30,9 @@ MLX_VLM_IME_API_KEY = os.getenv("MLX_VLM_IME_API_KEY", "omlxkey")
 MLX_VLM_IME_TIMEOUT = float(os.getenv("MLX_VLM_IME_TIMEOUT", "90"))
 # Shorter timeout for inline candidate reads (ROI/fullframe).
 # When the server is slow, we want to quickly fall through to popup mode.
-MLX_VLM_INLINE_TIMEOUT = float(os.getenv("MLX_VLM_INLINE_TIMEOUT", "15"))
+MLX_VLM_INLINE_TIMEOUT = float(os.getenv("MLX_VLM_INLINE_TIMEOUT", "45"))
+# Text-only model for tasks that don't require vision (e.g., helper word suggestions).
+MLX_VLM_TEXT_MODEL = os.getenv("MLX_VLM_TEXT_MODEL", "Qwen3.5-9B-MLX-4bit")
 
 
 class MlxVlmImeError(RuntimeError):
@@ -767,7 +769,7 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
         "json形式で答えのみ出力して。keyは\"word\"のみ。"
     )
     try:
-        raw = _call_mlx_vlm_text_only(prompt)
+        raw = _call_mlx_vlm_text_only(prompt, model=MLX_VLM_TEXT_MODEL)
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         print(f"  [ヘルパー単語提案] Qwen3応答: {raw!r}")
 
