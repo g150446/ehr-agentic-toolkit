@@ -269,6 +269,12 @@ _SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
     "動脈血ガス": [{"text": "動脈血", "romaji": "doumyakuchi"}, {"text": "ガス", "romaji": "gasu"}],
     # 動脈血 単体でもオーバーライド
     "動脈血": [{"text": "動脈血", "romaji": "doumyakuchi"}],
+    # ・ (中黒/ナカテン) : JIS キーボードでは '/' キーで入力する。
+    # カタカナ変換パス (F7) で処理するため romaji は '/' とする。
+    "・": [{"text": "・", "romaji": "/"}],
+    # ソル・コーテフ (Solu-Cortef) : カタカナ医薬品名、中黒を含む。
+    # '/' = ・、'-' = ー (長音符) として romaji を組む。
+    "ソル・コーテフ": [{"text": "ソル・コーテフ", "romaji": "soru/ko-tefu"}],
 }
 
 
