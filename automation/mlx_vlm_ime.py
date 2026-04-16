@@ -20,12 +20,13 @@ import numpy as np
 
 MLX_VLM_IME_URL = os.getenv(
     "MLX_VLM_IME_URL",
-    os.getenv("MLX_VLM_SEGMENTATION_URL", "http://localhost:8181/v1/chat/completions"),
+    os.getenv("MLX_VLM_SEGMENTATION_URL", "http://localhost:8000/v1/chat/completions"),
 )
 MLX_VLM_IME_MODEL = os.getenv(
     "MLX_VLM_IME_MODEL",
-    os.getenv("MLX_VLM_SERVER_MODEL", "mlx-community/Qwen3-VL-8B-Instruct-4bit"),
+    os.getenv("MLX_VLM_SERVER_MODEL", "Qwen3-VL-8B-Instruct-4bit"),
 )
+MLX_VLM_IME_API_KEY = os.getenv("MLX_VLM_IME_API_KEY", "omlxkey")
 MLX_VLM_IME_TIMEOUT = float(os.getenv("MLX_VLM_IME_TIMEOUT", "90"))
 # Shorter timeout for inline candidate reads (ROI/fullframe).
 # When the server is slow, we want to quickly fall through to popup mode.
@@ -198,9 +199,9 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
         is_horizontal_bar = w >= h * 2.0  # Win10 スタイル
         if not (is_vertical_bar or is_horizontal_bar):
             continue
-        # Win11縦バー: 幅は実際 2-4px。誤検出防止のため最大8pxに制限。
+        # Win11縦バー: 幅は実際 2-9px（環境によって異なる）。誤検出防止のため最大12pxに制限。
         # Win10横バー: 幅30-450px
-        if is_vertical_bar and (w < 1 or w > 8):
+        if is_vertical_bar and (w < 1 or w > 12):
             continue
         if is_horizontal_bar and (w < 30 or w > 450):
             continue
@@ -293,6 +294,7 @@ def _call_mlx_vlm_with_image(
     model: str = MLX_VLM_IME_MODEL,
     url: str = MLX_VLM_IME_URL,
     timeout: float = MLX_VLM_IME_TIMEOUT,
+    api_key: str = MLX_VLM_IME_API_KEY,
 ) -> str:
     """mlx_vlm.server の OpenAI 互換エンドポイントに画像付きリクエストを送信する。"""
     payload = {
@@ -313,7 +315,10 @@ def _call_mlx_vlm_with_image(
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -681,6 +686,7 @@ def _call_mlx_vlm_text_only(
     model: str = MLX_VLM_IME_MODEL,
     url: str = MLX_VLM_IME_URL,
     timeout: float = MLX_VLM_IME_TIMEOUT,
+    api_key: str = MLX_VLM_IME_API_KEY,
 ) -> str:
     """mlx_vlm.server に画像なしのテキストのみリクエストを送信する。"""
     payload = {
@@ -698,7 +704,10 @@ def _call_mlx_vlm_text_only(
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
