@@ -1576,19 +1576,27 @@ def detect_ime_mode(
     if config is None:
         config = load_config(skip_password=True)
 
+    # 入力前フレームを取得（差分比較でより確実な IME モード検出に使用）
+    pre_frame = capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+        flush_duration=0.5,  # 入力前なので短い flush で十分
+    )
+
     # 'a' を1文字入力してIMEの反応を確認
     client.type_text("a")
     time.sleep(0.4)
 
-    frame = capture_screen(
+    post_frame = capture_screen(
         device_index=config.capture_device_index,
         width=config.capture_width,
         height=config.capture_height,
     )
 
     result: Optional[str] = None
-    if frame is not None:
-        result = detect_ime_mode_from_typed_a(frame)
+    if post_frame is not None:
+        result = detect_ime_mode_from_typed_a(post_frame, pre_frame=pre_frame)
         print(f"  [IME検出/VLM] 結果: {result!r}")
     else:
         print("  [IME検出] キャプチャ失敗")
@@ -1728,10 +1736,13 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
     client = _wait_for_ble_connected()
 
     if clear_field:
-        # 入力前にフィールドをクリア（Backspace を一括送信）
-        print("フィールドをクリア中 (Backspace x50)...")
-        # 個別 press_key×50 は BLE で遅いため type_text でバッチ送信
-        client.type_text("\x08" * 50)
+        # IME 未確定をキャンセルしてから末尾へ移動し、Backspace 200 回で全削除
+        print("フィールドをクリア中 (Escape + Ctrl+End + Backspace×200)...")
+        client.press_key("escape")
+        time.sleep(0.3)
+        client.press_key("ctrl+end")
+        time.sleep(0.5)
+        client.type_text("\x08" * 200)
     # 開始時に1回だけ IME モードを検出し、以降は内部変数でトラッキングする
     print("現在の IME モードを検出中...")
     current_mode: Optional[str] = detect_ime_mode(client, config, windows_version=windows_version)

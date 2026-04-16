@@ -640,29 +640,101 @@ def read_popup_candidates(frame: np.ndarray) -> list[str]:
         return []
 
 
-def detect_ime_mode_from_typed_a(frame: np.ndarray) -> Optional[str]:
+def _extract_diff_crop(
+    pre_frame: np.ndarray,
+    post_frame: np.ndarray,
+    *,
+    min_change_px: int = 12,
+    pad: int = 30,
+) -> Optional[np.ndarray]:
+    """2フレームの差分から変化した矩形領域を切り出す。
+
+    'a' キー入力前後のフレームを比較し、新しく追加された文字('a' または「あ」)の
+    周辺領域のみを返す。既存テキストの影響を排除するためのヘルパー。
+
+    Returns:
+        変化領域の BGR クロップ。変化なし or 小さすぎる場合は None。
+    """
+    h = min(pre_frame.shape[0], post_frame.shape[0])
+    w = min(pre_frame.shape[1], post_frame.shape[1])
+    diff = cv2.absdiff(pre_frame[:h, :w], post_frame[:h, :w])
+    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
+    dilated = cv2.morphologyEx(thresh, cv2.MORPH_DILATE, kernel)
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    largest = max(contours, key=cv2.contourArea)
+    x, y, bw, bh = cv2.boundingRect(largest)
+    if bw < min_change_px or bh < min_change_px:
+        return None
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(post_frame.shape[1], x + bw + pad)
+    y2 = min(post_frame.shape[0], y + bh + pad)
+    return post_frame[y1:y2, x1:x2]
+
+
+def detect_ime_mode_from_typed_a(
+    frame: np.ndarray,
+    *,
+    pre_frame: Optional[np.ndarray] = None,
+) -> Optional[str]:
     """'a' を入力直後のスクリーンショットから IME モードを判定する。
 
     呼び出し元が事前に 'a' を1文字入力し、このスクリーンキャプチャを渡す。
-    VLM でテキスト入力エリアを見て、'a'（英語モード）または「あ」（日本語モード）
-    が表示されているかを判定する。
+    pre_frame（入力前フレーム）が与えられた場合は差分クロップを使って
+    既存テキストに惑わされない精度の高い判定を行う。
 
     Args:
-        frame: 'a' 入力直後の全画面 BGR フレーム
+        frame:     'a' 入力直後の全画面 BGR フレーム
+        pre_frame: 'a' 入力前の全画面 BGR フレーム（省略可）
 
     Returns:
         'japanese': ひらがなモード（「あ」が表示されている）
         'english':  英数字モード（'a' が表示されている）
         None:       判定不能
     """
+    # --- 差分クロップ優先 (pre_frame 提供時) ---
+    if pre_frame is not None:
+        diff_crop = _extract_diff_crop(pre_frame, frame)
+        if diff_crop is not None:
+            diff_crop = _ensure_min_size(diff_crop)
+            # デバッグ用に差分クロップを保存
+            _save_debug_popup(diff_crop, "ime_mode_diff")
+            data_url = _encode_image_data_url(diff_crop)
+            prompt = (
+                "この画像は 'a' キーを1回押した直後に画面で変化した部分だけを切り抜いたものです。"
+                "新しく追加された1文字を特定してください。"
+                "平仮名の「あ」（曲線的な日本語文字）であれば 'japanese'、"
+                "半角英字の 'a'（単純なラテン文字）であれば 'english' とだけ答えてください。"
+                "それ以外の説明は不要です。"
+            )
+            try:
+                content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+                print(f"  [VLM IME検出/diff] 応答: {content!r}")
+                if "japanese" in content.lower() or "あ" in content:
+                    return "japanese"
+                if "english" in content.lower():
+                    return "english"
+                # 判定できなかった場合はフォールバックへ
+                print("  [VLM IME検出/diff] 判定不能 → 全体フレームで再試行")
+            except MlxVlmImeError as exc:
+                print(f"  [VLM IME検出/diff] 失敗: {exc} → 全体フレームで再試行")
+        else:
+            print("  [VLM IME検出/diff] 差分なし → 全体フレームで再試行")
+
+    # --- フォールバック: 入力エリア全体を VLM で判定 ---
     cropped = crop_to_input_region(frame)
     cropped = _ensure_min_size(cropped)
     data_url = _encode_image_data_url(cropped)
     prompt = (
         "テキスト入力フィールドに 'a' というキーを1回押しました。"
-        "画像の入力エリアに何が表示されていますか？"
-        "英語入力モードなら半角の 'a' が、日本語入力モードなら平仮名の「あ」が表示されます。"
-        "'a' が表示されているなら 'english'、「あ」が表示されているなら 'japanese' とだけ答えてください。"
+        "直前に入力した最後の1文字だけに注目してください。"
+        "その文字が平仮名の「あ」なら 'japanese'、半角の 'a' なら 'english' とだけ答えてください。"
+        "既存のテキストは無視して、最後に追加された文字だけを判定してください。"
         "それ以外のテキストや説明は不要です。"
     )
     try:
