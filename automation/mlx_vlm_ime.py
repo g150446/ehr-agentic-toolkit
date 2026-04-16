@@ -690,6 +690,18 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
                 continue
             if not isinstance(backspace_count, int) or backspace_count < 0:
                 continue
+            # backspace_count は len(word) - len(target) でなければならない
+            # Qwen3 が誤った値を返すことがあるため強制補正する
+            expected_backspace = len(word) - len(target)
+            if expected_backspace <= 0:
+                # helper word がターゲットより短い or 同じ: 不適切なのでスキップ
+                continue
+            if backspace_count != expected_backspace:
+                print(
+                    f"  [ヘルパー単語提案] backspace_count補正: {word!r} "
+                    f"{backspace_count} → {expected_backspace}"
+                )
+                backspace_count = expected_backspace
             result.append({"word": word, "backspace_count": backspace_count})
 
         print(f"  [ヘルパー単語提案] 有効な提案: {result}")
