@@ -103,6 +103,7 @@ _ASCII_SPECIAL_KEYS = {
     ")": "rparen",
     "%": "percent",
     ":": "colon",
+    "+": "plus",
 }
 _JP_PUNCTUATION = {
     "、": ",",

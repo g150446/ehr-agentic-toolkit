@@ -191,6 +191,13 @@ bool pressNamedKey(const String &keyName) {
     Serial.println("-> key: :");
     return true;
   }
+  if (keyName == "plus") {
+    // JIS keyboard: '+' is Shift+HID 0x33 (the ';:' key shifted).
+    // Keyboard.write('+') sends Shift+0x2E (US '=') which gives '~' on JIS.
+    tapShiftedAscii(';');  // Shift+HID 0x33 → JIS '+'
+    Serial.println("-> key: +");
+    return true;
+  }
   if (keyName == "zenkaku") {
     // ASCII 0x60 (backtick) maps to HID keycode 0.x35 via en_US layout table.
     // On Windows with Japanese 106/109 keyboard layout, HID 0x35 = 半角/全角 key,
