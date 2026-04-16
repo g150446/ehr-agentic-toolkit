@@ -646,18 +646,25 @@ def _extract_diff_crop(
     *,
     min_change_px: int = 12,
     pad: int = 30,
+    max_y_fraction: float = 0.82,
 ) -> Optional[np.ndarray]:
     """2フレームの差分から変化した矩形領域を切り出す。
 
     'a' キー入力前後のフレームを比較し、新しく追加された文字('a' または「あ」)の
     周辺領域のみを返す。既存テキストの影響を排除するためのヘルパー。
 
+    max_y_fraction: 画面下部（IME クラウド候補等）を除外するための上限 (0〜1)。
+    Windows IME のクラウド候補パネルは画面下部に表示されることが多いため、
+    その領域を差分検索から除外することで誤検出を防ぐ。
+
     Returns:
         変化領域の BGR クロップ。変化なし or 小さすぎる場合は None。
     """
     h = min(pre_frame.shape[0], post_frame.shape[0])
     w = min(pre_frame.shape[1], post_frame.shape[1])
-    diff = cv2.absdiff(pre_frame[:h, :w], post_frame[:h, :w])
+    # 画面下部（IMEクラウド候補/ツールバーエリア）を除外
+    h_limit = int(h * max_y_fraction)
+    diff = cv2.absdiff(pre_frame[:h_limit, :w], post_frame[:h_limit, :w])
     gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
