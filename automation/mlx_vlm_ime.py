@@ -32,7 +32,8 @@ MLX_VLM_IME_TIMEOUT = float(os.getenv("MLX_VLM_IME_TIMEOUT", "90"))
 # When the server is slow, we want to quickly fall through to popup mode.
 MLX_VLM_INLINE_TIMEOUT = float(os.getenv("MLX_VLM_INLINE_TIMEOUT", "45"))
 # Text-only model for tasks that don't require vision (e.g., helper word suggestions).
-MLX_VLM_TEXT_MODEL = os.getenv("MLX_VLM_TEXT_MODEL", "Qwen3.5-9B-MLX-4bit")
+# Falls back to the same VL model if a dedicated text model is not available.
+MLX_VLM_TEXT_MODEL = os.getenv("MLX_VLM_TEXT_MODEL", MLX_VLM_IME_MODEL)
 
 
 class MlxVlmImeError(RuntimeError):
