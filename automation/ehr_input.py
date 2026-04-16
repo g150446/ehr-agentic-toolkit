@@ -1504,6 +1504,11 @@ def _ime_candidate_matches(target: str, combined: str) -> bool:
     return False
 
 
+def _has_hiragana(text: str) -> bool:
+    """Return True if text contains hiragana (indicates phonetic/mixed OCR read)."""
+    return any('\u3041' <= c <= '\u3096' for c in text)
+
+
 def _find_best_candidate_match(
     target: str, numbered: list[tuple[int, str]]
 ) -> Optional[tuple[int, str]]:
@@ -1512,7 +1517,7 @@ def _find_best_candidate_match(
     完全一致を優先し、なければファジーマッチを試みる。
     例: target="痛", candidates=[(1,'通'),(2,'疼痛'),(5,'痛')] → (5, '痛')
     """
-    # First pass: exact match (including fuzzy OCR noise, same length)
+    # First pass: exact match
     for n, c in numbered:
         if c == target:
             return (n, c)
@@ -1524,11 +1529,16 @@ def _find_best_candidate_match(
     for n, c in numbered:
         if _ime_candidate_matches(target, c):
             return (n, c)
-    # Fourth pass: romaji comparison (OCR phonetically misreads kanji, e.g., '野菜'→'屋さい',
-    # '著者'→'ちょしゃ', '吸収'→'旧習'; both convert to the same romaji reading)
+    # Fourth pass: romaji comparison — ONLY for candidates containing hiragana.
+    # Pure-kanji candidates are skipped to avoid false positives from homonyms
+    # (e.g., '長身' and '聴診' both read 'choushin'; '量' and '両' both read 'ryou').
+    # Hiragana-containing candidates are OCR phonetic misreads (e.g., '屋さい'→'野菜',
+    # 'ちょしゃ'→'著者', 'セいしつ'→'性質') and are safe to match via romaji.
     try:
         target_romaji = _kanji_to_romaji(target)
         for n, c in numbered:
+            if not _has_hiragana(c):
+                continue
             try:
                 if _kanji_to_romaji(c) == target_romaji:
                     print(f"  [候補照合/romaji] {c!r} → {_kanji_to_romaji(c)!r} ≈ {target!r} → 採用")
@@ -1537,6 +1547,17 @@ def _find_best_candidate_match(
                 pass
     except Exception:
         pass
+    # Fifth pass: visual confusible first character.
+    # OCR sometimes misreads only the first kanji (e.g., '著'→'善', '聴'→'徳').
+    # If all chars except the first match exactly, the first char is a visual confusible
+    # and this is almost certainly an OCR misread of the correct candidate.
+    # Requires length ≥ 2 to avoid false positives on single-char targets.
+    if len(target) >= 2:
+        target_suffix = target[1:]
+        for n, c in numbered:
+            if len(c) == len(target) and c[1:] == target_suffix and c[0] != target[0]:
+                print(f"  [候補照合/suffix] {c!r} suffix={target_suffix!r} ≈ {target!r} → 採用")
+                return (n, c)
     return None
 
 
