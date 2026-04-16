@@ -160,12 +160,14 @@ def _find_dark_region_y(frame: np.ndarray) -> Optional[int]:
 
 
 def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
-    """Windows 10 IME ポップアップの青い選択バーを HSV 色検出で特定し、
-    そのバーを基準にポップアップ全体をクロップして返す。
+    """Windows IME ポップアップの青い選択インジケータを HSV 色検出で特定し、
+    そのインジケータを基準にポップアップ全体をクロップして返す。
 
-    Win10 IME の変換候補ポップアップは、選択中の候補に青いハイライトバーが表示される
-    (標準 Win10 アクセント色: RGB 0,120,215 → HSV H≈106, S≈182, V≈215)。
-    このバーの x/y 範囲からポップアップウィンドウ全体の矩形を推定する。
+    - Win10 IME: 選択中の候補に青いハイライトバー（横長: w >> h）
+    - Win11 IME: 選択中の候補の左端に青い細い縦バー（縦長: h >> w）
+    (標準 Windows アクセント色: RGB 0,120,215 → HSV H≈106, S≈182, V≈215)
+
+    正方形に近いアイコン（スピナー、IME モードボタンなど）は除外する。
 
     Returns:
         クロップされたポップアップ領域。検出失敗時は None。
@@ -173,7 +175,7 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
     fh, fw = frame.shape[:2]
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    # Win10 IME 選択バー (青: H 95-130, S 50+, V 60+)
+    # Windows IME 選択インジケータ (青: H 95-130, S 50+, V 60+)
     lower_blue = np.array([95, 50, 60])
     upper_blue = np.array([130, 255, 255])
     mask = cv2.inRange(hsv, lower_blue, upper_blue)
@@ -188,8 +190,16 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
     best_area = 0
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        # IME 選択バーのサイズ: 幅 30-450px、高さ 8-55px
-        if w < 30 or w > 450 or h < 8 or h > 55:
+        # IME インジケータの形状チェック:
+        #   Win11: 細い縦バー (h >= w * 1.5)
+        #   Win10: 横長バー  (w >= h * 2.0)
+        # スピナー・モードアイコンなど正方形に近い要素は除外する
+        is_vertical_bar = h >= w * 1.5    # Win11 スタイル
+        is_horizontal_bar = w >= h * 2.0  # Win10 スタイル
+        if not (is_vertical_bar or is_horizontal_bar):
+            continue
+        # Win11縦バー: 幅3px程度まで許容。Win10横バー: 幅30-450px
+        if w < 3 or w > 450 or h < 8 or h > 80:
             continue
         # タスクバー・画面上端付近を除外
         if y < fh * 0.04 or y > fh * 0.92:
@@ -203,12 +213,18 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
         return None
 
     x, y, w, h = best
+    is_vertical_bar = h >= w * 1.5
     # 選択候補の上にある候補行は最大 1 行分のみ許可（ツールバーを除外するため浅めに切る）
     # 下方向は最大 8 候補分（各行 ~25px = 200px）+ 余白
     popup_y1 = max(0, y - 35)
     popup_y2 = min(fh, y + h + 230)
     popup_x1 = max(0, x - 6)
-    popup_x2 = min(fw, x + w + 6)
+    if is_vertical_bar:
+        # Win11縦バー: バーは左端にあるのでポップアップ幅分右に広げる
+        popup_x2 = min(fw, x + 260)
+    else:
+        # Win10横バー: バー幅 + マージン
+        popup_x2 = min(fw, x + w + 6)
 
     return frame[popup_y1:popup_y2, popup_x1:popup_x2]
 
@@ -550,3 +566,137 @@ def detect_ime_mode_from_typed_a(frame: np.ndarray) -> Optional[str]:
     except MlxVlmImeError as exc:
         print(f"  [VLM IME検出/typed-a] 失敗: {exc}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Helper word suggestion (text-only)
+# ---------------------------------------------------------------------------
+
+def _call_mlx_vlm_text_only(
+    prompt: str,
+    *,
+    model: str = MLX_VLM_IME_MODEL,
+    url: str = MLX_VLM_IME_URL,
+    timeout: float = MLX_VLM_IME_TIMEOUT,
+) -> str:
+    """mlx_vlm.server に画像なしのテキストのみリクエストを送信する。"""
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        "stream": False,
+        "max_tokens": 256,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+    except (TimeoutError, socket.timeout) as exc:
+        raise MlxVlmImeError(
+            f"mlx_vlm テキストリクエストが {timeout:g} 秒でタイムアウトしました"
+        ) from exc
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            raise MlxVlmImeError(
+                f"mlx_vlm テキストリクエストが {timeout:g} 秒でタイムアウトしました"
+            ) from exc
+        raise MlxVlmImeError(
+            f"mlx_vlm への接続に失敗しました: {reason}. endpoint={url}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise MlxVlmImeError("mlx_vlm 応答の JSON を解析できませんでした") from exc
+
+    try:
+        content = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise MlxVlmImeError(
+            f"mlx_vlm 応答に content テキストがありません: {result!r}"
+        ) from exc
+
+    if not isinstance(content, str):
+        raise MlxVlmImeError(f"mlx_vlm 応答に content テキストがありません: {result!r}")
+    return content.strip()
+
+
+def suggest_ime_helper_word(target: str) -> list[dict]:
+    """IME変換が困難な漢字に対してヘルパー単語の候補リストを提案する。
+
+    Qwen3 に対してテキストのみのリクエストを送り、MS-IME の変換辞書に
+    確実に存在する一般的な単語を3つ提案してもらう。変換後に余分な末尾文字を
+    Backspace で削除することで目標の漢字を得る。
+
+    例: target="過" → [{"word": "過去", "backspace_count": 1}, ...]
+
+    Args:
+        target: IME変換に失敗した漢字（通常は1文字）
+
+    Returns:
+        ヘルパー単語情報のリスト（空リストの場合は提案なし）
+        各要素のキー:
+            word (str): 提案する日本語単語
+            backspace_count (int): 単語確定後に Backspace で削除する文字数
+    """
+    prompt = (
+        f"{target}、という漢字をIMEで変換して入力したいです。"
+        "この漢字を先頭に含む単語またはフレーズで、変換候補として出現しやすいものを三つ提案して。"
+        "その単語を選んだ際に、求める漢字のみを残すための、バックスペースの個数も出力して。"
+        "json形式で答えのみ出力して。keyは\"word\",\"backspace_count\""
+    )
+    try:
+        raw = _call_mlx_vlm_text_only(prompt)
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        print(f"  [ヘルパー単語提案] Qwen3応答: {raw!r}")
+
+        cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip().rstrip("`").strip()
+
+        # まず JSON 配列 [...] を試みる
+        items: list = []
+        arr_m = re.search(r"\[.*?\]", cleaned, re.DOTALL)
+        if arr_m:
+            try:
+                parsed = json.loads(arr_m.group())
+                if isinstance(parsed, list):
+                    items = parsed
+            except json.JSONDecodeError:
+                pass
+
+        # 配列が見つからなければ個別の {...} オブジェクトを順に抽出
+        if not items:
+            for obj_m in re.finditer(r"\{[^{}]*\}", cleaned, re.DOTALL):
+                try:
+                    items.append(json.loads(obj_m.group()))
+                except json.JSONDecodeError:
+                    continue
+
+        if not items:
+            print("  [ヘルパー単語提案] JSONが見つかりません")
+            return []
+
+        result = []
+        for item in items:
+            word = item.get("word", "")
+            backspace_count = item.get("backspace_count", 0)
+            if not isinstance(word, str) or not word:
+                continue
+            if not isinstance(backspace_count, int) or backspace_count < 0:
+                continue
+            result.append({"word": word, "backspace_count": backspace_count})
+
+        print(f"  [ヘルパー単語提案] 有効な提案: {result}")
+        return result
+    except json.JSONDecodeError as exc:
+        print(f"  [ヘルパー単語提案] JSON解析失敗: {exc}")
+        return []
+    except MlxVlmImeError as exc:
+        print(f"  [ヘルパー単語提案] Qwen3呼び出し失敗: {exc}")
+        return []
