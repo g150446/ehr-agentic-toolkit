@@ -44,10 +44,12 @@ from automation.mlx_vlm_ime import (
 
 
 _TEXT_NORMALIZATION_MAP = str.maketrans({
+    # 全角括弧・記号 → 半角 ASCII（形状がほぼ同一のもの）
     "（": "(",
     "）": ")",
     "％": "%",
     "：": ":",
+    "；": ";",
     "［": "[",
     "］": "]",
     "【": "[",
@@ -57,6 +59,35 @@ _TEXT_NORMALIZATION_MAP = str.maketrans({
     "，": ",",
     "．": ".",
     "　": " ",
+    # 全角 ASCII 記号 (U+FF01–U+FF5E) → 半角
+    "！": "!",
+    "＂": '"',
+    "＃": "#",
+    "＄": "$",
+    "＆": "&",
+    "＊": "*",
+    "＋": "+",
+    "－": "-",
+    "／": "/",
+    "＜": "<",
+    "＝": "=",
+    "＞": ">",
+    "？": "?",
+    "＠": "@",
+    "＼": "\\",
+    "＾": "^",
+    "＿": "_",
+    "｀": "`",
+    "｜": "|",
+    "～": "~",
+    # スマートクォート → ストレートクォート
+    "\u2018": "'",   # '
+    "\u2019": "'",   # '
+    "\u201c": '"',   # "
+    "\u201d": '"',   # "
+    # ダッシュ類 → ハイフン
+    "\u2010": "-",   # ‐ (hyphen)
+    "\u2013": "-",   # – (en dash)
 })
 _MULTI_CHAR_REPLACEMENTS = {
     "→": "->",
@@ -1009,15 +1040,33 @@ def type_kanji_via_ime(
         except Exception as exc:
             print(f"  VLM番号付き候補読取失敗: {exc}")
 
-        # --- 句読点幅選択ポップアップ（全/半）を誤検出した場合は Escape で閉じて再試行 ---
+        # --- 句読点幅選択ポップアップ（全/半）や記号バリエーションポップアップを誤検出した場合 ---
         _WIDTH_ONLY_TEXTS = {"全", "半", "全角", "半角"}
-        if numbered and all(t in _WIDTH_ONLY_TEXTS for _, t in numbered):
-            print(f"  [警告] 句読点幅選択ポップアップを検出 → Escape で閉じてリトライします")
+        def _is_symbol_variation_popup(candidates: list) -> bool:
+            if not candidates:
+                return False
+            if all(t in _WIDTH_ONLY_TEXTS for _, t in candidates):
+                return True
+            # VLM が "+[半]", "+[全]", "、[全]" 等と読み取った場合もシンボルポップアップ
+            return all(("[半]" in t or "[全]" in t) for _, t in candidates if t)
+
+        if numbered and _is_symbol_variation_popup(numbered):
+            print(f"  [警告] 記号バリエーションポップアップを検出 → Escape で閉じてリトライします")
             client.press_key("escape")
             time.sleep(0.5)
-            # IME をひらがな入力に戻してからポップアップを直接開く（Space 1回）
+            # IME 組成をキャンセル（誤入力された記号を削除）
             client.press_key("escape")
             time.sleep(0.3)
+            # コミット済み余分記号を削除
+            client.press_key("backspace")
+            time.sleep(0.2)
+            # ローマ字を再入力してポップアップを開く
+            ok = client.type_text(romaji)
+            print(f"type:{romaji} (リトライ) -> {'OK' if ok else 'NG'}")
+            time.sleep(0.5)
+            ok = client.press_key("space")
+            print(f"key:space (インライン変換リトライ) -> {'OK' if ok else 'NG'}")
+            time.sleep(wait_sec)
             ok = client.press_key("space")
             print(f"key:space (リトライ popup) -> {'OK' if ok else 'NG'}")
             time.sleep(max(wait_sec, 1.0))
@@ -1383,7 +1432,7 @@ def toggle_ime(client: "BLEClient") -> None:
     """半角/全角キーを送って IME モードをトグルする。"""
     print("  [IME切替] 半角/全角 を送信")
     client.press_key("zenkaku")
-    time.sleep(0.3)  # IME 切替の反映を待つ
+    time.sleep(0.5)  # IME 切替の反映を待つ
 
 
 def ensure_ime_mode(

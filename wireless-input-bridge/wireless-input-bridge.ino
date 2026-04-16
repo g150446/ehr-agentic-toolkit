@@ -185,7 +185,9 @@ bool pressNamedKey(const String &keyName) {
     return true;
   }
   if (keyName == "colon") {
-    tapShiftedAscii(';');
+    // JIS keyboard: ':' is at HID 0x34 (US apostrophe/quote position), unshifted.
+    // tapShiftedAscii(';') sends Shift+0x33 which gives '+' on JIS (not ':').
+    Keyboard.write('\'');  // HID 0x34 → JIS ':' (unshifted colon key)
     Serial.println("-> key: :");
     return true;
   }
