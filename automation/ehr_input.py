@@ -1466,20 +1466,23 @@ def _try_helper_word_fallback(
             client.press_key("enter")
             time.sleep(wait_sec)
 
-        # 余分な文字を削除
-        if backspace_count > 0:
-            print(f"  [ヘルパー単語] Backspace × {backspace_count} で余分な文字を削除...")
-            for _ in range(backspace_count):
-                client.press_key("backspace")
-                time.sleep(0.15)
-
-        # 数字キー選択（display_num <= 9）の場合、候補は未確定状態のため Enter で確定する。
-        # Space 循環＋Enter（display_num > 9）の場合は Enter で既にコミット済みなので不要。
+        # 数字キー選択（display_num <= 9）の場合、候補は未確定状態のため Enter で先に確定する。
+        # 未確定のまま Backspace を押すと、隣接する確定済み文字（例: '聴'）が
+        # IME の組成バッファに巻き込まれて再変換対象になってしまうため、
+        # 必ず Enter で確定してから Backspace で余分な文字を削除する。
+        # Space 循環＋Enter（display_num > 9）の場合は Enter で既にコミット済み。
         if display_num <= 9:
             print(f"  [ヘルパー単語] Enter で確定...")
             ok = client.press_key("enter")
             print(f"  key:enter (helper confirm) -> {'OK' if ok else 'NG'}")
             time.sleep(0.3)
+
+        # 余分な文字を削除（確定済みテキストから削除するため安全）
+        if backspace_count > 0:
+            print(f"  [ヘルパー単語] Backspace × {backspace_count} で余分な文字を削除...")
+            for _ in range(backspace_count):
+                client.press_key("backspace")
+                time.sleep(0.15)
 
         print(f"  [ヘルパー単語] 「{covered_prefix}」の入力完了")
 
