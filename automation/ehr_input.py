@@ -10,6 +10,8 @@ identical BLE event-loop behaviour on macOS CoreBluetooth.
 
 from __future__ import annotations
 
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from datetime import datetime
 import json
 import cv2
 import re
@@ -155,6 +157,63 @@ _DEFAULT_IME_TEXT_RUNTIME = {
     "model": mlx_vlm_ime.MLX_VLM_TEXT_MODEL,
     "api_key": mlx_vlm_ime.MLX_VLM_TEXT_API_KEY,
 }
+_RUN_LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
+class _TeeStream:
+    """Mirror writes to both the terminal stream and the run log file."""
+
+    def __init__(self, console_stream, log_stream) -> None:
+        self._console_stream = console_stream
+        self._log_stream = log_stream
+
+    def write(self, data: str) -> int:
+        self._console_stream.write(data)
+        self._log_stream.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self._console_stream.flush()
+        self._log_stream.flush()
+
+    def isatty(self) -> bool:
+        return bool(getattr(self._console_stream, "isatty", lambda: False)())
+
+    @property
+    def encoding(self):
+        return getattr(self._console_stream, "encoding", "utf-8")
+
+
+def _build_run_log_path(now: Optional[datetime] = None) -> Path:
+    timestamp = (now or datetime.now()).strftime("%m%d_%H%M")
+    candidate = _RUN_LOGS_DIR / f"{timestamp}.txt"
+    suffix = 2
+    while candidate.exists():
+        candidate = _RUN_LOGS_DIR / f"{timestamp}_{suffix}.txt"
+        suffix += 1
+    return candidate
+
+
+@contextmanager
+def _capture_run_output(
+    log_path: Optional[Path] = None,
+    *,
+    stdout=None,
+    stderr=None,
+):
+    """Tee stdout/stderr to a timestamped per-run log file."""
+    import sys
+
+    stdout = sys.stdout if stdout is None else stdout
+    stderr = sys.stderr if stderr is None else stderr
+    log_path = log_path or _build_run_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with log_path.open("w", encoding="utf-8") as log_file:
+        tee_stdout = _TeeStream(stdout, log_file)
+        tee_stderr = _TeeStream(stderr, log_file)
+        with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
+            yield log_path
 
 
 class MacTestClient:
@@ -2583,11 +2642,12 @@ def main(argv: list[str] | None = None) -> int:
     import sys
 
     args = sys.argv[1:] if argv is None else argv
-    try:
-        return _run_cli(args)
-    except (RuntimeError, ValueError) as exc:
-        print(exc)
-        return 1
+    with _capture_run_output():
+        try:
+            return _run_cli(args)
+        except (RuntimeError, ValueError) as exc:
+            print(exc)
+            return 1
 
 
 if __name__ == '__main__':

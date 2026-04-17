@@ -121,6 +121,24 @@ Example output on disconnection and recovery:
 
 ---
 
+### `send_backspaces.sh`
+
+**Purpose**: Send Backspace repeatedly for cleanup/testing
+
+**What it does:**
+- Activates virtual environment
+- Sets `PYTHONPATH`
+- If `ble_server.py` is already connected, sends Backspace through `/tmp/ble_server.sock`
+- Otherwise connects directly to the BLE device and sends Backspace
+
+**Usage:**
+```bash
+./scripts/send_backspaces.sh
+./scripts/send_backspaces.sh 20
+```
+
+---
+
 ## Why These Scripts?
 
 These helper scripts provide convenient wrappers around the Python modules:

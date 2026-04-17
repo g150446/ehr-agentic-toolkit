@@ -1,4 +1,5 @@
 from pathlib import Path
+import io
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -126,6 +127,37 @@ def test_input_resolved_text_bypasses_ime_conversion_for_katakana(monkeypatch):
     ehr_input._input_resolved_text("テスト", windows_version="windows10", clear_field=False)
 
     assert events == [("sentence", "テスト", {"windows_version": "windows10", "clear_field": False})]
+
+
+def test_capture_run_output_tees_stdout_and_stderr(tmp_path):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    log_path = tmp_path / "logs" / "0417_0000.txt"
+
+    with ehr_input._capture_run_output(log_path, stdout=stdout, stderr=stderr):
+        print("hello stdout")
+        print("hello stderr", file=__import__("sys").stderr)
+
+    assert stdout.getvalue() == "hello stdout\n"
+    assert stderr.getvalue() == "hello stderr\n"
+    assert log_path.read_text(encoding="utf-8") == "hello stdout\nhello stderr\n"
+
+
+def test_build_run_log_path_uses_mmdd_hhmm_name():
+    path = ehr_input._build_run_log_path(ehr_input.datetime(2026, 4, 17, 13, 50, 1))
+
+    assert path == ehr_input._RUN_LOGS_DIR / "0417_1350.txt"
+
+
+def test_build_run_log_path_adds_numeric_suffix_when_name_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(ehr_input, "_RUN_LOGS_DIR", tmp_path / "logs")
+    (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "logs" / "0417_1350.txt").write_text("", encoding="utf-8")
+    (tmp_path / "logs" / "0417_1350_2.txt").write_text("", encoding="utf-8")
+
+    path = ehr_input._build_run_log_path(ehr_input.datetime(2026, 4, 17, 13, 50, 1))
+
+    assert path == tmp_path / "logs" / "0417_1350_3.txt"
 
 
 def test_tokenize_text_for_input_preserves_newlines_and_symbols():

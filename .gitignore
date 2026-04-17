@@ -35,6 +35,7 @@ monitor_outputs/
 
 # Logs
 logs/
+/logs/
 *.log
 audit_logs/
 
