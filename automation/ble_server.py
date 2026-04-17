@@ -27,8 +27,14 @@ BLE_HEALTH_CHECK_INTERVAL = 3.0
 BLE_KEEPALIVE_INTERVAL = 10.0  # Send keepalive every 10s to prevent idle disconnect
 
 
-async def dispatch(ble: BLEController, req: dict) -> dict:
-    """コマンドを対応する BLEController メソッドにルーティング"""
+async def dispatch(ble: BLEController, ble_lock: asyncio.Lock, req: dict) -> dict:
+    """コマンドを対応する BLEController メソッドにルーティング
+
+    BLE write 操作は asyncio.Lock で直列化する。
+    複数の asyncio タスク（handle_client + monitor_ble_connection keepalive）が
+    並行して write_gatt_char を呼ぶと macOS CoreBluetooth 内部でブロックが発生するため。
+    status / connect / disconnect はロック不要。
+    """
     cmd = req.get("cmd")
     try:
         if cmd == "status":
@@ -43,36 +49,38 @@ async def dispatch(ble: BLEController, req: dict) -> dict:
         if cmd == "disconnect":
             await ble.disconnect()
             return {"ok": True}
-        if cmd == "switch_to_mouse_mode":
-            return {"ok": await ble.switch_to_mouse_mode()}
-        if cmd == "switch_to_keyboard_mode":
-            return {"ok": await ble.switch_to_keyboard_mode()}
-        if cmd == "move_mouse_to_position":
-            return {"ok": await ble.move_mouse_to_position(req["x"], req["y"])}
-        if cmd == "move_mouse_absolute":
-            return {"ok": await ble.move_mouse_absolute(req["x"], req["y"])}
-        if cmd == "move_mouse":
-            return {"ok": await ble.move_mouse(req["x"], req["y"])}
-        if cmd == "click":
-            return {"ok": await ble.click()}
-        if cmd == "double_click":
-            return {"ok": await ble.double_click()}
-        if cmd == "right_click":
-            return {"ok": await ble.right_click()}
-        if cmd == "scroll":
-            return {"ok": await ble.scroll(req["amount"])}
-        if cmd == "type_text":
-            return {"ok": await ble.type_text(req["text"])}
-        if cmd == "press_key":
-            return {"ok": await ble.press_key(req["key"])}
-        if cmd == "send_command":
-            return {"ok": await ble.send_command(req["command"])}
-        return {"ok": False, "error": f"Unknown command: {cmd}"}
+        async with ble_lock:
+            if cmd == "switch_to_mouse_mode":
+                return {"ok": await ble.switch_to_mouse_mode()}
+            if cmd == "switch_to_keyboard_mode":
+                return {"ok": await ble.switch_to_keyboard_mode()}
+            if cmd == "move_mouse_to_position":
+                return {"ok": await ble.move_mouse_to_position(req["x"], req["y"])}
+            if cmd == "move_mouse_absolute":
+                return {"ok": await ble.move_mouse_absolute(req["x"], req["y"])}
+            if cmd == "move_mouse":
+                return {"ok": await ble.move_mouse(req["x"], req["y"])}
+            if cmd == "click":
+                return {"ok": await ble.click()}
+            if cmd == "double_click":
+                return {"ok": await ble.double_click()}
+            if cmd == "right_click":
+                return {"ok": await ble.right_click()}
+            if cmd == "scroll":
+                return {"ok": await ble.scroll(req["amount"])}
+            if cmd == "type_text":
+                return {"ok": await ble.type_text(req["text"])}
+            if cmd == "press_key":
+                return {"ok": await ble.press_key(req["key"])}
+            if cmd == "send_command":
+                return {"ok": await ble.send_command(req["command"])}
+            return {"ok": False, "error": f"Unknown command: {cmd}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-async def handle_client(ble: BLEController, reader: asyncio.StreamReader,
+async def handle_client(ble: BLEController, ble_lock: asyncio.Lock,
+                         reader: asyncio.StreamReader,
                          writer: asyncio.StreamWriter) -> None:
     """クライアント1接続のリクエスト/レスポンスループ"""
     peer = writer.get_extra_info("peername", "unknown")
@@ -86,7 +94,7 @@ async def handle_client(ble: BLEController, reader: asyncio.StreamReader,
             except json.JSONDecodeError as e:
                 result = {"ok": False, "error": f"Invalid JSON: {e}"}
             else:
-                result = await dispatch(ble, req)
+                result = await dispatch(ble, ble_lock, req)
             writer.write((json.dumps(result) + "\n").encode())
             await writer.drain()
     finally:
@@ -115,6 +123,7 @@ async def disconnect_and_exit_loop(
 
 async def monitor_ble_connection(
     ble: BLEController,
+    ble_lock: asyncio.Lock,
     disconnect_event: asyncio.Event,
     stop_event: asyncio.Event,
     interval: float = BLE_HEALTH_CHECK_INTERVAL,
@@ -139,7 +148,8 @@ async def monitor_ble_connection(
         now = asyncio.get_event_loop().time()
         if now - last_keepalive >= BLE_KEEPALIVE_INTERVAL:
             try:
-                await ble.send_command("mode:mouse")
+                async with ble_lock:
+                    await ble.send_command("mode:mouse")
             except Exception:
                 pass
             last_keepalive = now
@@ -156,6 +166,7 @@ async def main() -> None:
 
     loop = asyncio.get_running_loop()
     disconnect_event = asyncio.Event()
+    ble_lock = asyncio.Lock()
 
     def on_ble_disconnect(client):
         print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] BLE デバイスが切断されました。")
@@ -173,7 +184,7 @@ async def main() -> None:
         os.unlink(SOCKET_PATH)
 
     server = await asyncio.start_unix_server(
-        lambda r, w: handle_client(ble, r, w),
+        lambda r, w: handle_client(ble, ble_lock, r, w),
         path=SOCKET_PATH,
     )
     print(f"BLE サーバー起動: {SOCKET_PATH}")
@@ -192,7 +203,7 @@ async def main() -> None:
             disconnect_and_exit_loop(disconnect_event, stop_event)
         )
         watchdog_task = asyncio.create_task(
-            monitor_ble_connection(ble, disconnect_event, stop_event)
+            monitor_ble_connection(ble, ble_lock, disconnect_event, stop_event)
         )
         await stop_event.wait()
         disconnect_task.cancel()
