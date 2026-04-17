@@ -8,7 +8,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 if [ -d "venv" ]; then
-    source venv/bin/activate
+    # Use virtual environment's python directly instead of activating
+    PYTHON="$PROJECT_ROOT/venv/bin/python"
 else
     echo "Error: Virtual environment not found. Run ./scripts/setup_automation.sh first."
     exit 1
@@ -21,7 +22,7 @@ trap 'echo "BLE サーバーを停止します..."; exit 0' INT TERM
 
 # BLE 切断時にプロセスが終了した場合、自動的に再起動する
 while true; do
-    python -m automation.ble_server "$@"
+    "$PYTHON" -m automation.ble_server "$@"
     EXIT_CODE=$?
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] BLE サーバーが終了しました (exit code: $EXIT_CODE)。3秒後に再起動します..."
     sleep 3
