@@ -15,7 +15,6 @@ sudachipy>=0.6.10
 sudachidict_core>=20241021
 easyocr>=1.7.0
 pillow>=9.0.0
-mlx-vlm>=0.4.4
 pyautogui>=0.9.54
 
 # BLE Communication (for Windows login automation)
