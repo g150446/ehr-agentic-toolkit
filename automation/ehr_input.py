@@ -1303,10 +1303,13 @@ def _text_to_hiragana_len(text: str) -> int:
 def _cancel_ime_popup_safe(client: "BLEClient", text: str, wait: float = 0.15) -> None:
     """IMEポップアップをコミットなしでキャンセルし、組成バッファをクリアする。
 
-    Esc×2（ポップアップ→インライン→コミット）の代わりに以下を使用:
-      Esc×1 (ポップアップ→インライン変換、コミットなし)
-      Backspace×1 (インライン変換→組成モード、コミットなし)
-      Backspace×N (組成バッファのひらがな文字を1文字ずつ削除)
+    観察された Windows IME 動作:
+      Esc×1 → ポップアップを閉じ、ひらがな組成モードに戻る（インラインを経由しない）
+      Backspace×N → 組成バッファのひらがな文字を1文字ずつ削除
+
+    注意: 以前は Esc 後に "インライン→組成" 用の追加 Backspace×1 を送っていたが、
+    この EHR の IME では Esc がポップアップから直接ひらがな組成に戻るため、
+    その Backspace が余分な文字削除となり確定済み文字を消してしまっていた。
 
     Args:
         client: BLEClient インスタンス
@@ -1314,9 +1317,7 @@ def _cancel_ime_popup_safe(client: "BLEClient", text: str, wait: float = 0.15) -
         wait: キー操作間の待機秒数
     """
     hira_len = _text_to_hiragana_len(text)
-    client.press_key("escape")  # ポップアップ → インライン変換（コミットなし）
-    time.sleep(wait)
-    client.press_key("backspace")  # インライン変換 → 組成モード（コミットなし）
+    client.press_key("escape")  # ポップアップ → ひらがな組成モード（コミットなし）
     time.sleep(wait)
     for _ in range(hira_len):
         client.press_key("backspace")  # 組成バッファのひらがな文字を1文字削除
