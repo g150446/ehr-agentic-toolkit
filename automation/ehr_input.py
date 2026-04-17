@@ -1509,6 +1509,16 @@ def _has_hiragana(text: str) -> bool:
     return any('\u3041' <= c <= '\u3096' for c in text)
 
 
+def _is_pure_katakana(text: str) -> bool:
+    """Return True if text consists entirely of katakana + prolonged sound marks.
+
+    Pure-katakana OCR reads (e.g., 'ハイ', 'ハイゾウ') indicate the OCR
+    read the phonetic pronunciation of a kanji candidate, making romaji
+    comparison safe (same as hiragana phonetic reads).
+    """
+    return bool(text) and all('\u30A0' <= c <= '\u30FF' for c in text)
+
+
 def _find_best_candidate_match(
     target: str, numbered: list[tuple[int, str]]
 ) -> Optional[tuple[int, str]]:
@@ -1529,15 +1539,17 @@ def _find_best_candidate_match(
     for n, c in numbered:
         if _ime_candidate_matches(target, c):
             return (n, c)
-    # Fourth pass: romaji comparison — ONLY for candidates containing hiragana.
+    # Fourth pass: romaji comparison — for hiragana-containing or pure-katakana candidates.
     # Pure-kanji candidates are skipped to avoid false positives from homonyms
     # (e.g., '長身' and '聴診' both read 'choushin'; '量' and '両' both read 'ryou').
     # Hiragana-containing candidates are OCR phonetic misreads (e.g., '屋さい'→'野菜',
     # 'ちょしゃ'→'著者', 'セいしつ'→'性質') and are safe to match via romaji.
+    # Pure-katakana candidates (e.g., 'ハイ'→'肺', 'ハイゾウ'→'肺臓') are also OCR
+    # phonetic misreads and safe to match.
     try:
         target_romaji = _kanji_to_romaji(target)
         for n, c in numbered:
-            if not _has_hiragana(c):
+            if not (_has_hiragana(c) or _is_pure_katakana(c)):
                 continue
             try:
                 if _kanji_to_romaji(c) == target_romaji:
