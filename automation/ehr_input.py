@@ -1292,6 +1292,37 @@ def type_kanji_via_ime(
     client.press_key("enter")
 
 
+def _text_to_hiragana_len(text: str) -> int:
+    """漢字/かな文字列をひらがなに変換して文字数を返す (IME組成バッファのサイズ推定)。"""
+    import pykakasi
+    kks = pykakasi.kakasi()
+    hira = "".join(item["hira"] for item in kks.convert(text))
+    return max(len(hira), 1)
+
+
+def _cancel_ime_popup_safe(client: "BLEClient", text: str, wait: float = 0.15) -> None:
+    """IMEポップアップをコミットなしでキャンセルし、組成バッファをクリアする。
+
+    Esc×2（ポップアップ→インライン→コミット）の代わりに以下を使用:
+      Esc×1 (ポップアップ→インライン変換、コミットなし)
+      Backspace×1 (インライン変換→組成モード、コミットなし)
+      Backspace×N (組成バッファのひらがな文字を1文字ずつ削除)
+
+    Args:
+        client: BLEClient インスタンス
+        text: IME組成バッファに対応する漢字/かな文字列 (ひらがな文字数の計算に使用)
+        wait: キー操作間の待機秒数
+    """
+    hira_len = _text_to_hiragana_len(text)
+    client.press_key("escape")  # ポップアップ → インライン変換（コミットなし）
+    time.sleep(wait)
+    client.press_key("backspace")  # インライン変換 → 組成モード（コミットなし）
+    time.sleep(wait)
+    for _ in range(hira_len):
+        client.press_key("backspace")  # 組成バッファのひらがな文字を1文字削除
+        time.sleep(0.12)
+
+
 def _try_helper_word_fallback(
     client: "BLEClient",
     config,
@@ -1331,6 +1362,11 @@ def _try_helper_word_fallback(
         print(f"  [ヘルパー単語] 提案なし → フォールバック失敗")
         return False
 
+    # エントリー状態: target_kanji に対応するIMEポップアップが開いている
+    # コミットなしでキャンセルしてから提案ループに入る
+    print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
+    _cancel_ime_popup_safe(client, target_kanji, wait=0.3)
+
     for idx, suggestion in enumerate(suggestions):
         helper_word = suggestion["word"]
         # backspace_count はヘルパー単語長 - 対象文字長から確定的に計算する（Qwen3の提案値は使わない）
@@ -1343,15 +1379,6 @@ def _try_helper_word_fallback(
             f"  [ヘルパー単語] 提案{idx+1}/{len(suggestions)}: {helper_word!r} "
             f"(romaji={helper_romaji!r}), covers={covered_prefix!r}, backspace={backspace_count}"
         )
-
-        # 現在の IME 状態をキャンセル (Escape×2: popup→inline→完全解除)
-        print("  [ヘルパー単語] Escape で IME 状態をキャンセル...")
-        client.press_key("escape")
-        time.sleep(0.3)
-        client.press_key("escape")
-        time.sleep(0.3)
-        # 注意: Escape×2 により IME 組成バッファは完全に解除されるため
-        # 追加の Backspace は不要（確定済みテキストを誤削除する恐れがある）
 
         # ヘルパー単語のローマ字を入力
         print(f"  [ヘルパー単語] ローマ字入力: {helper_romaji!r}")
@@ -1375,9 +1402,7 @@ def _try_helper_word_fallback(
         )
         if helper_frame is None:
             print("  [ヘルパー単語] フレーム取得失敗 → 次の提案を試みます")
-            client.press_key("escape")
-            time.sleep(0.2)
-            client.press_key("escape")
+            _cancel_ime_popup_safe(client, helper_word)
             continue
 
         _save_debug_image(helper_frame, f"ime_helper_{target_kanji}_{helper_word}")
@@ -1394,12 +1419,35 @@ def _try_helper_word_fallback(
         # ヘルパー単語を候補から検索
         helper_match = _find_best_candidate_match(helper_word, helper_numbered)
         if helper_match is None:
+            # OCR候補が空の場合: インライン変換の第1候補をブラインドコミット
+            if not helper_numbered:
+                print(f"  [ヘルパー単語] OCR候補なし → インライン第1候補をコミット試行...")
+                client.press_key("escape")  # ポップアップ → インライン変換
+                time.sleep(0.3)
+                client.press_key("enter")   # インライン第1候補を確定
+                time.sleep(0.3)
+                # 余分な文字を削除して covered_prefix を確定
+                if backspace_count > 0:
+                    print(f"  [ヘルパー単語] Backspace × {backspace_count} で余分な文字を削除...")
+                    for _ in range(backspace_count):
+                        client.press_key("backspace")
+                        time.sleep(0.15)
+                print(f"  [ヘルパー単語] 「{covered_prefix}」の入力完了 (インラインコミット)")
+                remaining = target_kanji[len(covered_prefix):]
+                if remaining:
+                    print(f"  [ヘルパー単語] 残り「{remaining}」を続けて入力します...")
+                    remaining_romaji = _kanji_to_romaji(remaining)
+                    time.sleep(1.0)
+                    type_kanji_via_ime(
+                        remaining_romaji,
+                        remaining,
+                        wait_sec=wait_sec,
+                        windows_version=windows_version,
+                        _current_ime_mode="japanese",
+                    )
+                return True
             print(f"  [ヘルパー単語] 「{helper_word}」が候補に見つかりません → 次の提案を試みます")
-            client.press_key("escape")
-            time.sleep(0.2)
-            client.press_key("escape")
-            time.sleep(0.3)
-            # 注意: Escape×2 により IME 組成バッファは完全に解除されるため追加 Backspace は不要
+            _cancel_ime_popup_safe(client, helper_word)
             continue
 
         display_num, matched_text = helper_match
