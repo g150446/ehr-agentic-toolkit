@@ -537,6 +537,12 @@ def read_popup_candidates_ocr(frame: np.ndarray, *, debug_name: str = "") -> lis
         if num not in seen:
             seen.add(num)
             result.append((num, text))
+
+    # Windows 11 IME は候補ポップアップの上方に「入力履歴/クラウド候補」パネルを
+    # 表示する場合がある。これらは純粋な ASCII ローマ字テキスト（例: 'choushin',
+    # 'ni te'）として OCR に読み込まれる。真の IME 候補は日本語文字（漢字・
+    # ひらがな・カタカナ）を含むため、ASCII のみのエントリを除外する。
+    result = [(n, t) for n, t in result if not t.isascii()]
     return result
 
 
