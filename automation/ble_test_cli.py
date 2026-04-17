@@ -258,7 +258,12 @@ class BLETestShell(cmd.Cmd):
                 addr = self.runner.get_device_address()
                 print(ColoredOutput.success(f"Connected to ESP32 at {addr}"))
             else:
-                print(ColoredOutput.error(f"Failed to connect"))
+                print(ColoredOutput.error("Failed to connect"))
+                detail = self.runner.ble.get_last_error()
+                if detail:
+                    print(ColoredOutput.error(f"Detail: {detail}"))
+                    if "not authorized" in detail.lower():
+                        print(ColoredOutput.hint("Allow Bluetooth for this terminal app in macOS Settings > Privacy & Security > Bluetooth"))
                 print(ColoredOutput.hint("Make sure:\n" +
                     "  1. ESP32 is powered on\n" +
                     "  2. Bluetooth is enabled on this computer\n" +
@@ -318,6 +323,11 @@ class BLETestShell(cmd.Cmd):
                 print(ColoredOutput.success(f"Found device at: {addr}"))
             else:
                 print(ColoredOutput.warning("Device not found"))
+                detail = self.runner.ble.get_last_error()
+                if detail:
+                    print(ColoredOutput.error(f"Detail: {detail}"))
+                    if "not authorized" in detail.lower():
+                        print(ColoredOutput.hint("Allow Bluetooth for this terminal app in macOS Settings > Privacy & Security > Bluetooth"))
         except Exception as e:
             print(ColoredOutput.error(f"Scan error: {e}"))
 

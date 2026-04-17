@@ -22,6 +22,8 @@ Automated EHR field input and patient chart opening via HDMI screen capture, OCR
 
 `automation.ehr_input` はコマンドライン引数によって動作を切り替えます。
 
+> `--openrouter` は **文節分割・IME モード検出・候補読取・ヘルパー単語提案** を OpenRouter 側へ切り替えます。画像付き IME 読取も行うため、**vision 対応のモデル**を指定してください。
+
 ```bash
 # 引数なし: テスト患者カルテを開く
 python -m automation.ehr_input
@@ -358,6 +360,7 @@ BLE_TX_CHAR_UUID=6E400003-B5A3-F393-E0A9-E50E24DCCA9E
 **"Device not found"**
 - Make sure ESP32 is powered on and advertising
 - Check Bluetooth is enabled on your Mac
+- On macOS, also confirm your terminal app is allowed under **Settings > Privacy & Security > Bluetooth**
 - Verify device name matches `ESP32_DEVICE_NAME` in `.env`
 - Try the `scan` command to see available devices
 
@@ -574,9 +577,10 @@ curl -s -H "Authorization: Bearer omlxkey" http://localhost:8000/v1/models
 ### ESP32 Not Connecting
 
 1. Check Bluetooth is enabled on Mac
-2. Verify ESP32 is powered and advertising
-3. Check device name in .env matches ESP32's advertised name
-4. Try: `./scripts/run_ble_test.sh`
+2. In **Settings > Privacy & Security > Bluetooth**, allow the terminal app you use to run `start_ble_server.sh` / `run_ble_test.sh`
+3. Verify ESP32 is powered and advertising
+4. Check device name in .env matches ESP32's advertised name
+5. Try: `./scripts/run_ble_test.sh`
 
 ### Screen Capture Not Working
 

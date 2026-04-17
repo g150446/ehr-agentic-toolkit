@@ -298,12 +298,17 @@ def _call_mlx_vlm_with_image(
     image_data_url: str,
     prompt: str,
     *,
-    model: str = MLX_VLM_IME_MODEL,
-    url: str = MLX_VLM_IME_URL,
-    timeout: float = MLX_VLM_IME_TIMEOUT,
-    api_key: str = MLX_VLM_IME_API_KEY,
+    model: Optional[str] = None,
+    url: Optional[str] = None,
+    timeout: Optional[float] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """omlx VLM サーバーの OpenAI 互換エンドポイントに画像付きリクエストを送信する。"""
+    model = model or MLX_VLM_IME_MODEL
+    url = url or MLX_VLM_IME_URL
+    timeout = MLX_VLM_IME_TIMEOUT if timeout is None else timeout
+    api_key = api_key or MLX_VLM_IME_API_KEY
+
     payload = {
         "model": model,
         "temperature": 0,
@@ -794,12 +799,17 @@ def detect_ime_mode_from_typed_a(
 def _call_mlx_vlm_text_only(
     prompt: str,
     *,
-    model: str = MLX_VLM_TEXT_MODEL,
-    url: str = MLX_VLM_TEXT_URL,
-    timeout: float = MLX_VLM_IME_TIMEOUT,
-    api_key: str = MLX_VLM_TEXT_API_KEY,
+    model: Optional[str] = None,
+    url: Optional[str] = None,
+    timeout: Optional[float] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """omlx VLM サーバーに画像なしのテキストのみリクエストを送信する。"""
+    model = model or MLX_VLM_TEXT_MODEL
+    url = url or MLX_VLM_TEXT_URL
+    timeout = MLX_VLM_IME_TIMEOUT if timeout is None else timeout
+    api_key = api_key or MLX_VLM_TEXT_API_KEY
+
     payload = {
         "model": model,
         "temperature": 0,

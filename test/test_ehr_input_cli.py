@@ -61,6 +61,39 @@ def test_run_cli_parses_openrouter_and_mactest(monkeypatch):
     assert events == [("肺炎", {"windows_version": "windows10", "clear_field": False})]
 
 
+def test_configure_runtime_openrouter_updates_segmentation_and_ime(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token-xyz")
+
+    ehr_input._configure_runtime(mactest=False, openrouter_model="qwen/vision-model")
+
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == "https://openrouter.ai/api/v1/chat/completions"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "qwen/vision-model"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY == "token-xyz"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_URL == "https://openrouter.ai/api/v1/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_MODEL == "qwen/vision-model"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_API_KEY == "token-xyz"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "https://openrouter.ai/api/v1/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "qwen/vision-model"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-xyz"
+
+
+def test_configure_runtime_without_openrouter_restores_defaults(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token-xyz")
+    ehr_input._configure_runtime(mactest=False, openrouter_model="qwen/vision-model")
+
+    ehr_input._configure_runtime(mactest=False, openrouter_model=None)
+
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["url"]
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["model"]
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["api_key"]
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_URL == ehr_input._DEFAULT_IME_RUNTIME["url"]
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_MODEL == ehr_input._DEFAULT_IME_RUNTIME["model"]
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_API_KEY == ehr_input._DEFAULT_IME_RUNTIME["api_key"]
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == ehr_input._DEFAULT_IME_TEXT_RUNTIME["url"]
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == ehr_input._DEFAULT_IME_TEXT_RUNTIME["model"]
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == ehr_input._DEFAULT_IME_TEXT_RUNTIME["api_key"]
+
+
 def test_run_cli_prioritizes_command_over_same_named_file(monkeypatch, tmp_path):
     command_name = "click history 20260408"
     Path(tmp_path / command_name).write_text("dummy", encoding="utf-8")
@@ -71,6 +104,28 @@ def test_run_cli_prioritizes_command_over_same_named_file(monkeypatch, tmp_path)
 
     assert ehr_input._run_cli([command_name]) == 0
     assert events == ["20260408"]
+
+
+def test_input_resolved_text_bypasses_ime_conversion_for_hiragana(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(ehr_input, "type_japanese_sentence", lambda text, **kw: events.append(("sentence", text, kw)))
+    monkeypatch.setattr(ehr_input, "type_kanji_via_ime", lambda *args, **kwargs: events.append(("ime", args, kwargs)))
+
+    ehr_input._input_resolved_text("てすと", windows_version="windows7", clear_field=True)
+
+    assert events == [("sentence", "てすと", {"windows_version": "windows7", "clear_field": True})]
+
+
+def test_input_resolved_text_bypasses_ime_conversion_for_katakana(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(ehr_input, "type_japanese_sentence", lambda text, **kw: events.append(("sentence", text, kw)))
+    monkeypatch.setattr(ehr_input, "type_kanji_via_ime", lambda *args, **kwargs: events.append(("ime", args, kwargs)))
+
+    ehr_input._input_resolved_text("テスト", windows_version="windows10", clear_field=False)
+
+    assert events == [("sentence", "テスト", {"windows_version": "windows10", "clear_field": False})]
 
 
 def test_tokenize_text_for_input_preserves_newlines_and_symbols():

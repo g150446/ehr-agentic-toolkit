@@ -8,6 +8,8 @@ Uses the same AsyncBLERunner pattern as ble_test_cli.py to ensure
 identical BLE event-loop behaviour on macOS CoreBluetooth.
 """
 
+from __future__ import annotations
+
 import json
 import cv2
 import re
@@ -138,6 +140,21 @@ _RUNTIME_OPTIONS = SimpleNamespace(
     openrouter_model=None,
     local_client=None,
 )
+_DEFAULT_SEGMENTATION_RUNTIME = {
+    "url": mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
+    "model": mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL,
+    "api_key": mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY,
+}
+_DEFAULT_IME_RUNTIME = {
+    "url": mlx_vlm_ime.MLX_VLM_IME_URL,
+    "model": mlx_vlm_ime.MLX_VLM_IME_MODEL,
+    "api_key": mlx_vlm_ime.MLX_VLM_IME_API_KEY,
+}
+_DEFAULT_IME_TEXT_RUNTIME = {
+    "url": mlx_vlm_ime.MLX_VLM_TEXT_URL,
+    "model": mlx_vlm_ime.MLX_VLM_TEXT_MODEL,
+    "api_key": mlx_vlm_ime.MLX_VLM_TEXT_API_KEY,
+}
 
 
 class MacTestClient:
@@ -295,6 +312,16 @@ def _configure_runtime(*, mactest: bool = False, openrouter_model: Optional[str]
     _RUNTIME_OPTIONS.openrouter_model = openrouter_model
     _RUNTIME_OPTIONS.local_client = None
 
+    mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _DEFAULT_SEGMENTATION_RUNTIME["url"]
+    mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = _DEFAULT_SEGMENTATION_RUNTIME["model"]
+    mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = _DEFAULT_SEGMENTATION_RUNTIME["api_key"]
+    mlx_vlm_ime.MLX_VLM_IME_URL = _DEFAULT_IME_RUNTIME["url"]
+    mlx_vlm_ime.MLX_VLM_IME_MODEL = _DEFAULT_IME_RUNTIME["model"]
+    mlx_vlm_ime.MLX_VLM_IME_API_KEY = _DEFAULT_IME_RUNTIME["api_key"]
+    mlx_vlm_ime.MLX_VLM_TEXT_URL = _DEFAULT_IME_TEXT_RUNTIME["url"]
+    mlx_vlm_ime.MLX_VLM_TEXT_MODEL = _DEFAULT_IME_TEXT_RUNTIME["model"]
+    mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = _DEFAULT_IME_TEXT_RUNTIME["api_key"]
+
     if openrouter_model:
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
@@ -302,6 +329,9 @@ def _configure_runtime(*, mactest: bool = False, openrouter_model: Optional[str]
         mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _OPENROUTER_CHAT_URL
         mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = openrouter_model
         mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_IME_URL = _OPENROUTER_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_IME_MODEL = openrouter_model
+        mlx_vlm_ime.MLX_VLM_IME_API_KEY = api_key
         mlx_vlm_ime.MLX_VLM_TEXT_URL = _OPENROUTER_CHAT_URL
         mlx_vlm_ime.MLX_VLM_TEXT_MODEL = openrouter_model
         mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
@@ -407,7 +437,9 @@ def _input_resolved_text(
 ) -> None:
     """Route already-resolved text through the existing input pipeline."""
     if _is_japanese(text):
-        if len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
+        if _is_hiragana_only(text) or _is_katakana_only(text):
+            type_japanese_sentence(text, windows_version=windows_version, clear_field=clear_field)
+        elif len(text) <= 4 and not any(ch in text for ch in "をにはがでも") and not _is_ascii_only(text):
             romaji = _kanji_to_romaji(text)
             print(f"IME変換: {romaji} → {text}")
             type_kanji_via_ime(romaji, text, windows_version=windows_version, clear_field=clear_field)
@@ -2043,6 +2075,14 @@ def _is_ascii_only(text: str) -> bool:
     return all(ord(ch) < 128 for ch in text)
 
 
+def _is_hiragana_only(text: str) -> bool:
+    """文字列がひらがな（長音符含む）のみで構成されているか判定する。"""
+    return bool(text) and all(
+        "\u3040" <= ch <= "\u309f" or ch == "\u30fc"  # ひらがな + 長音符ー
+        for ch in text
+    )
+
+
 def _is_katakana_only(text: str) -> bool:
     """文字列がカタカナ（長音符含む）のみで構成されているか判定する。"""
     return bool(text) and all(
@@ -2400,7 +2440,7 @@ def _print_usage() -> None:
     print("オプション:")
     print("  --win10              Windows 10 モードで実行（カンマ後 Enter、インライン変換スキップ等）")
     print("  --clear              入力前に Backspace を 50 回送信してフィールドをクリアする")
-    print("  --openrouter <model> 文節分割/ヘルパー単語提案だけ OpenRouter のモデルで実行する")
+    print("  --openrouter <model> 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
     print("  --mactest            HDMI/BLE の代わりに Mac 画面 + pyautogui でローカル検証する")
     print("  --help, -h, help     このヘルプを表示")
     print()

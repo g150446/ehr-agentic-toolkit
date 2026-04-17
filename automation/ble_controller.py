@@ -46,6 +46,7 @@ class BLEController:
         self.client: Optional[BleakClient] = None
         self.device_address: Optional[str] = None
         self.current_mode: str = "mouse"  # Default mode on ESP32 is mouse
+        self.last_error: Optional[str] = None
 
         # Tracked pixel position for relative moves (updated by move_mouse_absolute)
         self._current_x: int = 0
@@ -61,12 +62,18 @@ class BLEController:
         Returns:
             Device address if found, None otherwise
         """
+        self.last_error = None
         logger.info(f"Scanning for BLE device: {self.device_name}")
 
         # Retry scan up to 3 times — the ESP32 BLE advertisement window
         # may be missed by a single scan pass.
         for attempt in range(3):
-            devices = await BleakScanner.discover(timeout=timeout)
+            try:
+                devices = await BleakScanner.discover(timeout=timeout)
+            except Exception as e:
+                self.last_error = f"BLE scan failed: {e}"
+                logger.error(self.last_error)
+                return None
             for device in devices:
                 logger.debug(f"Found device: {device.name} ({device.address})")
                 if device.name == self.device_name:
@@ -75,7 +82,8 @@ class BLEController:
             if attempt < 2:
                 logger.warning(f"Device '{self.device_name}' not found (attempt {attempt+1}), retrying...")
 
-        logger.warning(f"Device '{self.device_name}' not found after 3 scan attempts")
+        self.last_error = f"Device '{self.device_name}' not found after 3 scan attempts"
+        logger.warning(self.last_error)
         return None
 
     async def connect(self, timeout: float = 10.0, disconnected_callback=None) -> bool:
@@ -90,11 +98,14 @@ class BLEController:
         Returns:
             True if connection successful, False otherwise
         """
+        self.last_error = None
         try:
             # Scan for device
             self.device_address = await self.scan_and_find_device(timeout)
             if not self.device_address:
-                logger.error(f"Failed to find device: {self.device_name}")
+                if not self.last_error:
+                    self.last_error = f"Failed to find device: {self.device_name}"
+                logger.error(self.last_error)
                 return False
 
             # Connect to device
@@ -111,11 +122,13 @@ class BLEController:
                 logger.info(f"Successfully connected to {self.device_name}")
                 return True
             else:
-                logger.error(f"Failed to connect to {self.device_address}")
+                self.last_error = f"Failed to connect to {self.device_address}"
+                logger.error(self.last_error)
                 return False
 
         except Exception as e:
-            logger.error(f"Connection error: {e}")
+            self.last_error = f"Connection error: {e}"
+            logger.error(self.last_error)
             return False
 
     async def disconnect(self) -> None:
@@ -307,6 +320,10 @@ class BLEController:
             True if connected, False otherwise
         """
         return self.client is not None and self.client.is_connected
+
+    def get_last_error(self) -> Optional[str]:
+        """Return the most recent scan/connect error message."""
+        return self.last_error
 
     async def __aenter__(self):
         """Async context manager entry."""

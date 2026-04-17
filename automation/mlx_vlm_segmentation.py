@@ -9,6 +9,7 @@ import socket
 import unicodedata
 import urllib.error
 import urllib.request
+from typing import Optional
 
 
 MLX_VLM_SEGMENTATION_URL = os.getenv(
@@ -134,12 +135,17 @@ def _normalize_romaji(romaji: str) -> str:
 def segment_japanese_text_with_mlx_vlm(
     text: str,
     *,
-    model: str = MLX_VLM_SEGMENTATION_MODEL,
-    url: str = MLX_VLM_SEGMENTATION_URL,
-    timeout: float = MLX_VLM_SEGMENTATION_TIMEOUT,
-    api_key: str = MLX_VLM_SEGMENTATION_API_KEY,
+    model: Optional[str] = None,
+    url: Optional[str] = None,
+    timeout: Optional[float] = None,
+    api_key: Optional[str] = None,
 ) -> tuple[str, list[dict[str, str]]]:
     """Call local mlx_vlm server and return both raw text output and parsed segments."""
+    model = model or MLX_VLM_SEGMENTATION_MODEL
+    url = url or MLX_VLM_SEGMENTATION_URL
+    timeout = MLX_VLM_SEGMENTATION_TIMEOUT if timeout is None else timeout
+    api_key = api_key or MLX_VLM_SEGMENTATION_API_KEY
+
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": build_segmentation_prompt(text)}],

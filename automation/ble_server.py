@@ -27,6 +27,16 @@ BLE_HEALTH_CHECK_INTERVAL = 3.0
 BLE_KEEPALIVE_INTERVAL = 10.0  # Send keepalive every 10s to prevent idle disconnect
 
 
+def print_connection_failure(ble: BLEController) -> None:
+    """Print the most useful BLE failure details for terminal users."""
+    detail = ble.get_last_error()
+    print("接続失敗。start_ble_server.sh が自動で再起動します。")
+    if detail:
+        print(f"詳細: {detail}")
+        if "not authorized" in detail.lower():
+            print("macOS の「プライバシーとセキュリティ」→「Bluetooth」で、このターミナルアプリの Bluetooth 権限を許可してください。")
+
+
 async def dispatch(ble: BLEController, ble_lock: asyncio.Lock, req: dict) -> dict:
     """コマンドを対応する BLEController メソッドにルーティング
 
@@ -177,7 +187,7 @@ async def main() -> None:
     if connected:
         print(f"接続成功: {ble.device_address}")
     else:
-        print("接続失敗。start_ble_server.sh が自動で再起動します。")
+        print_connection_failure(ble)
         sys.exit(1)
 
     if os.path.exists(SOCKET_PATH):
