@@ -1509,6 +1509,16 @@ def _has_hiragana(text: str) -> bool:
     return any('\u3041' <= c <= '\u3096' for c in text)
 
 
+def _is_pure_hiragana(text: str) -> bool:
+    """Return True if text consists entirely of hiragana.
+
+    Pure-hiragana candidates in an IME popup represent the 'unprocessed phonetic
+    reading' slot (e.g., 'ちょうしゅ' for 'choushu'). Selecting them types hiragana,
+    NOT kanji. These must NOT be matched when the target is a kanji string.
+    """
+    return bool(text) and all('\u3041' <= c <= '\u3096' for c in text)
+
+
 def _is_pure_katakana(text: str) -> bool:
     """Return True if text consists entirely of katakana + prolonged sound marks.
 
@@ -1539,18 +1549,22 @@ def _find_best_candidate_match(
     for n, c in numbered:
         if _ime_candidate_matches(target, c):
             return (n, c)
-    # Fourth pass: romaji comparison — for hiragana-containing or pure-katakana candidates.
+    # Fourth pass: romaji comparison — for MIXED hiragana+kanji or pure-katakana candidates.
+    # Excluded: pure-kanji (homonym risk), pure-hiragana (IME phonetic-reading slot).
     # Pure-kanji candidates are skipped to avoid false positives from homonyms
     # (e.g., '長身' and '聴診' both read 'choushin'; '量' and '両' both read 'ryou').
-    # Hiragana-containing candidates are OCR phonetic misreads (e.g., '屋さい'→'野菜',
-    # 'ちょしゃ'→'著者', 'セいしつ'→'性質') and are safe to match via romaji.
-    # Pure-katakana candidates (e.g., 'ハイ'→'肺', 'ハイゾウ'→'肺臓') are also OCR
-    # phonetic misreads and safe to match.
+    # Pure-hiragana candidates (e.g., 'ちょうしゅ') are the IME popup's unprocessed
+    # reading slot — selecting them types hiragana, NOT kanji, so they must be skipped.
+    # Mixed hiragana+kanji (e.g., '屋さい'→'野菜', 'セいしつ'→'性質') and pure-katakana
+    # (e.g., 'ハイ'→'肺', 'ハイゾウ'→'肺臓') are OCR phonetic misreads: safe to match.
     try:
         target_romaji = _kanji_to_romaji(target)
         for n, c in numbered:
+            # Accept only mixed hiragana+kanji or pure katakana
+            if _is_pure_hiragana(c):
+                continue  # hiragana-only = IME unprocessed reading slot → skip
             if not (_has_hiragana(c) or _is_pure_katakana(c)):
-                continue
+                continue  # pure kanji = real homonym risk → skip
             try:
                 if _kanji_to_romaji(c) == target_romaji:
                     print(f"  [候補照合/romaji] {c!r} → {_kanji_to_romaji(c)!r} ≈ {target!r} → 採用")

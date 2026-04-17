@@ -228,9 +228,11 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
 
     x, y, w, h = best
     is_vertical_bar = h >= w * 1.5
-    # 選択候補の上にある候補行は最大 1 行分のみ許可（ツールバーを除外するため浅めに切る）
+    # 選択候補（position 2）の上にある position 1 を確実に含める。
+    # position 1 は選択バーの ~30px 上にあるが、行ヘッダーも含め余裕を 65px に設定。
+    # 以前の 35px では position 1 が切れて OCR に読み取られなかった。
     # 下方向は最大 8 候補分（各行 ~25px = 200px）+ 余白
-    popup_y1 = max(0, y - 35)
+    popup_y1 = max(0, y - 65)
     popup_y2 = min(fh, y + h + 230)
     popup_x1 = max(0, x - 6)
     if is_vertical_bar:
