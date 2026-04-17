@@ -34,6 +34,8 @@ MLX_VLM_INLINE_TIMEOUT = float(os.getenv("MLX_VLM_INLINE_TIMEOUT", "45"))
 # Text-only model for tasks that don't require vision (e.g., helper word suggestions).
 # Falls back to the same VL model if a dedicated text model is not available.
 MLX_VLM_TEXT_MODEL = os.getenv("MLX_VLM_TEXT_MODEL", MLX_VLM_IME_MODEL)
+MLX_VLM_TEXT_URL = os.getenv("MLX_VLM_TEXT_URL", MLX_VLM_IME_URL)
+MLX_VLM_TEXT_API_KEY = os.getenv("MLX_VLM_TEXT_API_KEY", MLX_VLM_IME_API_KEY)
 
 
 class MlxVlmImeError(RuntimeError):
@@ -456,6 +458,23 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
     return _parse_candidate_response(content)
 
 
+def read_highlighted_popup_candidate(frame: np.ndarray, *, debug_name: str = "") -> Optional[str]:
+    """IME ポップアップ内の現在ハイライトされている候補だけを読み取る。"""
+    cropped = _crop_popup_region(frame, debug_name=debug_name)
+    prompt = (
+        "この画像は Windows 日本語 IME の変換候補ポップアップです。"
+        "現在ハイライトされている1行だけの候補文字列を正確に読んでください。"
+        "行頭の数字は含めず、候補文字列だけを返してください。"
+        "候補以外の入力欄テキストや周辺UIは無視してください。"
+        "読めない場合は null を返してください。"
+        "JSONのみで回答してください。"
+        ' 形式: {"candidate": "候補文字列"} または {"candidate": null}'
+    )
+    data_url = _encode_image_data_url(cropped)
+    content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
+    return _parse_candidate_response(content)
+
+
 def read_popup_candidates_ocr(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
     """OCRを使ってIMEポップアップ候補リストを読み取る。
 
@@ -546,27 +565,8 @@ def read_popup_candidates_ocr(frame: np.ndarray, *, debug_name: str = "") -> lis
     return result
 
 
-def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
-    """IME ポップアップ候補リストを番号付きで読み取る。
-
-    OCRを優先（高速・安定）し、失敗時のみVLMにフォールバック。
-
-    Args:
-        frame: 全画面フレーム（ポップアップ表示中）
-
-    Returns:
-        (display_number, candidate_text) のリスト。表示番号順。失敗時は空リスト。
-    """
-    # OCR優先: 1-2秒で完了、VLMサーバー不要
-    try:
-        ocr_result = read_popup_candidates_ocr(frame, debug_name=debug_name)
-        if ocr_result:
-            print(f"  [OCR番号付き候補] {ocr_result}")
-            return ocr_result
-    except Exception as exc:
-        print(f"  [OCR番号付き候補] 失敗: {exc}")
-
-    # VLMフォールバック（OCRで候補が見つからない場合）
+def read_popup_candidates_numbered_vlm(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
+    """VLM のみで IME ポップアップ候補リストを番号付き読取する。"""
     cropped = _crop_popup_region(frame, debug_name=debug_name)
     prompt = (
         "この画像はWindows日本語IMEの変換候補ポップアップです。"
@@ -618,6 +618,27 @@ def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -
     except Exception as exc:
         print(f"  [mlx_vlm 番号付き候補取得] 失敗: {exc}")
     return []
+
+
+def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
+    """IME ポップアップ候補リストを番号付きで読み取る。
+
+    OCRを優先しつつ、OCR結果が疎な場合は VLM も試して補完する。
+    """
+    ocr_result: list[tuple[int, str]] = []
+    try:
+        ocr_result = read_popup_candidates_ocr(frame, debug_name=debug_name)
+        if ocr_result:
+            print(f"  [OCR番号付き候補] {ocr_result}")
+            if len(ocr_result) >= 3:
+                return ocr_result
+    except Exception as exc:
+        print(f"  [OCR番号付き候補] 失敗: {exc}")
+
+    vlm_result = read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
+    if vlm_result and len(vlm_result) > len(ocr_result):
+        return vlm_result
+    return ocr_result
 
 
 def read_popup_candidates(frame: np.ndarray) -> list[str]:
@@ -773,10 +794,10 @@ def detect_ime_mode_from_typed_a(
 def _call_mlx_vlm_text_only(
     prompt: str,
     *,
-    model: str = MLX_VLM_IME_MODEL,
-    url: str = MLX_VLM_IME_URL,
+    model: str = MLX_VLM_TEXT_MODEL,
+    url: str = MLX_VLM_TEXT_URL,
     timeout: float = MLX_VLM_IME_TIMEOUT,
-    api_key: str = MLX_VLM_IME_API_KEY,
+    api_key: str = MLX_VLM_TEXT_API_KEY,
 ) -> str:
     """omlx VLM サーバーに画像なしのテキストのみリクエストを送信する。"""
     payload = {
@@ -830,6 +851,76 @@ def _call_mlx_vlm_text_only(
     return content.strip()
 
 
+def _parse_yes_no_response(content: str) -> Optional[bool]:
+    """VLM 応答から yes/no を抽出する。"""
+    cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    cleaned = cleaned.strip("`").strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if lowered in {"yes", '"yes"', "'yes'"}:
+        return True
+    if lowered in {"no", '"no"', "'no'"}:
+        return False
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        for key in ("answer", "result", "has_composition", "active"):
+            value = parsed.get(key)
+            if value is True:
+                return True
+            if value is False:
+                return False
+            if isinstance(value, str):
+                value = value.strip().lower()
+                if value == "yes":
+                    return True
+                if value == "no":
+                    return False
+    return None
+
+
+def has_active_ime_composition(frame: np.ndarray) -> bool:
+    """入力欄近傍に未確定の IME 組成文字が見えていれば True を返す。"""
+    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.15, bottom_ratio=0.80)
+    # 暗い反転/選択領域が物理的に見えない場合は、VLM の hallucination による
+    # false positive で追加 Backspace を送らないようにする。
+    if _find_dark_region_y(cropped) is None:
+        return False
+    prompt = (
+        "この画像はEHRの入力欄周辺です。"
+        "Windows IME の未確定組成文字だけを判定してください。"
+        "未確定組成とは、下線付き・反転表示・変換中の候補表示になっている入力中テキストです。"
+        "通常の確定済み文字列、ラベル、患者名、一覧表、病名欄の見出しは無視してください。"
+        "入力欄の中に未確定組成が見えるなら yes、見えないなら no のみで答えてください。"
+    )
+    data_url = _encode_image_data_url(cropped)
+    content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
+    return _parse_yes_no_response(content) is True
+
+
+def _collect_helper_words(payload: object) -> list[str]:
+    """Qwen の変形 JSON から helper word 候補文字列を抽出する。"""
+    words: list[str] = []
+    if isinstance(payload, str):
+        word = payload.strip()
+        if word:
+            words.append(word)
+        return words
+    if isinstance(payload, list):
+        for item in payload:
+            words.extend(_collect_helper_words(item))
+        return words
+    if isinstance(payload, dict):
+        for key in ("word", "words"):
+            if key in payload:
+                words.extend(_collect_helper_words(payload[key]))
+        return words
+    return words
+
+
 def suggest_ime_helper_word(target: str) -> list[dict]:
     """IME変換が困難な漢字に対してヘルパー単語の候補リストを提案する。
 
@@ -855,7 +946,9 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
         f"{target}、という漢字をIMEで変換して入力したいです。"
         "この漢字を先頭に含む単語またはフレーズで、MS-IMEの変換候補として出現しやすいものを三つ提案して。"
         "ただし、地名・人名など固有名詞と同じ読みの単語は避けてください（例: 「吸収」は「九州」と同音なので不可）。"
-        "json形式で答えのみ出力して。keyは\"word\"のみ。"
+        "JSONのみで回答してください。"
+        "返答形式は必ず {\"words\":[\"候補1\",\"候補2\",\"候補3\"]} にしてください。"
+        "\"word\" や他のキーは使わないでください。説明文やコードフェンスは禁止です。"
     )
     try:
         raw = _call_mlx_vlm_text_only(prompt, model=MLX_VLM_TEXT_MODEL)
@@ -864,40 +957,48 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
 
         cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip().rstrip("`").strip()
 
-        # まず JSON 配列 [...] を試みる
-        items: list = []
-        arr_m = re.search(r"\[.*?\]", cleaned, re.DOTALL)
-        if arr_m:
-            try:
-                parsed = json.loads(arr_m.group())
-                if isinstance(parsed, list):
-                    items = parsed
-            except json.JSONDecodeError:
-                pass
+        payloads: list[object] = []
+        try:
+            payloads.append(json.loads(cleaned))
+        except json.JSONDecodeError:
+            pass
 
-        # 配列が見つからなければ個別の {...} オブジェクトを順に抽出
-        if not items:
+        # まず JSON 配列 [...] を試みる
+        if not payloads:
+            arr_m = re.search(r"\[.*?\]", cleaned, re.DOTALL)
+            if arr_m:
+                try:
+                    payloads.append(json.loads(arr_m.group()))
+                except json.JSONDecodeError:
+                    pass
+
+        # 配列/全体JSONが見つからなければ個別の {...} オブジェクトを順に抽出
+        if not payloads:
             for obj_m in re.finditer(r"\{[^{}]*\}", cleaned, re.DOTALL):
                 try:
-                    items.append(json.loads(obj_m.group()))
+                    payloads.append(json.loads(obj_m.group()))
                 except json.JSONDecodeError:
                     continue
 
-        if not items:
+        if not payloads:
             print("  [ヘルパー単語提案] JSONが見つかりません")
             return []
 
+        seen: set[str] = set()
         result = []
-        for item in items:
-            word = item.get("word", "")
-            if not isinstance(word, str) or not word:
+        for payload in payloads:
+            try:
+                words = _collect_helper_words(payload)
+            except (TypeError, ValueError):
                 continue
-            # backspace_count は単語長 - ターゲット長で機械的に算出する
-            backspace_count = len(word) - len(target)
-            if backspace_count <= 0:
-                # ヘルパー単語がターゲット以下の長さ: 不適切なのでスキップ
-                continue
-            result.append({"word": word, "backspace_count": backspace_count})
+            for word in words:
+                if word in seen:
+                    continue
+                seen.add(word)
+                backspace_count = len(word) - len(target)
+                if backspace_count <= 0:
+                    continue
+                result.append({"word": word, "backspace_count": backspace_count})
 
         print(f"  [ヘルパー単語提案] 有効な提案: {result}")
         return result

@@ -36,6 +36,31 @@ def test_run_cli_uses_file_contents_for_open_test(monkeypatch, tmp_path):
     assert events == ["open", "COVID-19の感染を確認した"]
 
 
+def test_run_cli_parses_openrouter_and_mactest(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert (
+        ehr_input._run_cli(
+            ["--mactest", "--openrouter", "qwen/qwen3.5-9b", "--win10", "肺炎"]
+        )
+        == 0
+    )
+    assert configured == {"mactest": True, "openrouter_model": "qwen/qwen3.5-9b"}
+    assert events == [("肺炎", {"windows_version": "windows10", "clear_field": False})]
+
+
 def test_run_cli_prioritizes_command_over_same_named_file(monkeypatch, tmp_path):
     command_name = "click history 20260408"
     Path(tmp_path / command_name).write_text("dummy", encoding="utf-8")
@@ -152,7 +177,11 @@ def test_detect_ime_mode_returns_japanese_via_vlm(monkeypatch):
 
     frame = _make_frame()
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: frame)
-    monkeypatch.setattr(ehr_input, "detect_ime_mode_from_typed_a", lambda f: "japanese")
+    monkeypatch.setattr(
+        ehr_input,
+        "detect_ime_mode_from_typed_a",
+        lambda f, pre_frame=None: "japanese",
+    )
 
     assert ehr_input.detect_ime_mode(client, config) == "japanese"
     client.type_text.assert_called_once_with("a")
@@ -169,7 +198,11 @@ def test_detect_ime_mode_returns_english_via_vlm(monkeypatch):
 
     frame = _make_frame()
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: frame)
-    monkeypatch.setattr(ehr_input, "detect_ime_mode_from_typed_a", lambda f: "english")
+    monkeypatch.setattr(
+        ehr_input,
+        "detect_ime_mode_from_typed_a",
+        lambda f, pre_frame=None: "english",
+    )
 
     assert ehr_input.detect_ime_mode(client, config) == "english"
     client.press_key.assert_called_with("backspace")
@@ -186,3 +219,49 @@ def test_detect_ime_mode_returns_none_when_capture_fails(monkeypatch):
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: None)
 
     assert ehr_input.detect_ime_mode(client, config) is None
+
+
+def test_read_popup_candidates_with_fallback_uses_vlm_when_ocr_is_sparse(monkeypatch):
+    frame = object()
+
+    monkeypatch.setattr(
+        ehr_input,
+        "read_popup_candidates_numbered",
+        lambda image, debug_name="": [(5, "埜")] if image is frame else [],
+    )
+    monkeypatch.setattr(
+        ehr_input.mlx_vlm_ime,
+        "read_popup_candidates_numbered_vlm",
+        lambda image, debug_name="": [(1, "野"), (2, "弥")] if image is frame else [],
+    )
+
+    assert ehr_input._read_popup_candidates_with_fallback("野", frame) == [(1, "野"), (2, "弥")]
+
+
+def test_wait_for_ble_connected_returns_local_client_in_mactest(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "mactest", True)
+    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "local_client", sentinel)
+
+    assert ehr_input._wait_for_ble_connected() is sentinel
+
+
+def test_capture_screen_accepts_flush_duration_in_mactest(monkeypatch):
+    fake_rgb = np.zeros((8, 12, 3), dtype=np.uint8)
+
+    class FakePyAutoGUI:
+        def screenshot(self):
+            return fake_rgb
+
+    fake_client = type("FakeClient", (), {"_pyautogui": FakePyAutoGUI()})()
+    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "mactest", True)
+    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "local_client", fake_client)
+
+    frame = ehr_input.capture_screen(
+        device_index=0,
+        width=1920,
+        height=1080,
+        flush_duration=0.5,
+    )
+
+    assert frame.shape == (8, 12, 3)

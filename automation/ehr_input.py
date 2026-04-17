@@ -15,13 +15,14 @@ import tempfile
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
 
 from automation.config import load_config
 from automation.screen_analyzer import (
-    capture_screen,
+    capture_screen as _capture_screen_hdmi,
     load_ocr_reader,
     run_ocr,
 )
@@ -35,12 +36,14 @@ from automation.mlx_vlm_segmentation import (
 from automation.mlx_vlm_ime import (
     MlxVlmImeError,
     detect_ime_mode_from_typed_a,
+    has_active_ime_composition,
+    read_highlighted_popup_candidate,
     read_inline_candidate_context,
     read_inline_candidate_roi,
-    read_popup_candidates,
     read_popup_candidates_numbered,
     suggest_ime_helper_word,
 )
+from automation import mlx_vlm_ime, mlx_vlm_segmentation
 
 
 
@@ -129,6 +132,202 @@ _CHAR_ASCII_FALLBACK: dict[str, str] = {
     "°": "",    # 度記号 → 省略（℃ は直接入力されるため通常不要）
 }
 
+_OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+_RUNTIME_OPTIONS = SimpleNamespace(
+    mactest=False,
+    openrouter_model=None,
+    local_client=None,
+)
+
+
+class MacTestClient:
+    """BLE の代わりに pyautogui でローカル Mac を操作するクライアント。"""
+
+    def __init__(self) -> None:
+        try:
+            import pyautogui
+        except ImportError as exc:
+            raise RuntimeError(
+                "--mactest を使うには pyautogui が必要です。requirements をインストールしてください"
+            ) from exc
+        pyautogui.FAILSAFE = True
+        pyautogui.PAUSE = 0.02
+        self._pyautogui = pyautogui
+
+    def is_server_running(self) -> bool:
+        return True
+
+    def switch_to_mouse_mode(self) -> bool:
+        return True
+
+    def switch_to_keyboard_mode(self) -> bool:
+        return True
+
+    def move_mouse_to_position(self, x: int, y: int) -> bool:
+        self._pyautogui.moveTo(x, y, duration=0)
+        return True
+
+    def move_mouse_absolute(self, x: int, y: int) -> bool:
+        return self.move_mouse_to_position(x, y)
+
+    def move_mouse(self, x: int, y: int) -> bool:
+        self._pyautogui.moveRel(x, y, duration=0)
+        return True
+
+    def click(self) -> bool:
+        self._pyautogui.click()
+        return True
+
+    def double_click(self) -> bool:
+        self._pyautogui.doubleClick()
+        return True
+
+    def right_click(self) -> bool:
+        self._pyautogui.rightClick()
+        return True
+
+    def scroll(self, amount: int) -> bool:
+        self._pyautogui.scroll(amount)
+        return True
+
+    def type_text(self, text: str) -> bool:
+        buffer: list[str] = []
+        for ch in text:
+            if ch == "\x08":
+                if buffer:
+                    self._pyautogui.write("".join(buffer), interval=0.01)
+                    buffer.clear()
+                self._pyautogui.press("backspace")
+                continue
+            if ch == "\n":
+                if buffer:
+                    self._pyautogui.write("".join(buffer), interval=0.01)
+                    buffer.clear()
+                self._pyautogui.press("enter")
+                continue
+            buffer.append(ch)
+        if buffer:
+            self._pyautogui.write("".join(buffer), interval=0.01)
+        return True
+
+    def press_key(self, key: str) -> bool:
+        normalized = key.lower()
+        if normalized in {"esc", "escape"}:
+            self._pyautogui.press("esc")
+            return True
+        if normalized == "zenkaku":
+            self._pyautogui.hotkey("ctrl", "space")
+            return True
+        if normalized in {"ctrl+end", "command+end"}:
+            self._pyautogui.hotkey("command", "down")
+            return True
+        if normalized == "shift_right":
+            self._pyautogui.hotkey("shift", "right")
+            return True
+        if normalized == "lparen":
+            self._pyautogui.hotkey("shift", "9")
+            return True
+        if normalized == "rparen":
+            self._pyautogui.hotkey("shift", "0")
+            return True
+        if normalized == "percent":
+            self._pyautogui.hotkey("shift", "5")
+            return True
+        if normalized == "plus":
+            self._pyautogui.hotkey("shift", "=")
+            return True
+        if normalized == "colon":
+            self._pyautogui.hotkey("shift", ";")
+            return True
+        if "+" in normalized:
+            keys = [self._map_key_name(part) for part in normalized.split("+")]
+            self._pyautogui.hotkey(*keys)
+            return True
+        self._pyautogui.press(self._map_key_name(normalized))
+        return True
+
+    def press_ime_toggle(self) -> bool:
+        return self.press_key("zenkaku")
+
+    def send_command(self, command: str) -> bool:
+        if command.startswith("type:"):
+            return self.type_text(command[len("type:"):])
+        if command.startswith("key:"):
+            return self.press_key(command[len("key:"):])
+        return False
+
+    def clear_editor_document(self, max_chars: int = 200, delay: float = 0.12) -> None:
+        self.click()
+        time.sleep(0.2)
+        self.press_key("escape")
+        time.sleep(0.1)
+        self.press_key("ctrl+end")
+        time.sleep(0.1)
+        for _ in range(max_chars):
+            self.press_key("backspace")
+            time.sleep(delay)
+
+    @staticmethod
+    def _map_key_name(key: str) -> str:
+        mapping = {
+            "enter": "enter",
+            "return": "enter",
+            "space": "space",
+            "tab": "tab",
+            "backspace": "backspace",
+            "delete": "delete",
+            "up": "up",
+            "down": "down",
+            "left": "left",
+            "right": "right",
+            "f6": "f6",
+            "f7": "f7",
+            "f8": "f8",
+            "f9": "f9",
+            "lbracket": "[",
+            "rbracket": "]",
+        }
+        return mapping.get(key, key)
+
+
+def _configure_runtime(*, mactest: bool = False, openrouter_model: Optional[str] = None) -> None:
+    _RUNTIME_OPTIONS.mactest = mactest
+    _RUNTIME_OPTIONS.openrouter_model = openrouter_model
+    _RUNTIME_OPTIONS.local_client = None
+
+    if openrouter_model:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("--openrouter を使うには OPENROUTER_API_KEY 環境変数が必要です")
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _OPENROUTER_CHAT_URL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = openrouter_model
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_TEXT_URL = _OPENROUTER_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_TEXT_MODEL = openrouter_model
+        mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
+
+
+def capture_screen(*, device_index: int, width: int, height: int, **kwargs):
+    if not _RUNTIME_OPTIONS.mactest:
+        return _capture_screen_hdmi(
+            device_index=device_index,
+            width=width,
+            height=height,
+            **kwargs,
+        )
+    client = _get_local_input_client()
+    screenshot = client._pyautogui.screenshot()
+    rgb = np.array(screenshot)
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+def _get_local_input_client() -> MacTestClient:
+    client = _RUNTIME_OPTIONS.local_client
+    if client is None:
+        client = MacTestClient()
+        _RUNTIME_OPTIONS.local_client = client
+    return client
+
 
 def _load_ocr_engine(config):
     return load_ocr_reader(config.ocr_languages, config.ocr_use_gpu)
@@ -150,6 +349,9 @@ def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
     Raises:
         RuntimeError: タイムアウトまでに接続が確立されなかった場合
     """
+    if _RUNTIME_OPTIONS.mactest:
+        return _get_local_input_client()
+
     client = BLEClient()
     if client.is_server_running():
         return client
@@ -167,6 +369,14 @@ def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
     raise RuntimeError(
         "BLE サーバーが起動していないか、BLE デバイスへの接続がタイムアウトしました。\n"
         "  python -m automation.ble_server  を先に別ターミナルで実行してください"
+    )
+
+
+def _capture_frame(config):
+    return capture_screen(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
     )
 
 
@@ -1048,7 +1258,11 @@ def type_kanji_via_ime(
         # 番号付き候補リストを1回のVLMコールで取得（番号とテキストの両方）
         numbered: list[tuple[int, str]] = []
         try:
-            numbered = read_popup_candidates_numbered(popup_init_frame, debug_name=target_kanji)
+            numbered = _read_popup_candidates_with_fallback(
+                target_kanji,
+                popup_init_frame,
+                debug_name=target_kanji,
+            )
             print(f"  ポップアップ候補解析(VLM番号付き): {numbered}")
         except Exception as exc:
             print(f"  VLM番号付き候補読取失敗: {exc}")
@@ -1309,13 +1523,12 @@ def _text_to_hiragana_len(text: str) -> int:
 def _has_ime_composition(frame: np.ndarray) -> bool:
     """フレームに IME 組成テキスト（変換中・ひらがな）がアクティブなら True を返す。
 
-    read_inline_candidate_context を利用して入力フィールド周辺を確認する。
+    専用の yes/no 判定を使い、通常テキストやラベルの誤検出を避ける。
     エラー時は False（組成なし）として扱い処理を続行する。
     """
     try:
-        result = read_inline_candidate_context(frame)
-        return bool(result and result.strip())
-    except (MlxVlmImeError, Exception):
+        return has_active_ime_composition(frame)
+    except MlxVlmImeError:
         return False
 
 
@@ -1351,8 +1564,8 @@ def _cancel_ime_popup_safe(
     if config is None:
         return
 
-    # VLM後確認: Esc の遷移先がインラインだった場合に1文字残ることがある
-    # 残留を検出したら追加 BS を送信（最大2回）
+    # VLM後確認: Esc の遷移先がインラインだった場合に1文字残ることがある。
+    # 偽陽性で確定済みテキストを消さないため、2回連続で組成残留を確認できたときだけ追加 BS を送る。
     for _retry in range(2):
         time.sleep(0.2)
         frame = capture_screen(
@@ -1364,9 +1577,106 @@ def _cancel_ime_popup_safe(
             break
         if not _has_ime_composition(frame):
             break
+        time.sleep(0.2)
+        confirm_frame = capture_screen(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if confirm_frame is None or not _has_ime_composition(confirm_frame):
+            break
         print(f"  [cancel] 組成残留を検出 → 追加 Backspace")
         client.press_key("backspace")
         time.sleep(0.15)
+
+
+def _clear_pending_ime_composition(
+    client: "BLEClient",
+    config,
+    *,
+    max_backspaces: int,
+) -> None:
+    """helper 再入力前に未確定組成が残っていれば消し切る。"""
+    if config is None:
+        return
+    for _ in range(max_backspaces):
+        time.sleep(0.15)
+        frame = _capture_frame(config)
+        if frame is None or not _has_ime_composition(frame):
+            break
+        print("  [helper cleanup] 未確定組成が残っているため Backspace")
+        client.press_key("backspace")
+        time.sleep(0.12)
+    client.press_key("escape")
+    time.sleep(0.1)
+
+
+def _normalize_helper_popup_candidates(
+    helper_word: str,
+    helper_romaji: str,
+    numbered: list[tuple[int, str]],
+) -> list[tuple[int, str]]:
+    """ヘルパー単語用にポップアップ候補を正規化する。
+
+    VLM が入力欄の既存テキストを候補一覧の先頭に混ぜることがあるため、
+    helper_word と同じ読み、または helper_word に照合可能な候補だけを残し、
+    上から順に 1..N へ振り直す。
+    """
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for _, candidate in numbered:
+        candidate = candidate.strip()
+        if not candidate or candidate in seen:
+            continue
+        keep = _ime_candidate_matches(helper_word, candidate)
+        if not keep:
+            try:
+                keep = _kanji_to_romaji(candidate) == helper_romaji
+            except Exception:
+                keep = False
+        if not keep:
+            continue
+        seen.add(candidate)
+        filtered.append(candidate)
+    if not filtered:
+        return numbered
+    return [(index + 1, candidate) for index, candidate in enumerate(filtered)]
+
+
+def _read_popup_candidates_with_fallback(
+    target_kanji: str,
+    frame: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> list[tuple[int, str]]:
+    """OCR が疎なときは VLM 結果へフォールバックして候補見落としを減らす。"""
+    numbered = read_popup_candidates_numbered(frame, debug_name=debug_name)
+    if not numbered:
+        return numbered
+
+    if (
+        len(numbered) >= 3
+        or _find_best_candidate_match(target_kanji, numbered) is not None
+        or any(
+            candidate and 0 < len(candidate) < len(target_kanji) and target_kanji.startswith(candidate)
+            for _, candidate in numbered
+        )
+    ):
+        return numbered
+
+    try:
+        vlm_only = mlx_vlm_ime.read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
+    except Exception as exc:
+        print(f"  [VLM補完] 候補再読取失敗: {exc}")
+        return numbered
+
+    if not vlm_only:
+        return numbered
+
+    print(f"  [VLM補完] OCR候補が疎なため再読取: {vlm_only}")
+    if len(vlm_only) > len(numbered):
+        return vlm_only
+    return numbered
 
 
 def _try_helper_word_fallback(
@@ -1412,6 +1722,11 @@ def _try_helper_word_fallback(
     # コミットなしでキャンセルしてから提案ループに入る
     print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
     _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config)
+    _clear_pending_ime_composition(
+        client,
+        config,
+        max_backspaces=max(_text_to_hiragana_len(target_kanji) + 2, 4),
+    )
 
     for idx, suggestion in enumerate(suggestions):
         helper_word = suggestion["word"]
@@ -1462,17 +1777,51 @@ def _try_helper_word_fallback(
         except Exception as exc:
             print(f"  [ヘルパー単語] 候補読取失敗: {exc}")
 
-        # ヘルパー単語を候補から検索
-        helper_match = _find_best_candidate_match(helper_word, helper_numbered)
-        if helper_match is None:
-            # OCR候補が空の場合: インライン変換の第1候補をブラインドコミット
+        normalized_helper_numbered = _normalize_helper_popup_candidates(
+            helper_word,
+            helper_romaji,
+            helper_numbered,
+        )
+        if normalized_helper_numbered != helper_numbered:
+            print(f"  [ヘルパー単語] 正規化候補: {normalized_helper_numbered}")
+
+        # 候補番号や一覧には入力欄ノイズが混ざることがあるため、
+        # 現在ハイライトされている候補だけを読み取りながら Space で順送りする。
+        highlighted_match = False
+        highlighted_text: Optional[str] = None
+        max_cycles = max(len(normalized_helper_numbered), len(helper_numbered), 6)
+        for cycle in range(max_cycles):
+            if cycle > 0:
+                ok = client.press_key("space")
+                print(f"  key:space (helper select) -> {'OK' if ok else 'NG'}")
+                time.sleep(wait_sec)
+                helper_frame = capture_screen(
+                    device_index=config.capture_device_index,
+                    width=config.capture_width,
+                    height=config.capture_height,
+                )
+                if helper_frame is None:
+                    break
+            try:
+                highlighted_text = read_highlighted_popup_candidate(
+                    helper_frame,
+                    debug_name=f"helper_selected_{target_kanji}",
+                )
+                print(f"  [ヘルパー単語] 現在候補: {highlighted_text!r}")
+            except Exception as exc:
+                print(f"  [ヘルパー単語] 現在候補読取失敗: {exc}")
+                highlighted_text = None
+            if highlighted_text and _ime_candidate_matches(helper_word, highlighted_text):
+                highlighted_match = True
+                break
+
+        if not highlighted_match:
             if not helper_numbered:
                 print(f"  [ヘルパー単語] OCR候補なし → インライン第1候補をコミット試行...")
                 client.press_key("escape")  # ポップアップ → インライン変換
                 time.sleep(0.3)
                 client.press_key("enter")   # インライン第1候補を確定
                 time.sleep(0.3)
-                # 余分な文字を削除して covered_prefix を確定
                 if backspace_count > 0:
                     print(f"  [ヘルパー単語] Backspace × {backspace_count} で余分な文字を削除...")
                     for _ in range(backspace_count):
@@ -1492,36 +1841,14 @@ def _try_helper_word_fallback(
                         _current_ime_mode="japanese",
                     )
                 return True
-            print(f"  [ヘルパー単語] 「{helper_word}」が候補に見つかりません → 次の提案を試みます")
+            print(f"  [ヘルパー単語] 「{helper_word}」がハイライト候補に見つかりません → 次の提案を試みます")
             _cancel_ime_popup_safe(client, helper_word, config=config)
             continue
 
-        display_num, matched_text = helper_match
-        print(f"  [ヘルパー単語] 「{helper_word}」→ 表示番号 {display_num} (読取: {matched_text!r})")
-
-        # ヘルパー単語を選択して確定
-        if display_num <= 9:
-            print(f"  [ヘルパー単語] type:{display_num}")
-            client.send_command(f"type:{display_num}")
-            time.sleep(wait_sec)
-        else:
-            spaces_needed = display_num - 2
-            for _ in range(spaces_needed):
-                client.press_key("space")
-                time.sleep(wait_sec)
-            client.press_key("enter")
-            time.sleep(wait_sec)
-
-        # 数字キー選択（display_num <= 9）の場合、候補は未確定状態のため Enter で先に確定する。
-        # 未確定のまま Backspace を押すと、隣接する確定済み文字（例: '聴'）が
-        # IME の組成バッファに巻き込まれて再変換対象になってしまうため、
-        # 必ず Enter で確定してから Backspace で余分な文字を削除する。
-        # Space 循環＋Enter（display_num > 9）の場合は Enter で既にコミット済み。
-        if display_num <= 9:
-            print(f"  [ヘルパー単語] Enter で確定...")
-            ok = client.press_key("enter")
-            print(f"  key:enter (helper confirm) -> {'OK' if ok else 'NG'}")
-            time.sleep(0.3)
+        print(f"  [ヘルパー単語] 「{helper_word}」→ 現在候補 {highlighted_text!r} を Enter で確定")
+        ok = client.press_key("enter")
+        print(f"  key:enter (helper confirm) -> {'OK' if ok else 'NG'}")
+        time.sleep(0.3)
 
         # 余分な文字を削除（確定済みテキストから削除するため安全）
         if backspace_count > 0:
@@ -1970,15 +2297,15 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
             time.sleep(0.25)
 
         elif _is_katakana_only(seg_text):
-            # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Right Arrow で確定
+            # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Enter で確定
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             print(f"  カタカナ直接入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
             ok = client.press_key("f7")  # 全角カタカナに変換
             print(f"key:f7 -> {'OK' if ok else 'NG'}")
-            ok = client.press_key("right")  # 改行なしで確定
-            print(f"key:right -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
 
         elif seg_text in ("「", "」", "『", "』"):
             # 日本語括弧: ひらがなモードで lbracket/rbracket キーを押す
@@ -2017,17 +2344,16 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
                     current_mode = ensure_ime_mode("japanese", client, current_mode)
                     ok = client.type_text(ch)
                     if ok:
-                        client.press_key("right")
+                        client.press_key("enter")
 
         else:
-            # ひらがな・カタカナのみ: ひらがなモードでローマ字を直接入力して Right Arrow で確定
-            # (Enter は EHR テキストフィールドに改行を挿入してしまうため使わない)
+            # ひらがなのみ: ローマ字直接入力後に Enter で IME 組成を明示的に確定する
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             print(f"  ひらがな直接入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
-            ok = client.press_key("right")  # 改行なしで組成を確定
-            print(f"key:right -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
             # 確定後、WindowsのIMEが処理を完了するまで待機
             time.sleep(0.15)
 
@@ -2074,6 +2400,8 @@ def _print_usage() -> None:
     print("オプション:")
     print("  --win10              Windows 10 モードで実行（カンマ後 Enter、インライン変換スキップ等）")
     print("  --clear              入力前に Backspace を 50 回送信してフィールドをクリアする")
+    print("  --openrouter <model> 文節分割/ヘルパー単語提案だけ OpenRouter のモデルで実行する")
+    print("  --mactest            HDMI/BLE の代わりに Mac 画面 + pyautogui でローカル検証する")
     print("  --help, -h, help     このヘルプを表示")
     print()
     print("コマンド:")
@@ -2094,6 +2422,9 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input --win10 肺炎')
     print('  python -m automation.ehr_input --clear 肺炎')
     print('  python -m automation.ehr_input --win10 --clear 肺炎')
+    print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-9b "両肺野に"')
+    print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-35b-a3b "聴診"')
+    print('  python -m automation.ehr_input --mactest "両肺野に"')
     print('  python -m automation.ehr_input "COVID-19の検査"')
     print('  python -m automation.ehr_input note.txt')
     print('  python -m automation.ehr_input "open test" 肺炎')
@@ -2103,11 +2434,30 @@ def _print_usage() -> None:
 
 def _run_cli(args: list[str]) -> int:
     """CLI entry point for manual EHR input automation."""
-    # --win10 / --clear フラグを先頭で抽出（残りの args はそのまま処理）
-    win10 = "--win10" in args
-    clear_field = "--clear" in args
-    if win10 or clear_field:
-        args = [a for a in args if a not in ("--win10", "--clear")]
+    win10 = False
+    clear_field = False
+    mactest = False
+    openrouter_model: Optional[str] = None
+    filtered_args: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--win10":
+            win10 = True
+        elif arg == "--clear":
+            clear_field = True
+        elif arg == "--mactest":
+            mactest = True
+        elif arg == "--openrouter":
+            if index + 1 >= len(args):
+                raise RuntimeError("--openrouter の後にモデル名を指定してください")
+            openrouter_model = args[index + 1]
+            index += 1
+        else:
+            filtered_args.append(arg)
+        index += 1
+    args = filtered_args
+    _configure_runtime(mactest=mactest, openrouter_model=openrouter_model)
     windows_version = "windows10" if win10 else "windows7"
 
     if not args:
@@ -2193,7 +2543,11 @@ def main(argv: list[str] | None = None) -> int:
     import sys
 
     args = sys.argv[1:] if argv is None else argv
-    return _run_cli(args)
+    try:
+        return _run_cli(args)
+    except (RuntimeError, ValueError) as exc:
+        print(exc)
+        return 1
 
 
 if __name__ == '__main__':
