@@ -1283,13 +1283,19 @@ def type_kanji_via_ime(
             print(f"key:space -> {'OK' if ok else 'NG'}")
             time.sleep(wait_sec)
 
-    # 全候補を確認できなかった → Esc×1 でひらがな状態に戻してから Enter で確定
-    # Windows MS-IME: ポップアップ状態から Esc×1 = ひらがなに戻る
+    # 全候補を確認できなかった → ひらがなフォールバック（改行なし）
+    # 残留する組成バッファを Esc で確実にキャンセルしてから、
+    # romaji をひらがなとして再入力し Right Arrow で確定する（Enter は改行になるため使わない）
     print(f"  ⚠️ IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした")
-    print("  → Esc×1 でひらがなに戻して確定します（誤変換防止）")
-    client.press_key("escape")
-    time.sleep(0.2)
-    client.press_key("enter")
+    print(f"  → ひらがなフォールバック: {romaji!r} を再入力して Right Arrow で確定します")
+    for _ in range(2):
+        client.press_key("escape")  # ポップアップ/インライン/ひらがなをキャンセル
+        time.sleep(0.15)
+    ok = client.type_text(romaji)
+    print(f"  type:{romaji} (ひらがなフォールバック) -> {'OK' if ok else 'NG'}")
+    time.sleep(0.3)
+    ok = client.press_key("right")  # 改行なしで組成を確定
+    print(f"  key:right (ひらがな確定) -> {'OK' if ok else 'NG'}")
 
 
 def _text_to_hiragana_len(text: str) -> int:
@@ -1300,28 +1306,67 @@ def _text_to_hiragana_len(text: str) -> int:
     return max(len(hira), 1)
 
 
-def _cancel_ime_popup_safe(client: "BLEClient", text: str, wait: float = 0.15) -> None:
+def _has_ime_composition(frame: np.ndarray) -> bool:
+    """フレームに IME 組成テキスト（変換中・ひらがな）がアクティブなら True を返す。
+
+    read_inline_candidate_context を利用して入力フィールド周辺を確認する。
+    エラー時は False（組成なし）として扱い処理を続行する。
+    """
+    try:
+        result = read_inline_candidate_context(frame)
+        return bool(result and result.strip())
+    except (MlxVlmImeError, Exception):
+        return False
+
+
+def _cancel_ime_popup_safe(
+    client: "BLEClient",
+    text: str,
+    wait: float = 0.15,
+    config=None,
+) -> None:
     """IMEポップアップをコミットなしでキャンセルし、組成バッファをクリアする。
 
     観察された Windows IME 動作:
-      Esc×1 → ポップアップを閉じ、ひらがな組成モードに戻る（インラインを経由しない）
+      Esc×1 → ポップアップを閉じる（インライン変換 or ひらがな組成に戻る — IME状態により異なる）
       Backspace×N → 組成バッファのひらがな文字を1文字ずつ削除
 
-    注意: 以前は Esc 後に "インライン→組成" 用の追加 Backspace×1 を送っていたが、
-    この EHR の IME では Esc がポップアップから直接ひらがな組成に戻るため、
-    その Backspace が余分な文字削除となり確定済み文字を消してしまっていた。
+    注意: Esc の遷移先がひらがな直接の場合とインライン変換経由の場合とで
+    バックスペース消費数が異なる。config を渡した場合は Esc+BS×N 後に
+    VLM でバッファ残留を確認し、残っていれば追加 BS を送信する。
 
     Args:
         client: BLEClient インスタンス
         text: IME組成バッファに対応する漢字/かな文字列 (ひらがな文字数の計算に使用)
         wait: キー操作間の待機秒数
+        config: キャプチャ設定 (指定時はVLM後確認ループを実行)
     """
     hira_len = _text_to_hiragana_len(text)
-    client.press_key("escape")  # ポップアップ → ひらがな組成モード（コミットなし）
+    client.press_key("escape")  # ポップアップ → インライン or ひらがな組成（コミットなし）
     time.sleep(wait)
     for _ in range(hira_len):
         client.press_key("backspace")  # 組成バッファのひらがな文字を1文字削除
         time.sleep(0.12)
+
+    if config is None:
+        return
+
+    # VLM後確認: Esc の遷移先がインラインだった場合に1文字残ることがある
+    # 残留を検出したら追加 BS を送信（最大2回）
+    for _retry in range(2):
+        time.sleep(0.2)
+        frame = capture_screen(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if frame is None:
+            break
+        if not _has_ime_composition(frame):
+            break
+        print(f"  [cancel] 組成残留を検出 → 追加 Backspace")
+        client.press_key("backspace")
+        time.sleep(0.15)
 
 
 def _try_helper_word_fallback(
@@ -1366,7 +1411,7 @@ def _try_helper_word_fallback(
     # エントリー状態: target_kanji に対応するIMEポップアップが開いている
     # コミットなしでキャンセルしてから提案ループに入る
     print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
-    _cancel_ime_popup_safe(client, target_kanji, wait=0.3)
+    _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config)
 
     for idx, suggestion in enumerate(suggestions):
         helper_word = suggestion["word"]
@@ -1403,7 +1448,7 @@ def _try_helper_word_fallback(
         )
         if helper_frame is None:
             print("  [ヘルパー単語] フレーム取得失敗 → 次の提案を試みます")
-            _cancel_ime_popup_safe(client, helper_word)
+            _cancel_ime_popup_safe(client, helper_word, config=config)
             continue
 
         _save_debug_image(helper_frame, f"ime_helper_{target_kanji}_{helper_word}")
@@ -1448,7 +1493,7 @@ def _try_helper_word_fallback(
                     )
                 return True
             print(f"  [ヘルパー単語] 「{helper_word}」が候補に見つかりません → 次の提案を試みます")
-            _cancel_ime_popup_safe(client, helper_word)
+            _cancel_ime_popup_safe(client, helper_word, config=config)
             continue
 
         display_num, matched_text = helper_match
@@ -1925,15 +1970,15 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
             time.sleep(0.25)
 
         elif _is_katakana_only(seg_text):
-            # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Enter
+            # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Right Arrow で確定
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             print(f"  カタカナ直接入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
             ok = client.press_key("f7")  # 全角カタカナに変換
             print(f"key:f7 -> {'OK' if ok else 'NG'}")
-            ok = client.press_key("enter")
-            print(f"key:enter -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("right")  # 改行なしで確定
+            print(f"key:right -> {'OK' if ok else 'NG'}")
 
         elif seg_text in ("「", "」", "『", "』"):
             # 日本語括弧: ひらがなモードで lbracket/rbracket キーを押す
@@ -1972,17 +2017,18 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
                     current_mode = ensure_ime_mode("japanese", client, current_mode)
                     ok = client.type_text(ch)
                     if ok:
-                        client.press_key("enter")
+                        client.press_key("right")
 
         else:
-            # ひらがな・カタカナのみ: ひらがなモードでローマ字を直接入力して Enter で確定
+            # ひらがな・カタカナのみ: ひらがなモードでローマ字を直接入力して Right Arrow で確定
+            # (Enter は EHR テキストフィールドに改行を挿入してしまうため使わない)
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             print(f"  ひらがな直接入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
-            ok = client.press_key("enter")
-            print(f"key:enter -> {'OK' if ok else 'NG'}")
-            # Enter確定後、WindowsのIMEが処理を完了するまで待機
+            ok = client.press_key("right")  # 改行なしで組成を確定
+            print(f"key:right -> {'OK' if ok else 'NG'}")
+            # 確定後、WindowsのIMEが処理を完了するまで待機
             time.sleep(0.15)
 
     print("\n文章入力完了")
