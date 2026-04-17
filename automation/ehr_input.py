@@ -1577,6 +1577,15 @@ def _is_pure_katakana(text: str) -> bool:
     return bool(text) and all('\u30A0' <= c <= '\u30FF' for c in text)
 
 
+def _is_pure_kanji(text: str) -> bool:
+    """Return True if text consists entirely of CJK unified ideographs (kanji).
+
+    Used to guard the romaji-comparison pass: when the target is pure kanji,
+    accepting a pure-katakana candidate would type katakana instead of kanji.
+    """
+    return bool(text) and all('\u4E00' <= c <= '\u9FFF' for c in text)
+
+
 def _find_best_candidate_match(
     target: str, numbered: list[tuple[int, str]]
 ) -> Optional[tuple[int, str]]:
@@ -1603,16 +1612,22 @@ def _find_best_candidate_match(
     # (e.g., '長身' and '聴診' both read 'choushin'; '量' and '両' both read 'ryou').
     # Pure-hiragana candidates (e.g., 'ちょうしゅ') are the IME popup's unprocessed
     # reading slot — selecting them types hiragana, NOT kanji, so they must be skipped.
-    # Mixed hiragana+kanji (e.g., '屋さい'→'野菜', 'セいしつ'→'性質') and pure-katakana
-    # (e.g., 'ハイ'→'肺', 'ハイゾウ'→'肺臓') are OCR phonetic misreads: safe to match.
+    # Mixed hiragana+kanji (e.g., '屋さい'→'野菜', 'セいしつ'→'性質') are OCR phonetic misreads.
+    # Pure-katakana (e.g., 'ハイ') may be OCR phonetic misreads of kanji, BUT only when the
+    # target is NOT pure kanji. If the target IS pure kanji (e.g., '診'), the IME popup likely
+    # contains a legitimate katakana entry (e.g., 'シン') — selecting it would type katakana,
+    # NOT the target kanji. Skip pure-katakana candidates when target is pure kanji.
     try:
         target_romaji = _kanji_to_romaji(target)
+        target_is_pure_kanji = _is_pure_kanji(target)
         for n, c in numbered:
             # Accept only mixed hiragana+kanji or pure katakana
             if _is_pure_hiragana(c):
                 continue  # hiragana-only = IME unprocessed reading slot → skip
             if not (_has_hiragana(c) or _is_pure_katakana(c)):
                 continue  # pure kanji = real homonym risk → skip
+            if _is_pure_katakana(c) and target_is_pure_kanji:
+                continue  # katakana entry for kanji target → would type katakana, not kanji
             try:
                 if _kanji_to_romaji(c) == target_romaji:
                     print(f"  [候補照合/romaji] {c!r} → {_kanji_to_romaji(c)!r} ≈ {target!r} → 採用")
