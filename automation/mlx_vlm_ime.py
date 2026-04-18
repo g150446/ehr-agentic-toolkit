@@ -36,10 +36,19 @@ MLX_VLM_INLINE_TIMEOUT = float(os.getenv("MLX_VLM_INLINE_TIMEOUT", "45"))
 MLX_VLM_TEXT_MODEL = os.getenv("MLX_VLM_TEXT_MODEL", MLX_VLM_IME_MODEL)
 MLX_VLM_TEXT_URL = os.getenv("MLX_VLM_TEXT_URL", MLX_VLM_IME_URL)
 MLX_VLM_TEXT_API_KEY = os.getenv("MLX_VLM_TEXT_API_KEY", MLX_VLM_IME_API_KEY)
+_OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 class MlxVlmImeError(RuntimeError):
     """Raised when mlx_vlm IME call fails."""
+
+
+def describe_runtime(*, url: Optional[str], model: Optional[str], default_kind: str = "VLM") -> str:
+    """Return a human-readable backend label for logs."""
+    model_name = model or "unknown"
+    if url and _OPENROUTER_CHAT_URL in url:
+        return f"OpenRouter({model_name})"
+    return f"{default_kind}({model_name})"
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +331,7 @@ def _call_mlx_vlm_with_image(
             }
         ],
         "stream": False,
-        "max_tokens": 128,
+        "max_tokens": 256,
     }
     req = urllib.request.Request(
         url,
@@ -351,21 +360,49 @@ def _call_mlx_vlm_with_image(
     except json.JSONDecodeError as exc:
         raise MlxVlmImeError("mlx_vlm IME 応答の JSON を解析できませんでした") from exc
 
-    try:
-        content = result["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise MlxVlmImeError(
-            f"mlx_vlm IME 応答に content テキストがありません: {result!r}"
-        ) from exc
-
-    if not isinstance(content, str):
-        raise MlxVlmImeError(f"mlx_vlm IME 応答に content テキストがありません: {result!r}")
-    return content.strip()
+    return _extract_message_text(result, error_prefix="mlx_vlm IME")
 
 
 # ---------------------------------------------------------------------------
 # Response parsers
 # ---------------------------------------------------------------------------
+
+def _extract_message_text(result: dict, *, error_prefix: str) -> str:
+    """OpenAI互換応答から content、なければ reasoning を取り出す。"""
+    try:
+        message = result["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise MlxVlmImeError(
+            f"{error_prefix} 応答に content テキストがありません: {result!r}"
+        ) from exc
+
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+
+    reasoning_parts: list[str] = []
+    reasoning = message.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        reasoning_parts.append(reasoning.strip())
+
+    details = message.get("reasoning_details")
+    if isinstance(details, list):
+        for item in details:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    reasoning_parts.append(text.strip())
+
+    if reasoning_parts:
+        merged: list[str] = []
+        for part in reasoning_parts:
+            if part not in merged:
+                merged.append(part)
+        return "\n".join(merged).strip()
+
+    raise MlxVlmImeError(
+        f"{error_prefix} 応答に content テキストがありません: {result!r}"
+    )
 
 def _parse_candidate_response(content: str) -> Optional[str]:
     """VLM 応答から単一候補文字列を抽出する。"""
@@ -616,6 +653,13 @@ def read_popup_candidates_numbered_vlm(frame: np.ndarray, *, debug_name: str = "
             # Also try "text": "Y" ... "n": X order
             pairs_rev = re.findall(r'"text"\s*:\s*"([^"]+)"[^}]{0,80}?"n"\s*:\s*(\d+)', cleaned)
             pairs = [(n, text) for text, n in pairs_rev]
+        if not pairs:
+            natural = re.findall(
+                r"(?:Item|Line)\s*\d+.*?number\s+is\s+[`\"]?(\d+)[`\"]?.*?text(?:\s+next\s+to\s+it)?\s+is\s+[`\"]([^`\"\n]+)[`\"]",
+                cleaned,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            pairs = [(n, text.strip()) for n, text in natural]
         if pairs:
             result = [(int(n), text) for n, text in pairs if 1 <= int(n) <= 9 and text and len(text) <= 25]
             if result:
@@ -820,7 +864,7 @@ def _call_mlx_vlm_text_only(
             }
         ],
         "stream": False,
-        "max_tokens": 256,
+        "max_tokens": 512,
     }
     req = urllib.request.Request(
         url,
@@ -849,16 +893,7 @@ def _call_mlx_vlm_text_only(
     except json.JSONDecodeError as exc:
         raise MlxVlmImeError("mlx_vlm 応答の JSON を解析できませんでした") from exc
 
-    try:
-        content = result["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise MlxVlmImeError(
-            f"mlx_vlm 応答に content テキストがありません: {result!r}"
-        ) from exc
-
-    if not isinstance(content, str):
-        raise MlxVlmImeError(f"mlx_vlm 応答に content テキストがありません: {result!r}")
-    return content.strip()
+    return _extract_message_text(result, error_prefix="mlx_vlm")
 
 
 def _parse_yes_no_response(content: str) -> Optional[bool]:
@@ -960,10 +995,11 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
         "返答形式は必ず {\"words\":[\"候補1\",\"候補2\",\"候補3\"]} にしてください。"
         "\"word\" や他のキーは使わないでください。説明文やコードフェンスは禁止です。"
     )
+    runtime_label = describe_runtime(url=MLX_VLM_TEXT_URL, model=MLX_VLM_TEXT_MODEL, default_kind="Text")
     try:
         raw = _call_mlx_vlm_text_only(prompt, model=MLX_VLM_TEXT_MODEL)
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        print(f"  [ヘルパー単語提案] Qwen3応答: {raw!r}")
+        print(f"  [ヘルパー単語提案] {runtime_label}応答: {raw!r}")
 
         cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip().rstrip("`").strip()
 
@@ -1016,5 +1052,5 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
         print(f"  [ヘルパー単語提案] JSON解析失敗: {exc}")
         return []
     except MlxVlmImeError as exc:
-        print(f"  [ヘルパー単語提案] Qwen3呼び出し失敗: {exc}")
+        print(f"  [ヘルパー単語提案] {runtime_label}呼び出し失敗: {exc}")
         return []

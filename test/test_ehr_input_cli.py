@@ -1,5 +1,7 @@
+from contextlib import redirect_stdout
 from pathlib import Path
 import io
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -127,6 +129,13 @@ def test_input_resolved_text_bypasses_ime_conversion_for_katakana(monkeypatch):
     ehr_input._input_resolved_text("テスト", windows_version="windows10", clear_field=False)
 
     assert events == [("sentence", "テスト", {"windows_version": "windows10", "clear_field": False})]
+
+
+def test_segment_text_for_input_splits_kaboucho_into_stable_units():
+    assert ehr_input._segment_text_for_input("過膨張") == [
+        {"text": "過", "romaji": "ka"},
+        {"text": "膨張", "romaji": "bouchou"},
+    ]
 
 
 def test_capture_run_output_tees_stdout_and_stderr(tmp_path):
@@ -322,7 +331,120 @@ def test_read_popup_candidates_with_fallback_uses_vlm_when_ocr_is_sparse(monkeyp
         lambda image, debug_name="": [(1, "野"), (2, "弥")] if image is frame else [],
     )
 
-    assert ehr_input._read_popup_candidates_with_fallback("野", frame) == [(1, "野"), (2, "弥")]
+    assert ehr_input._read_popup_candidates_with_fallback("野", frame) == [
+        (1, "野"),
+        (2, "弥"),
+        (5, "埜"),
+    ]
+
+
+def test_read_helper_popup_candidates_prefers_vlm_for_helper_word(monkeypatch):
+    frame = object()
+
+    monkeypatch.setattr(
+        ehr_input.mlx_vlm_ime,
+        "read_popup_candidates_numbered_vlm",
+        lambda image, debug_name="": [(1, "過剰"), (2, "箇条")] if image is frame else [],
+    )
+    monkeypatch.setattr(
+        ehr_input.mlx_vlm_ime,
+        "read_popup_candidates_ocr",
+        lambda image, debug_name="": [(2, "箇条"), (3, "潟状")] if image is frame else [],
+    )
+
+    assert ehr_input._read_helper_popup_candidates("過剰", frame) == [
+        (1, "過剰"),
+        (2, "箇条"),
+        (3, "潟状"),
+    ]
+
+
+def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
+    events = []
+    frame = _make_frame()
+    highlighted = iter(["箇条", "渦状", "個条", "家常", "力条", "嘉承", "箇多", "嘉場", "過剰"])
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def send_command(self, command):
+            events.append(("command", command))
+            return True
+
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+
+    monkeypatch.setattr(
+        ehr_input,
+        "suggest_ime_helper_word",
+        lambda target: [{"word": "過剰", "backspace_count": 1}],
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_kanji_to_romaji",
+        lambda text: {"過剰": "kajou", "膨張": "bouchou"}[text],
+    )
+    monkeypatch.setattr(ehr_input, "_cancel_ime_popup_safe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ehr_input, "_clear_pending_ime_composition", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ehr_input, "_save_debug_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_read_helper_popup_candidates",
+        lambda helper_word, image, debug_name="": [
+            (2, "箇条"),
+            (3, "潟状"),
+            (5, "家京"),
+            (6, "力条"),
+            (8, "力条"),
+            (9, "ヶ手"),
+        ],
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "read_highlighted_popup_candidate",
+        lambda image, debug_name="": next(highlighted),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+
+    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0, "windows10")
+    assert events.count(("key", "space")) == 10
+    assert ("key", "enter") in events
+    assert ("key", "backspace") in events
+    assert ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "windows_version": "windows10", "_current_ime_mode": "japanese"}) in events
+
+
+def test_segment_japanese_with_openrouter_uses_runtime_aware_logs(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token-xyz")
+    monkeypatch.setattr(
+        ehr_input,
+        "segment_japanese_text_with_mlx_vlm",
+        lambda text: ('[{"text":"肺炎","romaji":"haien"}]', [{"text": "肺炎", "romaji": "haien"}]),
+    )
+    monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: "haien")
+    stdout = io.StringIO()
+
+    ehr_input._configure_runtime(mactest=False, openrouter_model="google/gemma-4-26b-a4b-it")
+    try:
+        with redirect_stdout(stdout):
+            assert ehr_input._segment_japanese_with_default_vlm("肺炎") == [
+                {"text": "肺炎", "romaji": "haien"}
+            ]
+    finally:
+        ehr_input._configure_runtime(mactest=False, openrouter_model=None)
+
+    output = stdout.getvalue()
+    assert "OpenRouter(google/gemma-4-26b-a4b-it)分割結果" in output
+    assert "Qwen分割結果" not in output
 
 
 def test_wait_for_ble_connected_returns_local_client_in_mactest(monkeypatch):

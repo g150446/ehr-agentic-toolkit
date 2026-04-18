@@ -107,6 +107,6 @@ def test_text_only_ime_call_uses_runtime_overrides(monkeypatch):
                 }
             ],
             "stream": False,
-            "max_tokens": 256,
+            "max_tokens": 512,
         },
     }

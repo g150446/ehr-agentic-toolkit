@@ -396,6 +396,34 @@ def _configure_runtime(*, mactest: bool = False, openrouter_model: Optional[str]
         mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
 
 
+def _runtime_label(*, url: str, model: str, default_kind: str = "VLM") -> str:
+    return mlx_vlm_ime.describe_runtime(url=url, model=model, default_kind=default_kind)
+
+
+def _segmentation_runtime_label() -> str:
+    return _runtime_label(
+        url=mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
+        model=mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL,
+        default_kind="VLM",
+    )
+
+
+def _ime_vision_runtime_label() -> str:
+    return _runtime_label(
+        url=mlx_vlm_ime.MLX_VLM_IME_URL,
+        model=mlx_vlm_ime.MLX_VLM_IME_MODEL,
+        default_kind="VLM",
+    )
+
+
+def _ime_text_runtime_label() -> str:
+    return _runtime_label(
+        url=mlx_vlm_ime.MLX_VLM_TEXT_URL,
+        model=mlx_vlm_ime.MLX_VLM_TEXT_MODEL,
+        default_kind="Text",
+    )
+
+
 def capture_screen(*, device_index: int, width: int, height: int, **kwargs):
     if not _RUNTIME_OPTIONS.mactest:
         return _capture_screen_hdmi(
@@ -562,7 +590,7 @@ def _tokenize_text_for_input(text: str) -> list[dict[str, str]]:
 _SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
     "歳頃": [{"text": "歳", "romaji": "sai"}, {"text": "頃", "romaji": "koro"}],
     "吸入剤": [{"text": "吸入", "romaji": "kyuunyuu"}, {"text": "剤", "romaji": "zai"}],
-    "過膨張": [{"text": "過膨張", "romaji": "kabouchou"}],
+    "過膨張": [{"text": "過", "romaji": "ka"}, {"text": "膨張", "romaji": "bouchou"}],
     # 肺野 (はいや) は標準 IME 辞書にない医療用語 → 肺(hai)+野(ya) に分割
     "肺野": [{"text": "肺", "romaji": "hai"}, {"text": "野", "romaji": "ya"}],
     # 認めるが → 認める(mitomeru) + が(ga) に分割
@@ -592,15 +620,16 @@ def _expand_segment_overrides(segments: list[dict[str, str]]) -> list[dict[str, 
 
 
 def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
+    runtime_label = _segmentation_runtime_label()
     try:
         raw_content, segments = segment_japanese_text_with_mlx_vlm(text)
         if "".join(segment["text"] for segment in segments) != text:
             raise MlxVlmSegmentationError(
-                f"Qwen分割結果が元テキストを保持していません: source={text!r} segments={segments!r}"
+                f"{runtime_label}分割結果が元テキストを保持していません: source={text!r} segments={segments!r}"
             )
         if _should_fallback_to_local_segmentation(segments):
             raise MlxVlmSegmentationError(
-                f"Qwen分割結果が IME 候補を不安定化させる粒度です: source={text!r} segments={segments!r}"
+                f"{runtime_label}分割結果が IME 候補を不安定化させる粒度です: source={text!r} segments={segments!r}"
             )
         normalized_segments = []
         for segment in segments:
@@ -608,11 +637,11 @@ def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
             romaji = _kanji_to_romaji(segment_text)
             normalized_segments.append({"text": segment_text, "romaji": romaji})
         normalized_segments = _expand_segment_overrides(normalized_segments)
-        print(f"Qwen分割結果: {raw_content}")
-        print(f"Qwen分割補正後: {normalized_segments}")
+        print(f"{runtime_label}分割結果: {raw_content}")
+        print(f"{runtime_label}分割補正後: {normalized_segments}")
         return normalized_segments
     except MlxVlmSegmentationError as exc:
-        print(f"Qwen分割失敗 → ローカル分割へフォールバック: {exc}")
+        print(f"{runtime_label}分割失敗 → ローカル分割へフォールバック: {exc}")
         summary, segments = segment_japanese_text_locally(text)
         print(f"ローカル分割サマリ: {summary}")
         return _expand_segment_overrides(segments)
@@ -1289,6 +1318,7 @@ def type_kanji_via_ime(
 
     inline_vlm: Optional[str] = None
     inline_combined = ""
+    vision_runtime_label = _ime_vision_runtime_label()
     if not skip_inline:
         # インライン候補を検出: ROI検出を試み、非日本語なら失敗とみなしてポップアップへ
         inline_roi = _find_ime_candidate_region(base_frame)
@@ -1298,9 +1328,9 @@ def type_kanji_via_ime(
             _save_debug_image(inline_roi, f"ime_inline_{target_kanji}")
             try:
                 inline_vlm = _read_ime_candidate_with_vlm(inline_roi, target_kanji)
-                print(f"  [第1候補] Qwen読取(ROI): {inline_vlm!r}")
+                print(f"  [第1候補] {vision_runtime_label}読取(ROI): {inline_vlm!r}")
             except RuntimeError as exc:
-                print(f"  [第1候補] Qwen読取失敗: {exc}")
+                print(f"  [第1候補] {vision_runtime_label}読取失敗: {exc}")
             ocr_results_inline = _request_ocr_results(inline_roi, config)
             inline_combined = "".join(t for (_, t, _) in ocr_results_inline)
             print(f"  [第1候補] OCR結合: {inline_combined!r}")
@@ -1315,9 +1345,9 @@ def type_kanji_via_ime(
                 and not _ime_candidate_matches(target_kanji, inline_combined)):
             try:
                 inline_fullframe_vlm = _read_ime_inline_candidate_fullframe(base_frame, target_kanji)
-                print(f"  [第1候補] Qwen読取(全フレーム): {inline_fullframe_vlm!r}")
+                print(f"  [第1候補] {vision_runtime_label}読取(全フレーム): {inline_fullframe_vlm!r}")
             except RuntimeError as exc:
-                print(f"  [第1候補] Qwen全フレーム読取失敗: {exc}")
+                print(f"  [第1候補] {vision_runtime_label}全フレーム読取失敗: {exc}")
 
         if (_ime_candidate_matches(target_kanji, inline_vlm or "")
                 or _ime_candidate_matches(target_kanji, inline_combined)
@@ -1547,7 +1577,7 @@ def type_kanji_via_ime(
         # print(f"  セグメント拡張でも「{target_kanji}」なし → 試行ループへ")
 
     # --- ヘルパー単語フォールバック ---
-    # ポップアップ候補にターゲットが存在しない場合、Qwen3 に「目標漢字を含む
+    # ポップアップ候補にターゲットが存在しない場合、テキストモデルに「目標漢字を含む
     # 一般的な日本語単語」を提案してもらい、変換後に余分な文字を削除して得る。
     if not _no_helper_fallback:
         print(f"  ヘルパー単語フォールバックを試みます...")
@@ -1569,9 +1599,9 @@ def type_kanji_via_ime(
         # 全フレームをVLMに渡して現在ハイライトされている候補を読取
         try:
             vlm_candidate = _read_ime_candidate_with_vlm(frame, target_kanji)
-            print(f"  [試行{attempt}] 全フレーム Qwen読取: {vlm_candidate!r}")
+            print(f"  [試行{attempt}] 全フレーム {vision_runtime_label}読取: {vlm_candidate!r}")
         except RuntimeError as exc:
-            print(f"  [試行{attempt}] 全フレーム Qwen読取失敗: {exc}")
+            print(f"  [試行{attempt}] 全フレーム {vision_runtime_label}読取失敗: {exc}")
 
         confirmed = _ime_candidate_matches(target_kanji, vlm_candidate or "")
 
@@ -1734,24 +1764,50 @@ def _normalize_helper_popup_candidates(
     return [(index + 1, candidate) for index, candidate in enumerate(filtered)]
 
 
+def _has_prefix_candidate(target_kanji: str, numbered: list[tuple[int, str]]) -> bool:
+    return any(
+        candidate and 0 < len(candidate) < len(target_kanji) and target_kanji.startswith(candidate)
+        for _, candidate in numbered
+    )
+
+
+def _merge_numbered_candidates(
+    preferred: list[tuple[int, str]],
+    fallback: list[tuple[int, str]],
+) -> list[tuple[int, str]]:
+    merged: dict[int, str] = {}
+    for source in (fallback, preferred):
+        for display_num, candidate in source:
+            if not isinstance(display_num, int) or display_num <= 0:
+                continue
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            merged[display_num] = candidate
+    return sorted(merged.items())
+
+
+def _popup_cycle_budget(numbered: list[tuple[int, str]]) -> int:
+    max_display_num = max((display_num for display_num, _ in numbered), default=0)
+    if not numbered:
+        return 6
+    return max(max_display_num, len(numbered), 9)
+
+
 def _read_popup_candidates_with_fallback(
     target_kanji: str,
     frame: np.ndarray,
     *,
     debug_name: str = "",
 ) -> list[tuple[int, str]]:
-    """OCR が疎なときは VLM 結果へフォールバックして候補見落としを減らす。"""
+    """OCR が疎い/不正確なときは VLM 結果へフォールバックして候補見落としを減らす。"""
     numbered = read_popup_candidates_numbered(frame, debug_name=debug_name)
     if not numbered:
         return numbered
 
-    if (
-        len(numbered) >= 3
-        or _find_best_candidate_match(target_kanji, numbered) is not None
-        or any(
-            candidate and 0 < len(candidate) < len(target_kanji) and target_kanji.startswith(candidate)
-            for _, candidate in numbered
-        )
+    if len(numbered) >= 3 and (
+        _find_best_candidate_match(target_kanji, numbered) is not None
+        or _has_prefix_candidate(target_kanji, numbered)
     ):
         return numbered
 
@@ -1764,10 +1820,45 @@ def _read_popup_candidates_with_fallback(
     if not vlm_only:
         return numbered
 
-    print(f"  [VLM補完] OCR候補が疎なため再読取: {vlm_only}")
-    if len(vlm_only) > len(numbered):
-        return vlm_only
+    merged = _merge_numbered_candidates(vlm_only, numbered)
+    print(f"  [VLM補完] 候補再読取: {vlm_only}")
+    if (
+        _find_best_candidate_match(target_kanji, merged) is not None
+        or _has_prefix_candidate(target_kanji, merged)
+        or len(merged) > len(numbered)
+        or len(numbered) < 3
+    ):
+        return merged
     return numbered
+
+
+def _read_helper_popup_candidates(
+    helper_word: str,
+    frame: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> list[tuple[int, str]]:
+    """Helper fallback is accuracy-first: read VLM first, then supplement with OCR."""
+    vlm_numbered: list[tuple[int, str]] = []
+    try:
+        vlm_numbered = mlx_vlm_ime.read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
+        if vlm_numbered:
+            print(f"  [ヘルパー単語] VLM優先候補: {vlm_numbered}")
+    except Exception as exc:
+        print(f"  [ヘルパー単語] VLM候補読取失敗: {exc}")
+
+    ocr_numbered: list[tuple[int, str]] = []
+    try:
+        ocr_numbered = mlx_vlm_ime.read_popup_candidates_ocr(frame, debug_name=debug_name)
+        if ocr_numbered:
+            print(f"  [ヘルパー単語] OCR候補: {ocr_numbered}")
+    except Exception as exc:
+        print(f"  [ヘルパー単語] OCR候補読取失敗: {exc}")
+
+    merged = _merge_numbered_candidates(vlm_numbered, ocr_numbered)
+    if merged and merged != vlm_numbered and merged != ocr_numbered:
+        print(f"  [ヘルパー単語] VLM優先マージ候補: {merged}")
+    return merged or vlm_numbered or ocr_numbered
 
 
 def _try_helper_word_fallback(
@@ -1778,15 +1869,15 @@ def _try_helper_word_fallback(
     windows_version: str,
     romaji: str = "",
 ) -> bool:
-    """ヘルパー単語フォールバック: Qwen3にヘルパー単語を問い合わせ、
+    """ヘルパー単語フォールバック: テキストモデルにヘルパー単語を問い合わせ、
     変換後に余分な文字を削除して目標漢字を入力する。
 
     IMEポップアップ候補に目標漢字が現れない場合のラストリゾート。
-    Qwen3 に「目標漢字を含む一般的な日本語単語」を提案してもらい、
+    テキストモデルに「目標漢字を含む一般的な日本語単語」を提案してもらい、
     その単語を変換確定後に余分な末尾文字を削除することで目標漢字を得る。
 
     例: target_kanji="過膨張"
-        Qwen3 が {"word": "過去", "romaji": "kako", "covered_prefix": "過", "delete_count": 1} を提案
+        テキストモデルが {"word": "過去", "romaji": "kako", "covered_prefix": "過", "delete_count": 1} を提案
         → "kako" を入力 → "過去" に変換確定 → Backspace × 1 で "去" 削除 → "過" 確定済み
         → 残り "膨張" を type_kanji_via_ime で入力
 
@@ -1803,7 +1894,8 @@ def _try_helper_word_fallback(
     """
     # suggest_ime_helper_word は対象の最初の1文字を渡す
     target_char = target_kanji[0]
-    print(f"  [ヘルパー単語] 「{target_char}」のヘルパー単語をQwen3に問い合わせ中...")
+    text_runtime_label = _ime_text_runtime_label()
+    print(f"  [ヘルパー単語] 「{target_char}」のヘルパー単語を{text_runtime_label}に問い合わせ中...")
     suggestions = suggest_ime_helper_word(target_char)
     if not suggestions:
         print(f"  [ヘルパー単語] 提案なし → フォールバック失敗")
@@ -1821,7 +1913,7 @@ def _try_helper_word_fallback(
 
     for idx, suggestion in enumerate(suggestions):
         helper_word = suggestion["word"]
-        # backspace_count はヘルパー単語長 - 対象文字長から確定的に計算する（Qwen3の提案値は使わない）
+        # backspace_count はヘルパー単語長 - 対象文字長から確定的に計算する（モデル提案値は使わない）
         backspace_count = len(helper_word) - len(target_char)
         # ヘルパー単語確定後に残る先頭部分: word[:-backspace_count] or word全体
         covered_prefix = helper_word[:-backspace_count] if backspace_count > 0 else helper_word
@@ -1861,8 +1953,10 @@ def _try_helper_word_fallback(
 
         helper_numbered: list[tuple[int, str]] = []
         try:
-            helper_numbered = read_popup_candidates_numbered(
-                helper_frame, debug_name=f"helper_{target_kanji}"
+            helper_numbered = _read_helper_popup_candidates(
+                helper_word,
+                helper_frame,
+                debug_name=f"helper_{target_kanji}",
             )
             print(f"  [ヘルパー単語] ポップアップ候補: {helper_numbered}")
         except Exception as exc:
@@ -1876,35 +1970,49 @@ def _try_helper_word_fallback(
         if normalized_helper_numbered != helper_numbered:
             print(f"  [ヘルパー単語] 正規化候補: {normalized_helper_numbered}")
 
-        # 候補番号や一覧には入力欄ノイズが混ざることがあるため、
-        # 現在ハイライトされている候補だけを読み取りながら Space で順送りする。
         highlighted_match = False
         highlighted_text: Optional[str] = None
-        max_cycles = max(len(normalized_helper_numbered), len(helper_numbered), 6)
-        for cycle in range(max_cycles):
-            if cycle > 0:
-                ok = client.press_key("space")
-                print(f"  key:space (helper select) -> {'OK' if ok else 'NG'}")
+        direct_match = _find_best_candidate_match(helper_word, helper_numbered)
+        if direct_match is not None:
+            display_num, highlighted_text = direct_match
+            print(f"  [ヘルパー単語] 「{helper_word}」→ 表示番号 {display_num} (読取: {highlighted_text!r})")
+            if display_num <= 9:
+                client.send_command(f"type:{display_num}")
                 time.sleep(wait_sec)
-                helper_frame = capture_screen(
-                    device_index=config.capture_device_index,
-                    width=config.capture_width,
-                    height=config.capture_height,
-                )
-                if helper_frame is None:
+            else:
+                for _ in range(display_num - 2):
+                    ok = client.press_key("space")
+                    print(f"  key:space (helper select) -> {'OK' if ok else 'NG'}")
+                    time.sleep(wait_sec)
+            highlighted_match = True
+        else:
+            # 候補番号や一覧には入力欄ノイズが混ざることがあるため、
+            # 現在ハイライトされている候補だけを読み取りながら Space で順送りする。
+            max_cycles = max(_popup_cycle_budget(helper_numbered), len(normalized_helper_numbered))
+            for cycle in range(max_cycles):
+                if cycle > 0:
+                    ok = client.press_key("space")
+                    print(f"  key:space (helper select) -> {'OK' if ok else 'NG'}")
+                    time.sleep(wait_sec)
+                    helper_frame = capture_screen(
+                        device_index=config.capture_device_index,
+                        width=config.capture_width,
+                        height=config.capture_height,
+                    )
+                    if helper_frame is None:
+                        break
+                try:
+                    highlighted_text = read_highlighted_popup_candidate(
+                        helper_frame,
+                        debug_name=f"helper_selected_{target_kanji}",
+                    )
+                    print(f"  [ヘルパー単語] 現在候補: {highlighted_text!r}")
+                except Exception as exc:
+                    print(f"  [ヘルパー単語] 現在候補読取失敗: {exc}")
+                    highlighted_text = None
+                if highlighted_text and _ime_candidate_matches(helper_word, highlighted_text):
+                    highlighted_match = True
                     break
-            try:
-                highlighted_text = read_highlighted_popup_candidate(
-                    helper_frame,
-                    debug_name=f"helper_selected_{target_kanji}",
-                )
-                print(f"  [ヘルパー単語] 現在候補: {highlighted_text!r}")
-            except Exception as exc:
-                print(f"  [ヘルパー単語] 現在候補読取失敗: {exc}")
-                highlighted_text = None
-            if highlighted_text and _ime_candidate_matches(helper_word, highlighted_text):
-                highlighted_match = True
-                break
 
         if not highlighted_match:
             if not helper_numbered:
@@ -2328,7 +2436,7 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
         windows_version: Windows バージョン（"windows7" または "windows10"）—Win10 固有の動作制御に使用
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
     """
-    print(f"文節分割中 (Qwen優先): {text!r}")
+    print(f"文節分割中 ({_segmentation_runtime_label()} 優先): {text!r}")
     config = load_config(skip_password=True)
 
     client = _wait_for_ble_connected()
