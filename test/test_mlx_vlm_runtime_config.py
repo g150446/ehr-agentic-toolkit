@@ -42,6 +42,7 @@ def test_segmentation_uses_runtime_overrides(monkeypatch):
     monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_MODEL", "qwen-test")
     monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_API_KEY", "token-123")
     monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_TIMEOUT", 12.5)
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_MAX_TOKENS", 512)
     monkeypatch.setattr(mlx_vlm_segmentation.urllib.request, "urlopen", fake_urlopen)
 
     _, segments = mlx_vlm_segmentation.segment_japanese_text_with_mlx_vlm("肺炎")
@@ -60,6 +61,7 @@ def test_segmentation_uses_runtime_overrides(monkeypatch):
                 }
             ],
             "stream": False,
+            "max_tokens": 512,
         },
     }
 

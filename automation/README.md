@@ -370,9 +370,7 @@ BLE_TX_CHAR_UUID=6E400003-B5A3-F393-E0A9-E50E24DCCA9E
 
 **SSH から HDMI キャプチャが失敗する (`not authorized to capture video`)**
 - `cv2.VideoCapture(...)` が必要とするのは macOS の **Camera** 権限で、**Screen Recording ではありません**
-- SSH 経由で直接 HDMI デバイスを開けない場合は、ローカル GUI ターミナルで `./scripts/start_capture_server.sh` を起動してください
-- SSH 側では `CAPTURE_PREFER_SERVER=true` を設定すると、`capture_screen(...)` が `/tmp/hdmi_capture_server.sock` のローカル capture server を優先して使います
-- 必要に応じて `CAPTURE_SERVER_SOCKET_PATH` でソケットパスを変更できます
+- HDMI キャプチャを使う処理は、Camera 権限が付与されたローカル GUI セッションで実行してください
 
 **"Not connected to BLE device"**
 - Run `connect` command first

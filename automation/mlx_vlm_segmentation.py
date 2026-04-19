@@ -22,6 +22,25 @@ MLX_VLM_SEGMENTATION_MODEL = os.getenv(
 )
 MLX_VLM_SEGMENTATION_API_KEY = os.getenv("MLX_VLM_SEGMENTATION_API_KEY", "omlxkey")
 MLX_VLM_SEGMENTATION_TIMEOUT = float(os.getenv("MLX_VLM_SEGMENTATION_TIMEOUT", "120"))
+MLX_VLM_SEGMENTATION_MAX_TOKENS = int(os.getenv("MLX_VLM_SEGMENTATION_MAX_TOKENS", "512"))
+
+_SEGMENT_PUNCTUATION_ROMAJI = {
+    "、": ",",
+    "。": ".",
+    "・": "/",
+    "（": "(",
+    "）": ")",
+    "％": "%",
+    "：": ":",
+    "［": "[",
+    "］": "]",
+    "【": "[",
+    "】": "]",
+    "「": "[",
+    "」": "]",
+    "『": "[",
+    "』": "]",
+}
 
 
 class MlxVlmSegmentationError(RuntimeError):
@@ -98,10 +117,23 @@ def parse_segment_response(content: str) -> list[dict[str, str]]:
                 f"mlx_vlm応答の要素 {index} に有効な text がありません: {item!r}"
             )
         if not isinstance(romaji, str) or not romaji:
+            fallback_romaji = _SEGMENT_PUNCTUATION_ROMAJI.get(text)
+            if fallback_romaji is not None:
+                normalized.append({"text": text, "romaji": fallback_romaji})
+                continue
             raise MlxVlmSegmentationError(
                 f"mlx_vlm応答の要素 {index} に有効な romaji がありません: {item!r}"
             )
-        normalized.append({"text": text, "romaji": _normalize_romaji(romaji)})
+        normalized_romaji = _normalize_romaji(romaji)
+        if not normalized_romaji:
+            fallback_romaji = _SEGMENT_PUNCTUATION_ROMAJI.get(text)
+            if fallback_romaji is not None:
+                normalized.append({"text": text, "romaji": fallback_romaji})
+                continue
+            raise MlxVlmSegmentationError(
+                f"mlx_vlm応答の要素 {index} の romaji が空になりました: {item!r}"
+            )
+        normalized.append({"text": text, "romaji": normalized_romaji})
 
     return normalized
 
@@ -150,6 +182,7 @@ def segment_japanese_text_with_mlx_vlm(
         "model": model,
         "messages": [{"role": "user", "content": build_segmentation_prompt(text)}],
         "stream": False,
+        "max_tokens": MLX_VLM_SEGMENTATION_MAX_TOKENS,
     }
     req = urllib.request.Request(
         url,
