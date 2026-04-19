@@ -1744,12 +1744,14 @@ def _cancel_ime_popup_safe(
     """IMEポップアップをコミットなしでキャンセルし、組成バッファをクリアする。
 
     観察された Windows 7 MS-IME 動作:
-      Esc×1 → ポップアップを閉じる（インライン変換 or ひらがな組成に戻る）
-      Backspace×N → インライン/ひらがな組成を1文字ずつ削除
+      Esc×1 → ポップアップを閉じ、インライン変換状態に戻る
+      F6    → インライン候補をひらがな組成に正規化する
+      Backspace×N → ひらがな組成を1文字ずつ削除
 
     重要: インライン変換状態で Esc を再度押すと、一部の IME（Windows 7 等）では
-    インライン候補がそのまま確定（コミット）される。そのため Esc は 1 回だけ送り、
-    組成の解除には必ず Backspace を使う。
+    インライン候補がそのまま確定（コミット）される。また、インライン状態から
+    Backspace だけでは変換が元に戻るだけで文字が削除されない場合がある。
+    F6 でひらがな組成に正規化してから Backspace で削除する。
 
     Args:
         client: BLEClient インスタンス
@@ -1758,11 +1760,19 @@ def _cancel_ime_popup_safe(
         config: キャプチャ設定 (指定時はVLM後確認ループを実行)
     """
     hira_len = _text_to_hiragana_len(text)
-    client.press_key("escape")  # ポップアップ → インライン or ひらがな組成（コミットなし）
+
+    # Step 1: Esc でポップアップを閉じる（インライン変換状態へ）
+    client.press_key("escape")
     time.sleep(wait)
 
-    # 固定回数の Backspace でインライン/ひらがな組成を確実にクリアする。
-    # Esc×2 はインライン候補を確定してしまう IME があるため使わない。
+    # Step 2: F6 でインライン候補をひらがな組成に正規化する。
+    # これにより「化」等のインライン候補がひらがな「か」に戻り、
+    # Esc による誤確定や BS の不安定な動作を回避できる。
+    # 既にひらがな組成の場合 F6 は無害（ひらがなのまま）。
+    client.press_key("f6")
+    time.sleep(0.1)
+
+    # Step 3: ひらがな組成を Backspace で削除
     for _ in range(hira_len):
         client.press_key("backspace")
         time.sleep(0.12)

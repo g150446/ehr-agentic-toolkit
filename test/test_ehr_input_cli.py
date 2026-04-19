@@ -643,12 +643,33 @@ def test_cancel_ime_popup_safe_uses_fixed_bs_then_vlm_guard_when_config_availabl
 
     ehr_input._cancel_ime_popup_safe(DummyClient(), "過", config=config)
 
-    # Esc×1 (popup→inline) + BS×hira_len (fixed clear) + VLM guard (budget=2)
+    # Esc (popup→inline) + F6 (inline→hiragana) + BS×hira_len + VLM guard
     assert events == [
         ("key", "escape"),
+        ("key", "f6"),
         ("key", "backspace"),
         ("key", "backspace"),
         ("guarded-clear", 2),
+    ]
+
+
+def test_cancel_ime_popup_safe_no_config_uses_f6_then_bs(monkeypatch):
+    """config=None の場合も F6 + BS×hira_len を送る（VLM ガードなし）。"""
+    events = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 1)
+
+    ehr_input._cancel_ime_popup_safe(DummyClient(), "過", config=None)
+
+    assert events == [
+        ("key", "escape"),
+        ("key", "f6"),
+        ("key", "backspace"),
     ]
 
 
