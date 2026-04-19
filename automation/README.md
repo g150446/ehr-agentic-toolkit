@@ -60,6 +60,10 @@ python -m automation.ehr_input --win10 "open test" "MRI所見"
 
 日本語テキストを渡すと、`ehr_input.py` は **Qwen3-VL-8B-Instruct（mlx_vlm）を優先して文節分割**し、ローマ字はローカル辞書で補正してから IME 入力します。Qwen の分割が細かすぎて IME 候補を不安定化させる場合は、`sudachipy + pykakasi` のローカル分割へ自動フォールバックします。引数が読み取り可能なテキストファイルなら、その**ファイル内容**を同じ入力フローに流します。
 
+各実行のログは `logs/*.txt` に保存され、先頭に **実行ファイル名・生のコマンドライン・解析済みオプション要約** が記録されます。
+
+運用時に変換結果を確認するときは、`[VLM一致]`、`[候補照合/romaji]`、`[試行N]`、`[ヘルパー単語]` の行を追うと、候補番号の誤選択・候補未発見・フォールバック発火を切り分けやすくなります。pure kanji ターゲットでは、読みだけ一致する mixed 候補を即採用せず、より安全な後続確認へ回します。
+
 4文字を超える文章や助詞を含む文は `type_japanese_sentence()` で文節単位に分割して**逐次入力**します。句読点（`、` → `,` / `。` → `.` + Enter）に加えて、改行・`[` `]` `(` `)` `%` `:` も専用キー送信に切り替えて処理します。
 
 日英混在テキスト（例: `"COVID-19の感染を確認した"`）では、ASCII のみの文節は英数字モード、日本語文節はひらがなモードで入力するよう IME を自動切替します。
@@ -363,6 +367,12 @@ BLE_TX_CHAR_UUID=6E400003-B5A3-F393-E0A9-E50E24DCCA9E
 - On macOS, also confirm your terminal app is allowed under **Settings > Privacy & Security > Bluetooth**
 - Verify device name matches `ESP32_DEVICE_NAME` in `.env`
 - Try the `scan` command to see available devices
+
+**SSH から HDMI キャプチャが失敗する (`not authorized to capture video`)**
+- `cv2.VideoCapture(...)` が必要とするのは macOS の **Camera** 権限で、**Screen Recording ではありません**
+- SSH 経由で直接 HDMI デバイスを開けない場合は、ローカル GUI ターミナルで `./scripts/start_capture_server.sh` を起動してください
+- SSH 側では `CAPTURE_PREFER_SERVER=true` を設定すると、`capture_screen(...)` が `/tmp/hdmi_capture_server.sock` のローカル capture server を優先して使います
+- 必要に応じて `CAPTURE_SERVER_SOCKET_PATH` でソケットパスを変更できます
 
 **"Not connected to BLE device"**
 - Run `connect` command first

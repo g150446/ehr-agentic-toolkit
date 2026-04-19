@@ -1,10 +1,12 @@
 from contextlib import redirect_stdout
 from pathlib import Path
 import io
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 import automation.ehr_input as ehr_input
 from automation.mlx_vlm_segmentation import MlxVlmSegmentationError
 
@@ -167,6 +169,61 @@ def test_build_run_log_path_adds_numeric_suffix_when_name_exists(monkeypatch, tm
     path = ehr_input._build_run_log_path(ehr_input.datetime(2026, 4, 17, 13, 50, 1))
 
     assert path == tmp_path / "logs" / "0417_1350_3.txt"
+
+
+def test_build_run_log_header_records_executable_and_options():
+    raw_args = ["--mactest", "--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]
+    positional_args, option_summary = ehr_input._parse_cli_options(raw_args)
+
+    header = ehr_input._build_run_log_header(
+        "/tmp/automation/ehr_input.py",
+        raw_args,
+        positional_args,
+        option_summary,
+    )
+
+    assert "=== ehr_input invocation ===" in header
+    assert "executable: ehr_input.py" in header
+    assert 'argv: ["/tmp/automation/ehr_input.py", "--mactest", "--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]' in header
+    assert 'parsed_options: {"clear_field": true, "mactest": true, "openrouter_model": "qwen/qwen3.5-9b", "win10": true, "windows_version": "windows10"}' in header
+    assert 'positional_args: ["open test", "肺炎"]' in header
+
+
+def test_main_prepends_run_header_to_log(monkeypatch, tmp_path):
+    monkeypatch.setattr(ehr_input, "_RUN_LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(ehr_input, "_print_usage", lambda: print("usage called"))
+    monkeypatch.setattr(sys, "argv", ["/tmp/automation/ehr_input.py", "--win10", "help"])
+
+    assert ehr_input.main(["--win10", "help"]) == 0
+
+    log_files = sorted((tmp_path / "logs").glob("*.txt"))
+    assert len(log_files) == 1
+
+    log_text = log_files[0].read_text(encoding="utf-8")
+    assert log_text.startswith("=== ehr_input invocation ===\nexecutable: ehr_input.py\n")
+    assert 'parsed_options: {"clear_field": false, "mactest": false, "openrouter_model": null, "win10": true, "windows_version": "windows10"}' in log_text
+    assert 'positional_args: ["help"]' in log_text
+    assert "usage called\n" in log_text
+
+
+def test_find_best_candidate_match_skips_romaji_fallback_for_pure_kanji(monkeypatch):
+    monkeypatch.setattr(
+        ehr_input,
+        "_kanji_to_romaji",
+        lambda text: {"検査": "kensa", "兼さ": "kensa"}[text],
+    )
+
+    assert ehr_input._find_best_candidate_match("検査", [(5, "兼さ")]) is None
+
+
+def test_find_best_candidate_match_keeps_romaji_fallback_for_non_kanji_target(monkeypatch):
+    monkeypatch.setattr(
+        ehr_input,
+        "_kanji_to_romaji",
+        lambda text: {"あい": "ai", "アイ": "ai"}[text],
+    )
+
+    assert ehr_input._find_best_candidate_match("あい", [(3, "アイ")]) == (3, "アイ")
 
 
 def test_tokenize_text_for_input_preserves_newlines_and_symbols():
@@ -474,3 +531,26 @@ def test_capture_screen_accepts_flush_duration_in_mactest(monkeypatch):
     )
 
     assert frame.shape == (8, 12, 3)
+
+
+def test_type_kanji_via_ime_aborts_before_typing_when_capture_unavailable(monkeypatch):
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: config)
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda timeout=70.0: DummyClient())
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="HDMIキャプチャデバイスからフレームを取得できませんでした"):
+        ehr_input.type_kanji_via_ime("choushin", "聴診", _current_ime_mode="japanese")
+
+    assert events == []

@@ -15,6 +15,7 @@ from datetime import datetime
 import json
 import cv2
 import re
+import shlex
 import tempfile
 import os
 import time
@@ -214,6 +215,61 @@ def _capture_run_output(
         tee_stderr = _TeeStream(stderr, log_file)
         with redirect_stdout(tee_stdout), redirect_stderr(tee_stderr):
             yield log_path
+
+
+def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
+    """Split raw CLI args into positional arguments and normalized option state."""
+    win10 = False
+    clear_field = False
+    mactest = False
+    openrouter_model: Optional[str] = None
+    filtered_args: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--win10":
+            win10 = True
+        elif arg == "--clear":
+            clear_field = True
+        elif arg == "--mactest":
+            mactest = True
+        elif arg == "--openrouter":
+            if index + 1 >= len(args):
+                raise RuntimeError("--openrouter の後にモデル名を指定してください")
+            openrouter_model = args[index + 1]
+            index += 1
+        else:
+            filtered_args.append(arg)
+        index += 1
+
+    option_summary = {
+        "win10": win10,
+        "windows_version": "windows10" if win10 else "windows7",
+        "clear_field": clear_field,
+        "mactest": mactest,
+        "openrouter_model": openrouter_model,
+    }
+    return filtered_args, option_summary
+
+
+def _build_run_log_header(
+    executable_path: str,
+    raw_args: list[str],
+    positional_args: list[str],
+    option_summary: dict[str, object],
+) -> str:
+    raw_executable = executable_path or "automation.ehr_input"
+    raw_argv = [raw_executable, *raw_args]
+    executable_name = Path(raw_executable).name or raw_executable
+    lines = [
+        "=== ehr_input invocation ===",
+        f"executable: {executable_name}",
+        f"command_line: {shlex.join(raw_argv)}",
+        f"argv: {json.dumps(raw_argv, ensure_ascii=False)}",
+        f"parsed_options: {json.dumps(option_summary, ensure_ascii=False, sort_keys=True)}",
+        f"positional_args: {json.dumps(positional_args, ensure_ascii=False)}",
+    ]
+    return "\n".join(lines)
 
 
 class MacTestClient:
@@ -1282,13 +1338,8 @@ def type_kanji_via_ime(
         # 呼び出し元が既に Japanese モードを確保済み
         print(f"  [IME] 呼び出し元が {_current_ime_mode!r} を確認済み → 再検出スキップ")
 
-    # ローマ字入力
-    print(f"ローマ字入力: {romaji}")
-    ok = client.type_text(romaji)
-    print(f"type:{romaji} -> {'OK' if ok else 'NG'}")
-    time.sleep(0.3)  # IMEがローマ字処理するまで待機
-
-    # Space #1 の前にフレームをキャプチャ（インライン変換との差分検出用）
+    # キャプチャ不能な状態でローマ字入力を始めると、生の入力が EHR に残ってしまう。
+    # 先に1フレーム取得できることを確認してから IME 入力を開始する。
     pre_frame = capture_screen(
         device_index=config.capture_device_index,
         width=config.capture_width,
@@ -1296,6 +1347,12 @@ def type_kanji_via_ime(
     )
     if pre_frame is None:
         raise RuntimeError("HDMIキャプチャデバイスからフレームを取得できませんでした")
+
+    # ローマ字入力
+    print(f"ローマ字入力: {romaji}")
+    ok = client.type_text(romaji)
+    print(f"type:{romaji} -> {'OK' if ok else 'NG'}")
+    time.sleep(0.3)  # IMEがローマ字処理するまで待機
 
     # 1回目の Space: インライン変換（ひらがな→第1候補に変わる、ポップアップなし）
     print("[Space] インライン変換 (第1候補)...")
@@ -2181,28 +2238,23 @@ def _find_best_candidate_match(
     for n, c in numbered:
         if _ime_candidate_matches(target, c):
             return (n, c)
-    # Fourth pass: romaji comparison — for MIXED hiragana+kanji or pure-katakana candidates.
-    # Excluded: pure-kanji (homonym risk), pure-hiragana (IME phonetic-reading slot).
-    # Pure-kanji candidates are skipped to avoid false positives from homonyms
-    # (e.g., '長身' and '聴診' both read 'choushin'; '量' and '両' both read 'ryou').
-    # Pure-hiragana candidates (e.g., 'ちょうしゅ') are the IME popup's unprocessed
-    # reading slot — selecting them types hiragana, NOT kanji, so they must be skipped.
-    # Mixed hiragana+kanji (e.g., '屋さい'→'野菜', 'セいしつ'→'性質') are OCR phonetic misreads.
-    # Pure-katakana (e.g., 'ハイ') may be OCR phonetic misreads of kanji, BUT only when the
-    # target is NOT pure kanji. If the target IS pure kanji (e.g., '診'), the IME popup likely
-    # contains a legitimate katakana entry (e.g., 'シン') — selecting it would type katakana,
-    # NOT the target kanji. Skip pure-katakana candidates when target is pure kanji.
+    # Fourth pass: romaji comparison — only for targets that already contain kana.
+    # For pure-kanji targets, any popup candidate that OCR/VLM read as kana-bearing text
+    # is too ambiguous: selecting it can commit a same-reading but wrong candidate
+    # (e.g., '兼さ' for '検査') or a literal kana entry instead of the intended kanji.
+    # In those cases, fall through to helper-word / highlighted-candidate confirmation
+    # rather than trusting the reading alone.
     try:
         target_romaji = _kanji_to_romaji(target)
         target_is_pure_kanji = _is_pure_kanji(target)
+        if target_is_pure_kanji:
+            return None
         for n, c in numbered:
             # Accept only mixed hiragana+kanji or pure katakana
             if _is_pure_hiragana(c):
                 continue  # hiragana-only = IME unprocessed reading slot → skip
             if not (_has_hiragana(c) or _is_pure_katakana(c)):
                 continue  # pure kanji = real homonym risk → skip
-            if _is_pure_katakana(c) and target_is_pure_kanji:
-                continue  # katakana entry for kanji target → would type katakana, not kanji
             try:
                 if _kanji_to_romaji(c) == target_romaji:
                     print(f"  [候補照合/romaji] {c!r} → {_kanji_to_romaji(c)!r} ≈ {target!r} → 採用")
@@ -2639,33 +2691,14 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input "click history 20190502"')
 
 
-def _run_cli(args: list[str]) -> int:
-    """CLI entry point for manual EHR input automation."""
-    win10 = False
-    clear_field = False
-    mactest = False
-    openrouter_model: Optional[str] = None
-    filtered_args: list[str] = []
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == "--win10":
-            win10 = True
-        elif arg == "--clear":
-            clear_field = True
-        elif arg == "--mactest":
-            mactest = True
-        elif arg == "--openrouter":
-            if index + 1 >= len(args):
-                raise RuntimeError("--openrouter の後にモデル名を指定してください")
-            openrouter_model = args[index + 1]
-            index += 1
-        else:
-            filtered_args.append(arg)
-        index += 1
-    args = filtered_args
+def _run_cli_with_parsed_args(args: list[str], option_summary: dict[str, object]) -> int:
+    """Run the CLI using already-normalized option state."""
+    mactest = bool(option_summary["mactest"])
+    openrouter_model = option_summary["openrouter_model"]
+    clear_field = bool(option_summary["clear_field"])
+    windows_version = str(option_summary["windows_version"])
+
     _configure_runtime(mactest=mactest, openrouter_model=openrouter_model)
-    windows_version = "windows10" if win10 else "windows7"
 
     if not args:
         # 引数なし: デフォルト動作（後方互換）
@@ -2745,14 +2778,31 @@ def _run_cli(args: list[str]) -> int:
     return 1
 
 
+def _run_cli(args: list[str]) -> int:
+    """CLI entry point for manual EHR input automation."""
+    positional_args, option_summary = _parse_cli_options(args)
+    return _run_cli_with_parsed_args(positional_args, option_summary)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI."""
     import sys
 
     args = sys.argv[1:] if argv is None else argv
+    executable_path = sys.argv[0] if sys.argv else "automation.ehr_input"
     with _capture_run_output():
         try:
-            return _run_cli(args)
+            positional_args, option_summary = _parse_cli_options(args)
+            print(
+                _build_run_log_header(
+                    executable_path,
+                    args,
+                    positional_args,
+                    option_summary,
+                )
+            )
+            print()
+            return _run_cli_with_parsed_args(positional_args, option_summary)
         except (RuntimeError, ValueError) as exc:
             print(exc)
             return 1
