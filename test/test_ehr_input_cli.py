@@ -140,6 +140,13 @@ def test_segment_text_for_input_splits_kaboucho_into_stable_units():
     ]
 
 
+def test_segment_text_for_input_uses_correct_abg_override():
+    assert ehr_input._segment_text_for_input("動脈血ガス") == [
+        {"text": "動脈血", "romaji": "doumyakuketsu"},
+        {"text": "ガス", "romaji": "gasu"},
+    ]
+
+
 def test_capture_run_output_tees_stdout_and_stderr(tmp_path):
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -478,6 +485,233 @@ def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
     assert ("key", "enter") in events
     assert ("key", "backspace") in events
     assert ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "windows_version": "windows10", "_current_ime_mode": "japanese"}) in events
+
+
+def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
+    events = []
+    frame = _make_frame()
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def send_command(self, command):
+            events.append(("command", command))
+            return True
+
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+
+    monkeypatch.setattr(
+        ehr_input,
+        "suggest_ime_helper_word",
+        lambda target: [{"word": "過剰", "backspace_count": 1}],
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_kanji_to_romaji",
+        lambda text: {"過剰": "kajou", "膨張": "bouchou"}[text],
+    )
+    monkeypatch.setattr(ehr_input, "_cancel_ime_popup_safe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_cleanup_after_helper_backspace",
+        lambda client, config, helper_word, backspace_count: events.append(
+            ("cleanup", helper_word, backspace_count)
+        ),
+    )
+    monkeypatch.setattr(ehr_input, "_save_debug_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_read_helper_popup_candidates",
+        lambda helper_word, image, debug_name="": [(1, "過剰")],
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+
+    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0, "windows10")
+    assert ("cleanup", "過剰", 1) in events
+    assert events.index(("cleanup", "過剰", 1)) < events.index(
+        ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "windows_version": "windows10", "_current_ime_mode": "japanese"})
+    )
+
+
+def test_try_helper_word_fallback_clears_ime_before_helper_lookup(monkeypatch):
+    events = []
+    frame = _make_frame()
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def send_command(self, command):
+            events.append(("command", command))
+            return True
+
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_cancel_ime_popup_safe",
+        lambda client, text, wait=0.15, config=None: events.append(("cancel", text)),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_clear_pending_ime_composition",
+        lambda client, config, max_backspaces: events.append(("clear", max_backspaces)),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "suggest_ime_helper_word",
+        lambda target: events.append(("suggest", target)) or [{"word": "過剰", "backspace_count": 1}],
+    )
+    monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: {"過剰": "kajou"}[text])
+    monkeypatch.setattr(ehr_input, "_save_debug_image", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_read_helper_popup_candidates",
+        lambda helper_word, image, debug_name="": [(1, "過剰")],
+    )
+
+    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0, "windows10")
+    assert events[:3] == [("cancel", "過"), ("clear", 2), ("suggest", "過")]
+
+
+def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_cancel_ime_popup_safe",
+        lambda client, text, wait=0.15, config=None: events.append(("cancel", text)),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_clear_pending_ime_composition",
+        lambda client, config, max_backspaces: events.append(("clear", max_backspaces)),
+    )
+    monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: {"血": "ketsu"}[text])
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+
+    ehr_input._fallback_remaining_after_prefix(
+        object(),
+        config,
+        remaining_target="血",
+        wait_sec=0.0,
+        windows_version="windows7",
+    )
+
+    assert events[0] == ("cancel", "血")
+    assert events[1][0] == "clear"
+    assert events[2] == ("ime", "ketsu", "血", {"wait_sec": 0.0, "windows_version": "windows7", "_current_ime_mode": "japanese"})
+
+
+def test_cancel_ime_popup_safe_uses_fixed_bs_then_vlm_guard_when_config_available(monkeypatch):
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 2)
+    monkeypatch.setattr(
+        ehr_input,
+        "_clear_pending_ime_composition",
+        lambda client, config, max_backspaces: events.append(("guarded-clear", max_backspaces)),
+    )
+
+    ehr_input._cancel_ime_popup_safe(DummyClient(), "過", config=config)
+
+    # Esc×1 (popup→inline) + BS×hira_len (fixed clear) + VLM guard (budget=2)
+    assert events == [
+        ("key", "escape"),
+        ("key", "backspace"),
+        ("key", "backspace"),
+        ("guarded-clear", 2),
+    ]
+
+
+def test_clear_pending_ime_composition_skips_trailing_esc_when_no_composition(monkeypatch):
+    """VLM が組成なしと判定した場合、trailing Esc を送らない（Esc が誤確定を起こすため）。"""
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: False)
+
+    ehr_input._clear_pending_ime_composition(DummyClient(), config, max_backspaces=4)
+
+    # No backspace sent, so no trailing escape either
+    assert events == []
+
+
+def test_clear_pending_ime_composition_sends_trailing_esc_after_clearing(monkeypatch):
+    """VLM が組成を検出して BS を送った場合のみ、trailing Esc を送る。"""
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    composition_present = iter([True, False])
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: next(composition_present))
+
+    ehr_input._clear_pending_ime_composition(DummyClient(), config, max_backspaces=4)
+
+    assert events == [("key", "backspace"), ("key", "escape")]
+    events = []
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([{"text": "、", "romaji": ","}]),
+    )
+
+    ehr_input.type_japanese_sentence("、", windows_version="windows7")
+
+    assert events == [("type", ","), ("key", "enter")]
 
 
 def test_segment_japanese_with_openrouter_uses_runtime_aware_logs(monkeypatch):

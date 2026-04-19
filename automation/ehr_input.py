@@ -651,10 +651,10 @@ _SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
     "肺野": [{"text": "肺", "romaji": "hai"}, {"text": "野", "romaji": "ya"}],
     # 認めるが → 認める(mitomeru) + が(ga) に分割
     "認めるが": [{"text": "認める", "romaji": "mitomeru"}, {"text": "が", "romaji": "ga"}],
-    # 動脈血ガス → 動脈血(doumyakuchi) + ガス(gasu) に分割
-    "動脈血ガス": [{"text": "動脈血", "romaji": "doumyakuchi"}, {"text": "ガス", "romaji": "gasu"}],
+    # 動脈血ガス → 動脈血(doumyakuketsu) + ガス(gasu) に分割
+    "動脈血ガス": [{"text": "動脈血", "romaji": "doumyakuketsu"}, {"text": "ガス", "romaji": "gasu"}],
     # 動脈血 単体でもオーバーライド
-    "動脈血": [{"text": "動脈血", "romaji": "doumyakuchi"}],
+    "動脈血": [{"text": "動脈血", "romaji": "doumyakuketsu"}],
     # ・ (中黒/ナカテン) : JIS キーボードでは '/' キーで入力する。
     # カタカナ変換パス (F7) で処理するため romaji は '/' とする。
     "・": [{"text": "・", "romaji": "/"}],
@@ -1561,12 +1561,22 @@ def type_kanji_via_ime(
                 height=config.capture_height,
             )
             if rem_frame is None:
-                client.press_key("enter")
-                print("完了（残りフレーム取得失敗 → Enterで確定）")
+                _fallback_remaining_after_prefix(
+                    client,
+                    config,
+                    remaining_target=remaining_target,
+                    wait_sec=wait_sec,
+                    windows_version=windows_version,
+                )
+                print("完了（残りフレーム取得失敗 → 残りを再入力）")
                 return
             _save_debug_image(rem_frame, f"ime_popup_{target_kanji}_remaining")
             try:
-                rem_numbered = read_popup_candidates_numbered(rem_frame)
+                rem_numbered = _read_popup_candidates_with_fallback(
+                    remaining_target,
+                    rem_frame,
+                    debug_name=f"{target_kanji}_remaining",
+                )
                 print(f"  残りポップアップ候補: {rem_numbered}")
                 rem_match = _find_best_candidate_match(remaining_target, rem_numbered)
                 if rem_match is not None:
@@ -1576,6 +1586,8 @@ def type_kanji_via_ime(
                         print(f"  「{remaining_target}」→ type:{rem_display}")
                         client.send_command(f"type:{rem_display}")
                         time.sleep(wait_sec)
+                        ok = client.press_key("enter")
+                        print(f"key:enter -> {'OK' if ok else 'NG'}")
                     else:
                         spaces_needed = rem_display - 2
                         for _ in range(spaces_needed):
@@ -1585,11 +1597,24 @@ def type_kanji_via_ime(
                         print(f"key:enter -> {'OK' if ok else 'NG'}")
                     print("完了")
                     return
-                print(f"  残りポップアップに「{remaining_target}」なし → Enterで仮確定")
+                _fallback_remaining_after_prefix(
+                    client,
+                    config,
+                    remaining_target=remaining_target,
+                    wait_sec=wait_sec,
+                    windows_version=windows_version,
+                )
+                print("完了（残り部分を再入力）")
             except Exception as exc:
                 print(f"  残りポップアップVLM読取失敗: {exc}")
-            client.press_key("enter")
-            print("完了（残り部分はEnterで確定）")
+                _fallback_remaining_after_prefix(
+                    client,
+                    config,
+                    remaining_target=remaining_target,
+                    wait_sec=wait_sec,
+                    windows_version=windows_version,
+                )
+            print("完了（残り部分を再入力）")
             return
 
         # セグメント拡張 (Shift+Right) で再試行 — 現在は無効化
@@ -1718,13 +1743,13 @@ def _cancel_ime_popup_safe(
 ) -> None:
     """IMEポップアップをコミットなしでキャンセルし、組成バッファをクリアする。
 
-    観察された Windows IME 動作:
-      Esc×1 → ポップアップを閉じる（インライン変換 or ひらがな組成に戻る — IME状態により異なる）
-      Backspace×N → 組成バッファのひらがな文字を1文字ずつ削除
+    観察された Windows 7 MS-IME 動作:
+      Esc×1 → ポップアップを閉じる（インライン変換 or ひらがな組成に戻る）
+      Backspace×N → インライン/ひらがな組成を1文字ずつ削除
 
-    注意: Esc の遷移先がひらがな直接の場合とインライン変換経由の場合とで
-    バックスペース消費数が異なる。config を渡した場合は Esc+BS×N 後に
-    VLM でバッファ残留を確認し、残っていれば追加 BS を送信する。
+    重要: インライン変換状態で Esc を再度押すと、一部の IME（Windows 7 等）では
+    インライン候補がそのまま確定（コミット）される。そのため Esc は 1 回だけ送り、
+    組成の解除には必ず Backspace を使う。
 
     Args:
         client: BLEClient インスタンス
@@ -1735,38 +1760,22 @@ def _cancel_ime_popup_safe(
     hira_len = _text_to_hiragana_len(text)
     client.press_key("escape")  # ポップアップ → インライン or ひらがな組成（コミットなし）
     time.sleep(wait)
+
+    # 固定回数の Backspace でインライン/ひらがな組成を確実にクリアする。
+    # Esc×2 はインライン候補を確定してしまう IME があるため使わない。
     for _ in range(hira_len):
-        client.press_key("backspace")  # 組成バッファのひらがな文字を1文字削除
+        client.press_key("backspace")
         time.sleep(0.12)
 
     if config is None:
         return
 
-    # VLM後確認: Esc の遷移先がインラインだった場合に1文字残ることがある。
-    # 偽陽性で確定済みテキストを消さないため、2回連続で組成残留を確認できたときだけ追加 BS を送る。
-    for _retry in range(2):
-        time.sleep(0.2)
-        frame = capture_screen(
-            device_index=config.capture_device_index,
-            width=config.capture_width,
-            height=config.capture_height,
-        )
-        if frame is None:
-            break
-        if not _has_ime_composition(frame):
-            break
-        time.sleep(0.2)
-        confirm_frame = capture_screen(
-            device_index=config.capture_device_index,
-            width=config.capture_width,
-            height=config.capture_height,
-        )
-        if confirm_frame is None or not _has_ime_composition(confirm_frame):
-            break
-        print(f"  [cancel] 組成残留を検出 → 追加 Backspace")
-        client.press_key("backspace")
-        time.sleep(0.15)
-
+    # VLM で残留組成を検出し、あれば追加 Backspace（小さい予算で過削除を防ぐ）
+    _clear_pending_ime_composition(
+        client,
+        config,
+        max_backspaces=2,
+    )
 
 def _clear_pending_ime_composition(
     client: "BLEClient",
@@ -1774,9 +1783,16 @@ def _clear_pending_ime_composition(
     *,
     max_backspaces: int,
 ) -> None:
-    """helper 再入力前に未確定組成が残っていれば消し切る。"""
+    """helper 再入力前に未確定組成が残っていれば消し切る。
+
+    VLM が組成を検出する間だけ Backspace を送る。
+    組成を 1 回でも検出・削除した場合のみ末尾 Esc で IME 状態をリセットする。
+    VLM が組成なしと判定した場合は Esc を送らない（Esc がインライン候補を
+    確定してしまう Windows 7 MS-IME の動作を回避するため）。
+    """
     if config is None:
         return
+    cleared_any = False
     for _ in range(max_backspaces):
         time.sleep(0.15)
         frame = _capture_frame(config)
@@ -1785,8 +1801,53 @@ def _clear_pending_ime_composition(
         print("  [helper cleanup] 未確定組成が残っているため Backspace")
         client.press_key("backspace")
         time.sleep(0.12)
-    client.press_key("escape")
-    time.sleep(0.1)
+        cleared_any = True
+    if cleared_any:
+        client.press_key("escape")
+        time.sleep(0.1)
+
+
+def _cleanup_after_helper_backspace(
+    client: "BLEClient",
+    config,
+    *,
+    helper_word: str,
+    backspace_count: int,
+) -> None:
+    """Clear any IME residue left after trimming a helper-word commit."""
+    if backspace_count <= 0:
+        return
+    _clear_pending_ime_composition(
+        client,
+        config,
+        max_backspaces=max(_text_to_hiragana_len(helper_word) + 2, 4),
+    )
+
+
+def _fallback_remaining_after_prefix(
+    client: "BLEClient",
+    config,
+    *,
+    remaining_target: str,
+    wait_sec: float,
+    windows_version: str,
+) -> None:
+    """Cancel an ambiguous remaining popup and re-enter the rest safely."""
+    print(f"  残りポップアップに「{remaining_target}」なし → ポップアップをキャンセルして再入力")
+    _cancel_ime_popup_safe(client, remaining_target, config=config)
+    _clear_pending_ime_composition(
+        client,
+        config,
+        max_backspaces=max(_text_to_hiragana_len(remaining_target) + 2, 4),
+    )
+    time.sleep(0.3)
+    type_kanji_via_ime(
+        _kanji_to_romaji(remaining_target),
+        remaining_target,
+        wait_sec=wait_sec,
+        windows_version=windows_version,
+        _current_ime_mode="japanese",
+    )
 
 
 def _normalize_helper_popup_candidates(
@@ -1951,22 +2012,25 @@ def _try_helper_word_fallback(
     """
     # suggest_ime_helper_word は対象の最初の1文字を渡す
     target_char = target_kanji[0]
+    # エントリー状態: target_kanji に対応するIMEポップアップが開いている
+    # コミットなしでキャンセルしてから問い合わせに入る。問い合わせ待ちの間に
+    # 誤候補（例: 「化」）を残したままにしないため、先に IME 組成を必ずクリアする。
+    print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
+    _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config)
+    # _cancel_ime_popup_safe 内で固定 BS + VLM ガード済み。追加の安全ネットとして
+    # VLM 確認のみ実施（budget=2 で過削除を防ぐ）。
+    _clear_pending_ime_composition(
+        client,
+        config,
+        max_backspaces=2,
+    )
+
     text_runtime_label = _ime_text_runtime_label()
     print(f"  [ヘルパー単語] 「{target_char}」のヘルパー単語を{text_runtime_label}に問い合わせ中...")
     suggestions = suggest_ime_helper_word(target_char)
     if not suggestions:
         print(f"  [ヘルパー単語] 提案なし → フォールバック失敗")
         return False
-
-    # エントリー状態: target_kanji に対応するIMEポップアップが開いている
-    # コミットなしでキャンセルしてから提案ループに入る
-    print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
-    _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config)
-    _clear_pending_ime_composition(
-        client,
-        config,
-        max_backspaces=max(_text_to_hiragana_len(target_kanji) + 2, 4),
-    )
 
     for idx, suggestion in enumerate(suggestions):
         helper_word = suggestion["word"]
@@ -2083,6 +2147,12 @@ def _try_helper_word_fallback(
                     for _ in range(backspace_count):
                         client.press_key("backspace")
                         time.sleep(0.15)
+                _cleanup_after_helper_backspace(
+                    client,
+                    config,
+                    helper_word=helper_word,
+                    backspace_count=backspace_count,
+                )
                 print(f"  [ヘルパー単語] 「{covered_prefix}」の入力完了 (インラインコミット)")
                 remaining = target_kanji[len(covered_prefix):]
                 if remaining:
@@ -2112,6 +2182,12 @@ def _try_helper_word_fallback(
             for _ in range(backspace_count):
                 client.press_key("backspace")
                 time.sleep(0.15)
+        _cleanup_after_helper_backspace(
+            client,
+            config,
+            helper_word=helper_word,
+            backspace_count=backspace_count,
+        )
 
         print(f"  [ヘルパー単語] 「{covered_prefix}」の入力完了")
 
@@ -2437,6 +2513,7 @@ def _kanji_to_romaji(text: str) -> str:
         "膿胸": "noukyo",
         "胸水": "kyousui",
         "肺炎": "haien",
+        "動脈血": "doumyakuketsu",
     }
     if text in _ROMAJI_OVERRIDES:
         return _ROMAJI_OVERRIDES[text]
@@ -2516,9 +2593,11 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
         print(f"  [IME回復] 再検出結果: {current_mode!r}")
     print(f"初期 IME モード: {current_mode!r}")
 
-    for seg in _iter_segments_for_input(text):
+    segments = list(_iter_segments_for_input(text))
+    for index, seg in enumerate(segments):
         seg_text = seg["text"]
         seg_romaji = seg["romaji"]
+        is_last_segment = index == len(segments) - 1
         print(f"\n--- 文節: {seg_text!r} ({seg_romaji}) ---")
 
         if seg_text == "\n":
@@ -2534,7 +2613,7 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
             print(f"  句読点入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
-            if seg_text == "。" or windows_version == "windows10":
+            if seg_text == "。" or windows_version == "windows10" or is_last_segment:
                 ok = client.press_key("enter")
                 print(f"key:enter -> {'OK' if ok else 'NG'}")
 
