@@ -760,14 +760,14 @@ def test_cancel_ime_popup_safe_vlm_false_negative_uses_conservative_bs(monkeypat
 
 def test_find_best_candidate_match_strict_rejects_fuzzy():
     """strict=True ではファジーマッチを無効にし、完全一致のみを許可する。
-    組成残存で「呼気」が「呼応」にファジーマッチするケースを防ぐ。"""
-    candidates = [(1, "子機"), (2, "古希"), (6, "呼気"), (9, "こき")]
-    # fuzzy (default): 呼気 matches 呼応 (same-length, 1 mismatch)
-    result = ehr_input._find_best_candidate_match("呼応", candidates)
+    組成残存で「呼気を」が「呼応を」にファジーマッチするケースを防ぐ。"""
+    candidates = [(1, "子機を"), (2, "古希を"), (6, "呼気を"), (9, "こきを")]
+    # fuzzy (default): 呼気を matches 呼応を (same-length, 1 mismatch, 3 chars)
+    result = ehr_input._find_best_candidate_match("呼応を", candidates)
     assert result is not None
-    assert result[1] == "呼気"
+    assert result[1] == "呼気を"
     # strict: no fuzzy match → None
-    result_strict = ehr_input._find_best_candidate_match("呼応", candidates, strict=True)
+    result_strict = ehr_input._find_best_candidate_match("呼応を", candidates, strict=True)
     assert result_strict is None
 
 
@@ -1099,8 +1099,18 @@ def test_ime_candidate_matches_rejects_kana_kanji_crosstype():
 
 
 def test_ime_candidate_matches_accepts_kanji_kanji_noise():
-    """感昌 must match 感冒 (昌↔冒 are both kanji — legitimate OCR noise)."""
-    assert ehr_input._ime_candidate_matches("感冒", "感昌") is True
+    """著名な must match 著明な (名↔明 are both kanji — legitimate OCR noise, 3+ chars)."""
+    assert ehr_input._ime_candidate_matches("著明な", "著名な") is True
+
+
+def test_ime_candidate_matches_rejects_2char_fuzzy():
+    """血競 must NOT match 血症 (2-char fuzzy is disabled — too permissive)."""
+    assert ehr_input._ime_candidate_matches("血症", "血競") is False
+
+
+def test_ime_candidate_matches_2char_exact():
+    """血症 exactly matches 血症 even with 2-char length."""
+    assert ehr_input._ime_candidate_matches("血症", "血症") is True
 
 
 # ------------------------------------------------------------------
@@ -1114,11 +1124,25 @@ def test_find_best_candidate_match_rejects_hiragana_first_suffix():
     assert result is None
 
 
+def test_find_best_candidate_match_rejects_kana_suffix_verb():
+    """Pass 5 must NOT match '燈って' for '伴って' (suffix 'って' is kana ending)."""
+    candidates = [(4, "燈って")]
+    result = ehr_input._find_best_candidate_match("伴って", candidates)
+    assert result is None
+
+
 def test_find_best_candidate_match_accepts_kanji_visual_confusible():
     """Pass 5 must match '署明な' for '著明な' (署↔著 are both kanji confusibles)."""
     candidates = [(3, "署明な")]
     result = ehr_input._find_best_candidate_match("著明な", candidates)
     assert result == (3, "署明な")
+
+
+def test_find_best_candidate_match_rejects_2char_fuzzy_candidate():
+    """2-char fuzzy candidate 血競 must NOT match target 血症."""
+    candidates = [(4, "血競")]
+    result = ehr_input._find_best_candidate_match("血症", candidates)
+    assert result is None
 
 
 def test_type_kanji_via_ime_aborts_before_typing_when_capture_unavailable(monkeypatch):

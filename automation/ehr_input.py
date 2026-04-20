@@ -2306,7 +2306,10 @@ def _ime_candidate_matches(target: str, combined: str) -> bool:
     if target in combined:
         return True
     n = len(target)
-    if n < 2:
+    if n < 3:
+        # For 1-2 char targets, fuzzy matching is too permissive (50%+ mismatch).
+        # A 2-char target sharing only the first char (e.g., 血競 for 血症) is
+        # almost certainly a different word, not OCR noise.  Require exact match.
         return False
     for i in range(len(combined) - n + 1):
         substr = combined[i:i + n]
@@ -2428,7 +2431,10 @@ def _find_best_candidate_match(
     # Requires length ≥ 2 and both first characters must be kanji — the pass
     # targets kanji↔kanji visual confusibles only (e.g., 署↔著).
     # Kana, Latin, or digit first characters are not visual confusibles of kanji.
-    if len(target) >= 2 and '\u4E00' <= target[0] <= '\u9FFF':
+    # Additionally, the second character (first char of suffix) must be kanji.
+    # Pure-kana suffixes like 'って' or 'した' are common grammatical endings
+    # shared by many unrelated verbs, causing false positives (e.g., 燈って≠伴って).
+    if len(target) >= 2 and '\u4E00' <= target[0] <= '\u9FFF' and '\u4E00' <= target[1] <= '\u9FFF':
         target_suffix = target[1:]
         for n, c in numbered:
             if (len(c) == len(target)
