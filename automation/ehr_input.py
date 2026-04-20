@@ -2337,11 +2337,16 @@ def _find_best_candidate_match(
         target_is_pure_kanji = _is_pure_kanji(target)
         if target_is_pure_kanji:
             return None
+        target_has_kanji = _has_kanji(target)
         for n, c in numbered:
             # Accept only mixed hiragana+kanji or pure katakana
             if _is_pure_hiragana(c):
                 continue  # hiragana-only = IME unprocessed reading slot → skip
-            if not (_has_hiragana(c) or _is_pure_katakana(c)):
+            if _is_pure_katakana(c):
+                if target_has_kanji:
+                    continue  # target has kanji but candidate is katakana → skip
+                # target is katakana too → allow romaji match
+            elif not _has_hiragana(c):
                 continue  # pure kanji = real homonym risk → skip
             try:
                 if _kanji_to_romaji(c) == target_romaji:

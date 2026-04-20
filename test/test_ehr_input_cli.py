@@ -223,6 +223,26 @@ def test_find_best_candidate_match_skips_romaji_fallback_for_pure_kanji(monkeypa
     assert ehr_input._find_best_candidate_match("検査", [(5, "兼さ")]) is None
 
 
+def test_find_best_candidate_match_rejects_katakana_when_target_has_kanji(monkeypatch):
+    """著明な→チョメイナ bug: romaji fallback must not accept pure katakana
+    when the target contains kanji."""
+    monkeypatch.setattr(
+        ehr_input,
+        "_kanji_to_romaji",
+        lambda text: {
+            "著明な": "chomeina",
+            "署名な": "shomeina",
+            "署明な": "chomeina",
+            "ちょめいな": "chomeina",
+            "チョメイナ": "chomeina",
+        }[text],
+    )
+    candidates = [(1, "署名な"), (2, "署明な"), (3, "ちょめいな"), (4, "チョメイナ")]
+    result = ehr_input._find_best_candidate_match("著明な", candidates)
+    # Should match via visual-confusible fifth pass (署明な), NOT romaji katakana
+    assert result == (2, "署明な")
+
+
 def test_find_best_candidate_match_keeps_romaji_fallback_for_non_kanji_target(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
