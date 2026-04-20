@@ -261,19 +261,19 @@ def test_segment_japanese_with_default_vlm_falls_back_to_local(monkeypatch):
     ]
 
 
-def test_segment_japanese_with_default_vlm_rebuilds_romaji(monkeypatch):
+def test_segment_japanese_with_default_vlm_uses_vlm_romaji(monkeypatch):
+    """VLM が返した romaji をそのまま使う（pykakasi で上書きしない）。"""
     monkeypatch.setattr(
         ehr_input,
         "segment_japanese_text_with_mlx_vlm",
         lambda text: (
-            '[{"text":"肺炎","romaji":"wrong"}]',
-            [{"text": "肺炎", "romaji": "wrong"}],
+            '[{"text":"上気道炎","romaji":"joukidouen"}]',
+            [{"text": "上気道炎", "romaji": "joukidouen"}],
         ),
     )
-    monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: "haien")
 
-    assert ehr_input._segment_japanese_with_default_vlm("肺炎") == [
-        {"text": "肺炎", "romaji": "haien"}
+    assert ehr_input._segment_japanese_with_default_vlm("上気道炎") == [
+        {"text": "上気道炎", "romaji": "joukidouen"}
     ]
 
 

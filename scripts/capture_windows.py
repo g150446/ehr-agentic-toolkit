@@ -1,6 +1,7 @@
+import argparse
 import cv2
+import glob
 import os
-import sys
 import time
 from datetime import datetime
 
@@ -143,12 +144,38 @@ def capture_from_device(device_index, num_warmup_frames=5, output_filename=None)
     cap.release()
     return True
 
+IMAGE_EXTENSIONS = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tiff", "*.tif")
+
+
+def clear_captures():
+    """capturesフォルダ内の画像ファイルをすべて削除"""
+    removed = 0
+    for ext in IMAGE_EXTENSIONS:
+        for filepath in glob.glob(os.path.join(CAPTURE_DIR, ext)):
+            os.remove(filepath)
+            removed += 1
+    print(f"✓ {removed} 件の画像ファイルを削除しました ({CAPTURE_DIR}/)")
+    return removed
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Windows HDMI キャプチャツール (MiraBox)")
+    parser.add_argument("--name", default=None, help="出力ファイル名")
+    parser.add_argument("--clear", action="store_true", help="キャプチャ前にcapturesフォルダの画像を全削除")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     print("\n" + "=" * 60)
     print("Windows HDMI キャプチャツール (MiraBox)")
     print("=" * 60)
 
-    custom_name = sys.argv[1] if len(sys.argv) > 1 else None
+    if args.clear:
+        clear_captures()
+
+    custom_name = args.name
 
     # ステップ1: デバイススキャン
     devices = scan_video_devices(max_devices=5)

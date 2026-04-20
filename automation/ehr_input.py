@@ -33,7 +33,10 @@ from automation.screen_analyzer import (
 )
 from automation.gui_image_analyzer import find_textbox_right_of_label
 from automation.ble_client import BLEClient
-from automation.local_segmentation import segment_japanese_text_locally
+from automation.local_segmentation import (
+    _katakana_to_romaji,
+    segment_japanese_text_locally,
+)
 from automation.mlx_vlm_segmentation import (
     MlxVlmSegmentationError,
     segment_japanese_text_with_mlx_vlm,
@@ -687,11 +690,10 @@ def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
             raise MlxVlmSegmentationError(
                 f"{runtime_label}分割結果が IME 候補を不安定化させる粒度です: source={text!r} segments={segments!r}"
             )
-        normalized_segments = []
-        for segment in segments:
-            segment_text = segment["text"]
-            romaji = _kanji_to_romaji(segment_text)
-            normalized_segments.append({"text": segment_text, "romaji": romaji})
+        normalized_segments = [
+            {"text": seg["text"], "romaji": seg["romaji"]}
+            for seg in segments
+        ]
         normalized_segments = _expand_segment_overrides(normalized_segments)
         print(f"{runtime_label}分割結果: {raw_content}")
         print(f"{runtime_label}分割補正後: {normalized_segments}")
@@ -2646,10 +2648,13 @@ def type_japanese_sentence(text: str, windows_version: str = "windows7", clear_f
 
         elif _is_katakana_only(seg_text):
             # カタカナのみ: ひらがなモードでローマ字入力後 F7 でカタカナ変換して Enter で確定
+            # VLM の romaji は長音符(ー)を母音重複(oo,aa)で返すことがあるため、
+            # カタカナ原文から _katakana_to_romaji で IME 用 romaji を再生成する
+            katakana_romaji = _katakana_to_romaji(seg_text)
             current_mode = ensure_ime_mode("japanese", client, current_mode)
-            print(f"  カタカナ直接入力: {seg_romaji!r}")
-            ok = client.type_text(seg_romaji)
-            print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
+            print(f"  カタカナ直接入力: {katakana_romaji!r}")
+            ok = client.type_text(katakana_romaji)
+            print(f"type:{katakana_romaji} -> {'OK' if ok else 'NG'}")
             ok = client.press_key("f7")  # 全角カタカナに変換
             print(f"key:f7 -> {'OK' if ok else 'NG'}")
             ok = client.press_key("enter")
