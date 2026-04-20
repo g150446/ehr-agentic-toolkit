@@ -1685,6 +1685,7 @@ def _cancel_ime_popup_safe(
     wait: float = 0.15,
     config=None,
     romaji: str = "",
+    extra_budget: int = 0,
 ) -> None:
     """IMEポップアップをコミットなしでキャンセルし、組成バッファをクリアする。
 
@@ -1704,11 +1705,13 @@ def _cancel_ime_popup_safe(
         wait: キー操作間の待機秒数
         config: キャプチャ設定 (指定時はVLM後確認ループを実行)
         romaji: 入力に使用したローマ字 (指定時はより正確なひらがな文字数を計算)
+        extra_budget: 追加のひらがな文字数バジェット (汚染検出時の残存組成分)
     """
     if romaji:
         hira_len = _romaji_to_hiragana_len(romaji)
     else:
         hira_len = _text_to_hiragana_len(text)
+    hira_len += extra_budget
 
     # Step 1: Esc でポップアップを閉じる（インライン変換状態へ）
     client.press_key("escape")
@@ -1722,29 +1725,32 @@ def _cancel_ime_popup_safe(
     time.sleep(0.25)
 
     # Step 3: ひらがな組成を Backspace で削除
-    # IME がマルチセグメント変換状態にある場合、BS がセグメント単位で動作し
-    # ひらがな文字数分の固定 BS では過削除（確定済みテキスト侵食）が発生しうる。
-    # VLM が使える場合は各 BS 前に組成を確認し、消え次第停止する。
+    # VLM-guided path: VLM 偽陰性で BS ループが早期終了する問題を防ぐため、
+    # 最低でも conservative 回数（hira_len-1）の BS を無条件で送信し、
+    # その後 VLM で残存を 1 回だけ確認する。
     if config is not None:
         time.sleep(0.4)
         first_frame = _capture_frame(config)
         vlm_sees = first_frame is not None and _has_ime_composition(first_frame)
+        conservative = max(hira_len - 1, 1)
         if vlm_sees:
-            # VLM が組成を確認 → ガード付きループ（過削除を防止）
-            client.press_key("backspace")
-            time.sleep(0.12)
-            for _ in range(hira_len + 1):
-                time.sleep(0.15)
-                frame = _capture_frame(config)
-                if frame is None or not _has_ime_composition(frame):
-                    break
+            # Phase 1: conservative floor (VLM 偽陰性でも最低限の削除を保証)
+            for _ in range(conservative):
                 client.press_key("backspace")
                 time.sleep(0.12)
+            # Phase 2: VLM で残存組成を 1 回だけ確認
+            time.sleep(0.15)
+            extra = 0
+            frame = _capture_frame(config)
+            if frame is not None and _has_ime_composition(frame):
+                client.press_key("backspace")
+                time.sleep(0.12)
+                extra = 1
+            total = conservative + extra
+            print(f"  [cancel_safe] VLM検出 → BS×{total} (conservative={conservative}, vlm_extra={extra}, hira_len={hira_len})")
         else:
             # VLM が Esc+F6 直後の組成を検出できない場合（偽陰性の可能性）
-            # hira_len-1 の固定 BS で過削除リスクを最小化しつつ未削除を抑える。
-            # 残り最大 1 文字は呼び出し元の VLM ガードが処理する。
-            conservative = max(hira_len - 1, 1)
+            # conservative の固定 BS で過削除リスクを最小化しつつ未削除を抑える。
             print(f"  [cancel_safe] VLM偽陰性 → 控えめBS×{conservative} (hira_len={hira_len})")
             for _ in range(conservative):
                 client.press_key("backspace")
@@ -1954,6 +1960,33 @@ def _read_helper_popup_candidates(
     return merged or vlm_numbered or ocr_numbered
 
 
+def _is_helper_popup_contaminated(
+    helper_word: str,
+    numbered: list[tuple[int, str]],
+    normalized: list[tuple[int, str]],
+) -> bool:
+    """ヘルパー単語ポップアップの候補が組成残存で汚染されているか検出する。
+
+    正規化でフィルタリングされていない（ヘルパー単語に合致する候補がない）かつ
+    第1候補が純粋なひらがな/カタカナである場合、残存組成によるマルチセグメント
+    変換と判定する。OCR ノイズ（漢字の誤読）とは異なり、第1候補がかな文字列
+    であることが組成残存の強い指標となる。
+
+    例: helper="著者", candidates=[(1,'ちょめ'),(2,'緒'),(3,'著')]
+        → 正規化で何もフィルタリングされず、第1候補「ちょめ」はひらがな → 汚染
+    """
+    if not numbered:
+        return False
+    if normalized != numbered:
+        return False
+    first_candidate = numbered[0][1] if numbered else ""
+    if not first_candidate:
+        return False
+    if not (_is_pure_hiragana(first_candidate) or _is_pure_katakana(first_candidate)):
+        return False
+    return first_candidate[0] != helper_word[0]
+
+
 def _try_helper_word_fallback(
     client: "BLEClient",
     config,
@@ -2083,6 +2116,23 @@ def _try_helper_word_fallback(
                     print(f"  key:space (helper select) -> {'OK' if ok else 'NG'}")
                     time.sleep(wait_sec)
             highlighted_match = True
+        elif _is_helper_popup_contaminated(helper_word, helper_numbered, normalized_helper_numbered):
+            # 組成残存による汚染検出 → サイクルをスキップし即座にキャンセル
+            first_cand = helper_numbered[0][1] if helper_numbered else "?"
+            print(
+                f"  [ヘルパー単語] ⚠ 候補汚染検出: 第1候補「{first_cand}」"
+                f"がヘルパー「{helper_word}」の先頭文字と不一致 → 即座にキャンセル"
+            )
+            helper_hira_len = _romaji_to_hiragana_len(helper_romaji)
+            _cancel_ime_popup_safe(
+                client, helper_word, config=config, romaji=helper_romaji,
+                extra_budget=_hira_len,
+            )
+            _clear_pending_ime_composition(
+                client, config,
+                max_backspaces=max(_hira_len + helper_hira_len, 4),
+            )
+            continue
         else:
             # 候補番号や一覧には入力欄ノイズが混ざることがあるため、
             # 現在ハイライトされている候補だけを読み取りながら Space で順送りする。

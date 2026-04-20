@@ -663,7 +663,7 @@ def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
 
 
 def test_cancel_ime_popup_safe_vlm_guided_stops_when_composition_cleared(monkeypatch):
-    """config ありの場合、VLM がガード付きループで過削除を防ぐ。"""
+    """VLM-guided path: conservative floor + Phase 2 VLM check stops when no composition."""
     events = []
     config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
     import numpy as np
@@ -676,18 +676,52 @@ def test_cancel_ime_popup_safe_vlm_guided_stops_when_composition_cleared(monkeyp
             events.append(("key", key))
             return True
 
-    # VLM は最初 True(組成あり) → BS 1 回後に False(組成なし) と返す
-    composition_iter = iter([True, True, False])
+    # VLM: initial=True(組成あり), Phase 2=False(組成なし→追加BSなし)
+    composition_iter = iter([True, False])
     monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 4)
     monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
     monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: next(composition_iter))
 
     ehr_input._cancel_ime_popup_safe(DummyClient(), "呼気性", config=config)
 
-    # Esc + F6 + (VLM confirms → BS) + (VLM confirms → BS) + (VLM says gone → stop)
+    # Esc + F6 + conservative floor BS×3 + Phase 2 VLM says gone → no extra BS
     assert events == [
         ("key", "escape"),
         ("key", "f6"),
+        ("key", "backspace"),
+        ("key", "backspace"),
+        ("key", "backspace"),
+    ]
+
+
+def test_cancel_ime_popup_safe_vlm_guided_extra_bs_when_remaining(monkeypatch):
+    """VLM-guided path: Phase 2 VLM detects remaining composition → 1 extra BS."""
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    import numpy as np
+
+    def _make_frame():
+        return np.zeros((100, 200, 3), dtype=np.uint8)
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    # VLM: initial=True, Phase 2=True(残存あり→追加BS×1)
+    composition_iter = iter([True, True])
+    monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 4)
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: next(composition_iter))
+
+    ehr_input._cancel_ime_popup_safe(DummyClient(), "呼気性", config=config)
+
+    # Esc + F6 + conservative floor BS×3 + Phase 2 VLM says remaining → BS×1
+    assert events == [
+        ("key", "escape"),
+        ("key", "f6"),
+        ("key", "backspace"),
+        ("key", "backspace"),
         ("key", "backspace"),
         ("key", "backspace"),
     ]
@@ -762,6 +796,74 @@ def test_cancel_ime_popup_safe_no_config_uses_f6_then_bs(monkeypatch):
         ("key", "f6"),
         ("key", "backspace"),
     ]
+
+
+def test_cancel_ime_popup_safe_extra_budget_increases_bs(monkeypatch):
+    """extra_budget が指定された場合、BS 回数が増加する（汚染キャンセル用）。"""
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    import numpy as np
+
+    def _make_frame():
+        return np.zeros((100, 200, 3), dtype=np.uint8)
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    # VLM false negative path; hira_len=4 + extra_budget=4 = 8, conservative=max(8-1,1)=7
+    monkeypatch.setattr(ehr_input, "_romaji_to_hiragana_len", lambda r: 4)
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: False)
+
+    ehr_input._cancel_ime_popup_safe(
+        DummyClient(), "著者", config=config, romaji="chosha", extra_budget=4,
+    )
+
+    # Esc + F6 + conservative BS×7
+    bs_count = sum(1 for ev in events if ev == ("key", "backspace"))
+    assert bs_count == 7
+
+
+def test_is_helper_popup_contaminated_detects_residual():
+    """組成残存で候補が汚染されている場合に True を返す。"""
+    helper_word = "著者"
+    numbered = [(1, "ちょめ"), (2, "緒"), (3, "著"), (4, "貯"), (5, "チョメ")]
+    # Normalization returns the original (nothing matches "著者")
+    normalized = numbered
+    assert ehr_input._is_helper_popup_contaminated(helper_word, numbered, normalized) is True
+
+
+def test_is_helper_popup_contaminated_clean_popup():
+    """正常な候補リストでは False を返す。"""
+    helper_word = "著者"
+    numbered = [(1, "著者"), (2, "ちょしゃ"), (3, "チョシャ")]
+    # Normalization filters to just "著者"
+    normalized = [(1, "著者")]
+    assert ehr_input._is_helper_popup_contaminated(helper_word, numbered, normalized) is False
+
+
+def test_is_helper_popup_contaminated_empty_candidates():
+    """空の候補リストでは False を返す。"""
+    assert ehr_input._is_helper_popup_contaminated("著者", [], []) is False
+
+
+def test_is_helper_popup_contaminated_first_char_matches():
+    """第1候補の先頭文字がヘルパーと一致する場合は汚染とみなさない。"""
+    helper_word = "著者"
+    numbered = [(1, "著作"), (2, "著名")]
+    normalized = numbered  # Nothing filtered
+    assert ehr_input._is_helper_popup_contaminated(helper_word, numbered, normalized) is False
+
+
+def test_is_helper_popup_contaminated_kanji_mismatch_is_ocr_noise():
+    """第1候補が漢字でヘルパーと不一致でも、OCRノイズであり汚染とみなさない。"""
+    helper_word = "過剰"
+    # OCR misreads "過剰" as "箇条" — kanji, not hiragana
+    numbered = [(2, "箇条"), (3, "潟状"), (5, "家京")]
+    normalized = numbered
+    assert ehr_input._is_helper_popup_contaminated(helper_word, numbered, normalized) is False
 
 
 def test_clear_pending_ime_composition_skips_trailing_esc_when_no_composition(monkeypatch):
