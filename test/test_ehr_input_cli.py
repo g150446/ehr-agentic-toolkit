@@ -58,12 +58,12 @@ def test_run_cli_parses_openrouter(monkeypatch):
 
     assert (
         ehr_input._run_cli(
-            ["--openrouter", "qwen/qwen3.5-9b", "--win10", "肺炎"]
+            ["--openrouter", "qwen/qwen3.5-9b", "肺炎"]
         )
         == 0
     )
     assert configured == {"openrouter_model": "qwen/qwen3.5-9b"}
-    assert events == [("肺炎", {"windows_version": "windows10", "clear_field": False})]
+    assert events == [("肺炎", {"clear_field": False})]
 
 
 def test_configure_runtime_openrouter_updates_segmentation_and_ime(monkeypatch):
@@ -117,9 +117,9 @@ def test_input_resolved_text_bypasses_ime_conversion_for_hiragana(monkeypatch):
     monkeypatch.setattr(ehr_input, "type_japanese_sentence", lambda text, **kw: events.append(("sentence", text, kw)))
     monkeypatch.setattr(ehr_input, "type_kanji_via_ime", lambda *args, **kwargs: events.append(("ime", args, kwargs)))
 
-    ehr_input._input_resolved_text("てすと", windows_version="windows7", clear_field=True)
+    ehr_input._input_resolved_text("てすと", clear_field=True)
 
-    assert events == [("sentence", "てすと", {"windows_version": "windows7", "clear_field": True})]
+    assert events == [("sentence", "てすと", {"clear_field": True})]
 
 
 def test_input_resolved_text_bypasses_ime_conversion_for_katakana(monkeypatch):
@@ -128,9 +128,9 @@ def test_input_resolved_text_bypasses_ime_conversion_for_katakana(monkeypatch):
     monkeypatch.setattr(ehr_input, "type_japanese_sentence", lambda text, **kw: events.append(("sentence", text, kw)))
     monkeypatch.setattr(ehr_input, "type_kanji_via_ime", lambda *args, **kwargs: events.append(("ime", args, kwargs)))
 
-    ehr_input._input_resolved_text("テスト", windows_version="windows10", clear_field=False)
+    ehr_input._input_resolved_text("テスト", clear_field=False)
 
-    assert events == [("sentence", "テスト", {"windows_version": "windows10", "clear_field": False})]
+    assert events == [("sentence", "テスト", {"clear_field": False})]
 
 
 def test_segment_text_for_input_splits_kaboucho_into_stable_units():
@@ -197,7 +197,7 @@ def test_build_run_log_path_adds_numeric_suffix_when_name_exists(monkeypatch, tm
 
 
 def test_build_run_log_header_records_executable_and_options():
-    raw_args = ["--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]
+    raw_args = ["--openrouter", "qwen/qwen3.5-9b", "--clear", "open test", "肺炎"]
     positional_args, option_summary = ehr_input._parse_cli_options(raw_args)
 
     header = ehr_input._build_run_log_header(
@@ -209,24 +209,24 @@ def test_build_run_log_header_records_executable_and_options():
 
     assert "=== ehr_input invocation ===" in header
     assert "executable: ehr_input.py" in header
-    assert 'argv: ["/tmp/automation/ehr_input.py", "--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]' in header
-    assert 'parsed_options: {"clear_field": true, "openrouter_model": "qwen/qwen3.5-9b", "win10": true, "windows_version": "windows10"}' in header
+    assert 'argv: ["/tmp/automation/ehr_input.py", "--openrouter", "qwen/qwen3.5-9b", "--clear", "open test", "肺炎"]' in header
+    assert 'parsed_options: {"clear_field": true, "openrouter_model": "qwen/qwen3.5-9b"}' in header
     assert 'positional_args: ["open test", "肺炎"]' in header
 
 
 def test_main_prepends_run_header_to_log(monkeypatch, tmp_path):
     monkeypatch.setattr(ehr_input, "_RUN_LOGS_DIR", tmp_path / "logs")
     monkeypatch.setattr(ehr_input, "_print_usage", lambda: print("usage called"))
-    monkeypatch.setattr(sys, "argv", ["/tmp/automation/ehr_input.py", "--win10", "help"])
+    monkeypatch.setattr(sys, "argv", ["/tmp/automation/ehr_input.py", "help"])
 
-    assert ehr_input.main(["--win10", "help"]) == 0
+    assert ehr_input.main(["help"]) == 0
 
     log_files = sorted((tmp_path / "logs").glob("*.txt"))
     assert len(log_files) == 1
 
     log_text = log_files[0].read_text(encoding="utf-8")
     assert log_text.startswith("=== ehr_input invocation ===\nexecutable: ehr_input.py\n")
-    assert 'parsed_options: {"clear_field": false, "openrouter_model": null, "win10": true, "windows_version": "windows10"}' in log_text
+    assert 'parsed_options: {"clear_field": false, "openrouter_model": null}' in log_text
     assert 'positional_args: ["help"]' in log_text
     assert "usage called\n" in log_text
 
@@ -518,11 +518,11 @@ def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
         lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
     )
 
-    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0, "windows10")
+    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0)
     assert events.count(("key", "space")) == 10
     assert ("key", "enter") in events
     assert ("key", "backspace") in events
-    assert ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "windows_version": "windows10", "_current_ime_mode": "japanese"}) in events
+    assert ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "_current_ime_mode": "japanese"}) in events
 
 
 def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
@@ -575,10 +575,10 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
         lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
     )
 
-    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0, "windows10")
+    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0)
     assert ("cleanup", "過剰", 1) in events
     assert events.index(("cleanup", "過剰", 1)) < events.index(
-        ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "windows_version": "windows10", "_current_ime_mode": "japanese"})
+        ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "_current_ime_mode": "japanese"})
     )
 
 
@@ -625,7 +625,7 @@ def test_try_helper_word_fallback_clears_ime_before_helper_lookup(monkeypatch):
         lambda helper_word, image, debug_name="": [(1, "過剰")],
     )
 
-    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0, "windows10")
+    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0)
     assert events[:3] == [("cancel", "過"), ("clear", 2), ("suggest", "過")]
 
 
@@ -655,12 +655,11 @@ def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
         config,
         remaining_target="血",
         wait_sec=0.0,
-        windows_version="windows7",
     )
 
     assert events[0] == ("cancel", "血")
     assert events[1][0] == "clear"
-    assert events[2] == ("ime", "ketsu", "血", {"wait_sec": 0.0, "windows_version": "windows7", "_current_ime_mode": "japanese"})
+    assert events[2] == ("ime", "ketsu", "血", {"wait_sec": 0.0, "_current_ime_mode": "japanese"})
 
 
 def test_cancel_ime_popup_safe_uses_fixed_bs_then_vlm_guard_when_config_available(monkeypatch):
@@ -768,7 +767,7 @@ def test_clear_pending_ime_composition_sends_trailing_esc_after_clearing(monkeyp
         lambda text: iter([{"text": "、", "romaji": ","}]),
     )
 
-    ehr_input.type_japanese_sentence("、", windows_version="windows7")
+    ehr_input.type_japanese_sentence("、")
 
     assert events == [("type", ","), ("key", "enter")]
 
