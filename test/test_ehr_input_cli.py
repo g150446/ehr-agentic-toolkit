@@ -147,6 +147,24 @@ def test_segment_text_for_input_uses_correct_abg_override():
     ]
 
 
+def test_katakana_to_romaji_replaces_nakaguro_with_slash():
+    """・(nakaguro) must be replaced with / for JIS IME; non-ASCII chars sent
+    to the ESP32 produce unpredictable HID events (0xE3 = Win key)."""
+    from automation.local_segmentation import _katakana_to_romaji
+    result = _katakana_to_romaji("ソル・コーテフ")
+    assert result == "soru/ko-tefu"
+    assert result.isascii(), f"Romaji must be ASCII-only, got {result!r}"
+
+
+def test_ble_client_type_text_rejects_non_ascii():
+    """BLE type_text must reject non-ASCII to prevent HID key injection."""
+    from automation.ble_client import BLEClient
+    import socket
+    client = BLEClient.__new__(BLEClient)
+    with pytest.raises(ValueError, match="non-ASCII"):
+        client.type_text("soru・ko-tefu")
+
+
 def test_capture_run_output_tees_stdout_and_stderr(tmp_path):
     stdout = io.StringIO()
     stderr = io.StringIO()

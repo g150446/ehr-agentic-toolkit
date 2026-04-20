@@ -326,6 +326,12 @@ class MacTestClient:
         return True
 
     def type_text(self, text: str) -> bool:
+        if not text.isascii():
+            bad = [(i, c, f"U+{ord(c):04X}") for i, c in enumerate(text) if ord(c) > 127]
+            raise ValueError(
+                f"type_text received non-ASCII characters {bad}; "
+                f"these would produce unpredictable HID key events"
+            )
         buffer: list[str] = []
         for ch in text:
             if ch == "\x08":

@@ -53,6 +53,7 @@ _PUNCTUATION_ROMAJI = {
     "」": "]",   # 日本語モードで rbracket キー → 」
     "『": "[",   # 同上
     "』": "]",
+    "・": "/",   # 日本語モードで / キー → ・
 }
 
 # Windows IME が一語として認識しにくい医療用語を手動で分割するテーブル。
@@ -85,8 +86,12 @@ def _katakana_to_romaji(kana: str) -> str:
     カタカナ長音符 ー (U+30FC) は日本語IMEで「-」キーで入力するため、
     pykakasi に渡す前に「-」に置換する。
     （pykakasi はー を直前の母音の繰り返し "ee" などに変換してしまうため。）
+
+    中黒 ・ (U+30FB) は JIS キーボードの日本語モードで「/」キーで入力するため、
+    pykakasi に渡す前に「/」に置換する。
+    （非 ASCII 文字を BLE HID で送ると予測不能なキー入力になるため。）
     """
-    kana_normalized = kana.replace("ー", "-")
+    kana_normalized = kana.replace("ー", "-").replace("・", "/")
     kks = _get_kks()
     return "".join(item["hepburn"] for item in kks.convert(kana_normalized))
 
