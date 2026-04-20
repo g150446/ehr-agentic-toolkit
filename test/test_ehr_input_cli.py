@@ -987,6 +987,33 @@ def test_romaji_to_hiragana_len_basic_cases():
     assert f("a-") == 2
 
 
+def test_validate_vlm_romaji_fixes_particle_ha():
+    """助詞「は」のローマ字が wa→ha に修正される。"""
+    segments = [
+        {"text": "発語", "romaji": "hatsugo"},
+        {"text": "は", "romaji": "wa"},
+        {"text": "短い", "romaji": "mijikai"},
+    ]
+    result = ehr_input._validate_vlm_romaji(segments)
+    assert result[1] == {"text": "は", "romaji": "ha"}
+    assert result[0] == {"text": "発語", "romaji": "hatsugo"}
+    assert result[2] == {"text": "短い", "romaji": "mijikai"}
+
+
+def test_validate_vlm_romaji_fixes_particle_he():
+    """助詞「へ」のローマ字が e→he に修正される。"""
+    segments = [{"text": "へ", "romaji": "e"}]
+    result = ehr_input._validate_vlm_romaji(segments)
+    assert result[0] == {"text": "へ", "romaji": "he"}
+
+
+def test_validate_vlm_romaji_preserves_correct_hiragana_romaji():
+    """正しいひらがなローマ字はそのまま保持される。"""
+    segments = [{"text": "のみ", "romaji": "nomi"}]
+    result = ehr_input._validate_vlm_romaji(segments)
+    assert result[0] == {"text": "のみ", "romaji": "nomi"}
+
+
 def test_type_kanji_via_ime_aborts_before_typing_when_capture_unavailable(monkeypatch):
     events = []
     config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)

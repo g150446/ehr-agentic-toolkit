@@ -510,10 +510,23 @@ def _validate_vlm_romaji(segments: list[dict[str, str]]) -> list[dict[str, str]]
     修正する（音節重複 e.g. kokikisei→kokisei や隣接セグメントからの文字リーク
     e.g. kyuukise→kyuuki を検出するヒューリスティック）。
     pykakasi が医学用語で誤変換する場合（VLM が同等以下の長さ）は VLM を信頼する。
+
+    純粋ひらがなセグメントも対象: 助詞 は→ha, へ→he, を→wo など発音と入力
+    ローマ字が異なる文字の修正を行う。
     """
     corrected: list[dict[str, str]] = []
     for seg in segments:
         text = seg["text"]
+        # 純粋ひらがな: LLM が発音ベースのローマ字を返す場合がある
+        # (助詞 は→wa, へ→e) が、IME 入力には文字ベースのローマ字が必要
+        if _is_pure_hiragana(text):
+            expected = _kanji_to_romaji(text)
+            if seg["romaji"] != expected:
+                print(f"[ローマ字補正] {text!r}: VLM={seg['romaji']!r} → pykakasi={expected!r}")
+                corrected.append({"text": text, "romaji": expected})
+            else:
+                corrected.append(seg)
+            continue
         if not _has_kanji(text):
             corrected.append(seg)
             continue
