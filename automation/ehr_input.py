@@ -1339,7 +1339,7 @@ def type_kanji_via_ime(
             if display_num <= 9:
                 print(f"  「{target_kanji}」→ type:{display_num}")
                 client.send_command(f"type:{display_num}")
-                time.sleep(wait_sec)
+                time.sleep(max(wait_sec, 0.3))
                 ok = client.press_key("enter")
                 print(f"key:enter -> {'OK' if ok else 'NG'}")
                 print("完了")
@@ -1348,7 +1348,7 @@ def type_kanji_via_ime(
                 print(f"  「{target_kanji}」→ Space×{spaces_needed} + Enter (表示番号 {display_num})")
                 for _ in range(spaces_needed):
                     client.press_key("space")
-                    time.sleep(wait_sec)
+                    time.sleep(max(wait_sec, 0.3))
                 ok = client.press_key("enter")
                 print(f"key:enter -> {'OK' if ok else 'NG'}")
                 print("完了")
@@ -1427,14 +1427,14 @@ def type_kanji_via_ime(
                     if rem_display <= 9:
                         print(f"  「{remaining_target}」→ type:{rem_display}")
                         client.send_command(f"type:{rem_display}")
-                        time.sleep(wait_sec)
+                        time.sleep(max(wait_sec, 0.3))
                         ok = client.press_key("enter")
                         print(f"key:enter -> {'OK' if ok else 'NG'}")
                     else:
                         spaces_needed = rem_display - 2
                         for _ in range(spaces_needed):
                             client.press_key("space")
-                            time.sleep(wait_sec)
+                            time.sleep(max(wait_sec, 0.3))
                         ok = client.press_key("enter")
                         print(f"key:enter -> {'OK' if ok else 'NG'}")
                     print("完了")
@@ -1719,22 +1719,40 @@ def _cancel_ime_popup_safe(
     # Esc による誤確定や BS の不安定な動作を回避できる。
     # 既にひらがな組成の場合 F6 は無害（ひらがなのまま）。
     client.press_key("f6")
-    time.sleep(0.1)
+    time.sleep(0.25)
 
     # Step 3: ひらがな組成を Backspace で削除
-    for _ in range(hira_len):
-        client.press_key("backspace")
-        time.sleep(0.12)
-
-    if config is None:
-        return
-
-    # VLM で残留組成を検出し、あれば追加 Backspace（小さい予算で過削除を防ぐ）
-    _clear_pending_ime_composition(
-        client,
-        config,
-        max_backspaces=2,
-    )
+    # IME がマルチセグメント変換状態にある場合、BS がセグメント単位で動作し
+    # ひらがな文字数分の固定 BS では過削除（確定済みテキスト侵食）が発生しうる。
+    # VLM が使える場合は各 BS 前に組成を確認し、消え次第停止する。
+    if config is not None:
+        time.sleep(0.4)
+        first_frame = _capture_frame(config)
+        vlm_sees = first_frame is not None and _has_ime_composition(first_frame)
+        if vlm_sees:
+            # VLM が組成を確認 → ガード付きループ（過削除を防止）
+            client.press_key("backspace")
+            time.sleep(0.12)
+            for _ in range(hira_len + 1):
+                time.sleep(0.15)
+                frame = _capture_frame(config)
+                if frame is None or not _has_ime_composition(frame):
+                    break
+                client.press_key("backspace")
+                time.sleep(0.12)
+        else:
+            # VLM が Esc+F6 直後の組成を検出できない場合（偽陰性の可能性）
+            # hira_len-1 の固定 BS で過削除リスクを最小化しつつ未削除を抑える。
+            # 残り最大 1 文字は呼び出し元の VLM ガードが処理する。
+            conservative = max(hira_len - 1, 1)
+            print(f"  [cancel_safe] VLM偽陰性 → 控えめBS×{conservative} (hira_len={hira_len})")
+            for _ in range(conservative):
+                client.press_key("backspace")
+                time.sleep(0.12)
+    else:
+        for _ in range(hira_len):
+            client.press_key("backspace")
+            time.sleep(0.12)
 
 def _clear_pending_ime_composition(
     client: "BLEClient",
@@ -1971,13 +1989,17 @@ def _try_helper_word_fallback(
     # コミットなしでキャンセルしてから問い合わせに入る。問い合わせ待ちの間に
     # 誤候補（例: 「化」）を残したままにしないため、先に IME 組成を必ずクリアする。
     print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
+    if romaji:
+        _hira_len = _romaji_to_hiragana_len(romaji)
+    else:
+        _hira_len = _text_to_hiragana_len(target_kanji)
     _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config, romaji=romaji)
     # _cancel_ime_popup_safe 内で固定 BS + VLM ガード済み。追加の安全ネットとして
-    # VLM 確認のみ実施（budget=2 で過削除を防ぐ）。
+    # VLM 確認のみ実施（budget を hira_len に合わせ、残存組成を確実に除去する）。
     _clear_pending_ime_composition(
         client,
         config,
-        max_backspaces=2,
+        max_backspaces=max(_hira_len, 3),
     )
 
     text_runtime_label = _ime_text_runtime_label()
@@ -2048,7 +2070,7 @@ def _try_helper_word_fallback(
 
         highlighted_match = False
         highlighted_text: Optional[str] = None
-        direct_match = _find_best_candidate_match(helper_word, helper_numbered)
+        direct_match = _find_best_candidate_match(helper_word, helper_numbered, strict=True)
         if direct_match is not None:
             display_num, highlighted_text = direct_match
             print(f"  [ヘルパー単語] 「{helper_word}」→ 表示番号 {display_num} (読取: {highlighted_text!r})")
@@ -2086,7 +2108,7 @@ def _try_helper_word_fallback(
                 except Exception as exc:
                     print(f"  [ヘルパー単語] 現在候補読取失敗: {exc}")
                     highlighted_text = None
-                if highlighted_text and _ime_candidate_matches(helper_word, highlighted_text):
+                if highlighted_text and highlighted_text == helper_word:
                     highlighted_match = True
                     break
 
@@ -2248,17 +2270,21 @@ def _is_pure_kanji(text: str) -> bool:
 
 
 def _find_best_candidate_match(
-    target: str, numbered: list[tuple[int, str]]
+    target: str, numbered: list[tuple[int, str]], *, strict: bool = False,
 ) -> Optional[tuple[int, str]]:
     """番号付き候補リストからターゲットに最もよく一致する候補を返す。
 
     完全一致を優先し、なければファジーマッチを試みる。
+    strict=True の場合はファジーマッチを無効にし、完全一致のみを使用する。
+    ヘルパー単語の候補照合など、組成残存による誤合致を防ぐ場合に使用する。
     例: target="痛", candidates=[(1,'通'),(2,'疼痛'),(5,'痛')] → (5, '痛')
     """
     # First pass: exact match
     for n, c in numbered:
         if c == target:
             return (n, c)
+    if strict:
+        return None
     # Second pass: fuzzy same-length match (OCR noise tolerance)
     for n, c in numbered:
         if len(c) == len(target) and _ime_candidate_matches(target, c):

@@ -626,7 +626,7 @@ def test_try_helper_word_fallback_clears_ime_before_helper_lookup(monkeypatch):
     )
 
     assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0)
-    assert events[:3] == [("cancel", "過"), ("clear", 2), ("suggest", "過")]
+    assert events[:3] == [("cancel", "過"), ("clear", 3), ("suggest", "過")]
 
 
 def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
@@ -662,32 +662,86 @@ def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
     assert events[2] == ("ime", "ketsu", "血", {"wait_sec": 0.0, "_current_ime_mode": "japanese"})
 
 
-def test_cancel_ime_popup_safe_uses_fixed_bs_then_vlm_guard_when_config_available(monkeypatch):
+def test_cancel_ime_popup_safe_vlm_guided_stops_when_composition_cleared(monkeypatch):
+    """config ありの場合、VLM がガード付きループで過削除を防ぐ。"""
     events = []
     config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    import numpy as np
+
+    def _make_frame():
+        return np.zeros((100, 200, 3), dtype=np.uint8)
 
     class DummyClient:
         def press_key(self, key):
             events.append(("key", key))
             return True
 
-    monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 2)
-    monkeypatch.setattr(
-        ehr_input,
-        "_clear_pending_ime_composition",
-        lambda client, config, max_backspaces: events.append(("guarded-clear", max_backspaces)),
-    )
+    # VLM は最初 True(組成あり) → BS 1 回後に False(組成なし) と返す
+    composition_iter = iter([True, True, False])
+    monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 4)
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: next(composition_iter))
 
-    ehr_input._cancel_ime_popup_safe(DummyClient(), "過", config=config)
+    ehr_input._cancel_ime_popup_safe(DummyClient(), "呼気性", config=config)
 
-    # Esc (popup→inline) + F6 (inline→hiragana) + BS×hira_len + VLM guard
+    # Esc + F6 + (VLM confirms → BS) + (VLM confirms → BS) + (VLM says gone → stop)
     assert events == [
         ("key", "escape"),
         ("key", "f6"),
         ("key", "backspace"),
         ("key", "backspace"),
-        ("guarded-clear", 2),
     ]
+
+
+def test_cancel_ime_popup_safe_vlm_false_negative_uses_conservative_bs(monkeypatch):
+    """VLM が Esc+F6 直後に組成を検出できない場合、控えめな固定 BS で対応。"""
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    import numpy as np
+
+    def _make_frame():
+        return np.zeros((100, 200, 3), dtype=np.uint8)
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    # VLM は常に False を返す（偽陰性）
+    monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 4)
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: False)
+
+    ehr_input._cancel_ime_popup_safe(DummyClient(), "呼気性", config=config)
+
+    # conservative = max(4-1, 1) = 3 fixed BS
+    assert events == [
+        ("key", "escape"),
+        ("key", "f6"),
+        ("key", "backspace"),
+        ("key", "backspace"),
+        ("key", "backspace"),
+    ]
+
+
+def test_find_best_candidate_match_strict_rejects_fuzzy():
+    """strict=True ではファジーマッチを無効にし、完全一致のみを許可する。
+    組成残存で「呼気」が「呼応」にファジーマッチするケースを防ぐ。"""
+    candidates = [(1, "子機"), (2, "古希"), (6, "呼気"), (9, "こき")]
+    # fuzzy (default): 呼気 matches 呼応 (same-length, 1 mismatch)
+    result = ehr_input._find_best_candidate_match("呼応", candidates)
+    assert result is not None
+    assert result[1] == "呼気"
+    # strict: no fuzzy match → None
+    result_strict = ehr_input._find_best_candidate_match("呼応", candidates, strict=True)
+    assert result_strict is None
+
+
+def test_find_best_candidate_match_strict_allows_exact():
+    """strict=True でも完全一致は許可する。"""
+    candidates = [(1, "子機"), (3, "呼応")]
+    result = ehr_input._find_best_candidate_match("呼応", candidates, strict=True)
+    assert result == (3, "呼応")
 
 
 def test_cancel_ime_popup_safe_no_config_uses_f6_then_bs(monkeypatch):
