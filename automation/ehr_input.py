@@ -494,6 +494,36 @@ _SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
 }
 
 
+# 分解入力オーバーライド: IME 辞書にない医学略語を、辞書にある搬送語で入力し
+# 不要部分を Backspace で削除する戦略。
+# 例: '静注' → '静脈'入力→確定→BS×1(脈削除) → '注射'入力→確定→BS×1(射削除)
+# 各エントリは [{'carrier': 搬送語, 'romaji': ローマ字, 'keep': 残す文字列}, ...]
+_DECOMPOSE_OVERRIDES: dict[str, list[dict[str, str]]] = {
+    '静注': [
+        {'carrier': '静脈', 'romaji': 'seimyaku', 'keep': '静'},
+        {'carrier': '注射', 'romaji': 'chuusha', 'keep': '注'},
+    ],
+    '筋注': [
+        {'carrier': '筋肉', 'romaji': 'kinniku', 'keep': '筋'},
+        {'carrier': '注射', 'romaji': 'chuusha', 'keep': '注'},
+    ],
+}
+
+# 分解入力オーバーライドのバリデーション
+for _dw, _dplan in _DECOMPOSE_OVERRIDES.items():
+    for _dstep in _dplan:
+        assert _dstep['carrier'].startswith(_dstep['keep']), (
+            f"分解入力: carrier {_dstep['carrier']!r} は keep {_dstep['keep']!r} で始まる必要があります"
+        )
+        assert 0 < len(_dstep['keep']) < len(_dstep['carrier']), (
+            f"分解入力: keep 長は 0 < {len(_dstep['keep'])} < {len(_dstep['carrier'])} (carrier長) である必要があります"
+        )
+# _SEGMENT_OVERRIDES と _DECOMPOSE_OVERRIDES のキーは重複禁止
+assert not set(_DECOMPOSE_OVERRIDES) & set(_SEGMENT_OVERRIDES), (
+    "_DECOMPOSE_OVERRIDES と _SEGMENT_OVERRIDES のキーが重複しています"
+)
+
+
 def _expand_segment_overrides(segments: list[dict[str, str]]) -> list[dict[str, str]]:
     """_SEGMENT_OVERRIDES に登録されたトークンを複数サブセグメントに展開する。"""
     result: list[dict[str, str]] = []
@@ -1159,6 +1189,7 @@ def type_kanji_via_ime(
     clear_field: bool = False,
     _current_ime_mode: Optional[str] = None,
     _no_helper_fallback: bool = False,
+    _strict: bool = False,
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -1178,10 +1209,12 @@ def type_kanji_via_ime(
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
         _current_ime_mode: 呼び出し元が既に検出した IME モード。指定時は内部で再検出しない。
         _no_helper_fallback: True の場合、ヘルパー単語フォールバックを使わない（再帰防止用）。
+        _strict: True の場合、ひらがなフォールバックを禁止し ValueError を発生させる。
+                 分解入力戦略で搬送語を確実に変換確定する必要がある場合に使用。
 
     Raises:
         RuntimeError: BLE サーバー未起動、またはキャプチャ失敗の場合
-        ValueError: max_attempts 回試行しても target_kanji が見つからない場合
+        ValueError: _strict=True で候補確定できなかった場合、または max_attempts 超過時
     """
     config = load_config(skip_password=True)
 
@@ -1516,7 +1549,7 @@ def type_kanji_via_ime(
     # --- ヘルパー単語フォールバック ---
     # ポップアップ候補にターゲットが存在しない場合、テキストモデルに「目標漢字を含む
     # 一般的な日本語単語」を提案してもらい、変換後に余分な文字を削除して得る。
-    if not _no_helper_fallback:
+    if not _no_helper_fallback and not _strict:
         print(f"  ヘルパー単語フォールバックを試みます...")
         if _try_helper_word_fallback(client, config, target_kanji, wait_sec, romaji=romaji):
             return
@@ -1555,10 +1588,25 @@ def type_kanji_via_ime(
             print(f"key:space -> {'OK' if ok else 'NG'}")
             time.sleep(wait_sec)
 
-    # 全候補を確認できなかった → ひらがなフォールバック（改行なし）
+    # 全候補を確認できなかった
+    print(f"  ⚠️ IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした")
+
+    if _strict:
+        # strict モード: ひらがなフォールバックを行わず、IME 組成をキャンセルして例外送出
+        for _ in range(2):
+            client.press_key("escape")
+            time.sleep(0.15)
+        _hira_len = _romaji_to_hiragana_len(romaji)
+        for _ in range(_hira_len + 2):
+            client.press_key("backspace")
+            time.sleep(0.1)
+        raise ValueError(
+            f"IME候補に「{target_kanji}」が見つかりませんでした（strict モード）"
+        )
+
+    # ひらがなフォールバック（改行なし）
     # 残留する組成バッファを Esc で確実にキャンセルしてから、
     # romaji をひらがなとして再入力し Right Arrow で確定する（Enter は改行になるため使わない）
-    print(f"  ⚠️ IME候補を {max_attempts} 回確認しましたが「{target_kanji}」を確定できませんでした")
     print(f"  → ひらがなフォールバック: {romaji!r} を再入力して Right Arrow で確定します")
     for _ in range(2):
         client.press_key("escape")  # ポップアップ/インライン/ひらがなをキャンセル
@@ -1568,6 +1616,74 @@ def type_kanji_via_ime(
     time.sleep(0.3)
     ok = client.press_key("right")  # 改行なしで組成を確定
     print(f"  key:right (ひらがな確定) -> {'OK' if ok else 'NG'}")
+
+
+def _type_kanji_via_decomposition(
+    plan: list[dict[str, str]],
+    target_kanji: str,
+    current_ime_mode: str,
+) -> None:
+    """分解入力戦略: IME 辞書にない語を搬送語経由で入力する。
+
+    各ステップで辞書にある搬送語を type_kanji_via_ime で変換確定し、
+    不要な末尾文字を Backspace で削除して目的の文字だけを残す。
+
+    例: '静注' → '静脈'変換確定→BS×1(脈削除) → '注射'変換確定→BS×1(射削除)
+
+    Args:
+        plan: 分解ステップのリスト。各要素は
+              {'carrier': 搬送語, 'romaji': ローマ字, 'keep': 残す文字列}
+        target_kanji: 入力したい目標漢字（ログ表示用）
+        current_ime_mode: 現在の IME モード
+    """
+    client = _wait_for_ble_connected()
+    chars_committed = 0
+
+    print(f"  [分解入力] 「{target_kanji}」を搬送語で入力します")
+
+    for i, step in enumerate(plan):
+        carrier = step['carrier']
+        romaji = step['romaji']
+        keep = step['keep']
+        backspace_count = len(carrier) - len(keep)
+
+        print(
+            f"  [分解入力] ステップ{i+1}/{len(plan)}: "
+            f"{carrier!r} → keep={keep!r}, BS×{backspace_count}"
+        )
+
+        try:
+            type_kanji_via_ime(
+                romaji, carrier,
+                _current_ime_mode=current_ime_mode,
+                _no_helper_fallback=True,
+                _strict=True,
+            )
+        except ValueError as exc:
+            # 搬送語の変換に失敗 → 既にコミットした文字をロールバック
+            print(f"  [分解入力] ステップ{i+1} 失敗: {exc}")
+            if chars_committed > 0:
+                print(f"  [分解入力] ロールバック: BS×{chars_committed}")
+                for _ in range(chars_committed):
+                    client.press_key("backspace")
+                    time.sleep(0.15)
+            raise ValueError(
+                f"分解入力「{target_kanji}」のステップ{i+1} ({carrier!r}) で失敗"
+            ) from exc
+
+        # 搬送語が確定された → 不要末尾を Backspace で削除
+        if backspace_count > 0:
+            time.sleep(0.2)
+            for _ in range(backspace_count):
+                client.press_key("backspace")
+                time.sleep(0.15)
+            print(f"  [分解入力] BS×{backspace_count} → {keep!r} 残留")
+
+        chars_committed += len(keep)
+        # 次ステップとの間に処理待機
+        time.sleep(0.3)
+
+    print(f"  [分解入力] 完了: 「{target_kanji}」")
 
 
 def _text_to_hiragana_len(text: str) -> int:
@@ -2720,10 +2836,18 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
         elif _has_kanji(seg_text):
             # 漢字を含む文節: ひらがなモードで IME 変換候補を確認してから確定
             current_mode = ensure_ime_mode("japanese", client, current_mode)
-            type_kanji_via_ime(
-                seg_romaji, seg_text,
-                _current_ime_mode=current_mode,
-            )
+            if seg_text in _DECOMPOSE_OVERRIDES:
+                # 分解入力: IME 辞書にない語を搬送語経由で入力
+                _type_kanji_via_decomposition(
+                    _DECOMPOSE_OVERRIDES[seg_text],
+                    seg_text,
+                    current_mode,
+                )
+            else:
+                type_kanji_via_ime(
+                    seg_romaji, seg_text,
+                    _current_ime_mode=current_mode,
+                )
             time.sleep(0.25)
 
         elif _is_katakana_only(seg_text):

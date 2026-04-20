@@ -1166,3 +1166,149 @@ def test_type_kanji_via_ime_aborts_before_typing_when_capture_unavailable(monkey
         ehr_input.type_kanji_via_ime("choushin", "聴診", _current_ime_mode="japanese")
 
     assert events == []
+
+
+# ── 分解入力 (Decomposition Typing) テスト ──
+
+
+def test_decompose_overrides_dict_has_expected_entries():
+    """_DECOMPOSE_OVERRIDES に静注と筋注が登録されていることを確認。"""
+    assert '静注' in ehr_input._DECOMPOSE_OVERRIDES
+    assert '筋注' in ehr_input._DECOMPOSE_OVERRIDES
+
+
+def test_decompose_overrides_entries_are_valid():
+    """各エントリの carrier が keep で始まり、keep が carrier より短いことを確認。"""
+    for word, plan in ehr_input._DECOMPOSE_OVERRIDES.items():
+        for step in plan:
+            assert step['carrier'].startswith(step['keep']), (
+                f"{word}: carrier {step['carrier']!r} が keep {step['keep']!r} で始まっていません"
+            )
+            assert 0 < len(step['keep']) < len(step['carrier']), (
+                f"{word}: keep 長が不正 (keep={len(step['keep'])}, carrier={len(step['carrier'])})"
+            )
+
+
+def test_decompose_overrides_disjoint_from_segment_overrides():
+    """_DECOMPOSE_OVERRIDES と _SEGMENT_OVERRIDES のキーが重複しないことを確認。"""
+    overlap = set(ehr_input._DECOMPOSE_OVERRIDES) & set(ehr_input._SEGMENT_OVERRIDES)
+    assert not overlap, f"重複キー: {overlap}"
+
+
+def test_decompose_seichuu_plan_produces_correct_chars():
+    """静注の分解計画が正しい搬送語と残存文字を持つことを確認。"""
+    plan = ehr_input._DECOMPOSE_OVERRIDES['静注']
+    assert len(plan) == 2
+    assert plan[0]['carrier'] == '静脈'
+    assert plan[0]['keep'] == '静'
+    assert plan[1]['carrier'] == '注射'
+    assert plan[1]['keep'] == '注'
+
+
+def test_type_kanji_via_ime_strict_raises_on_failure(monkeypatch):
+    """_strict=True のとき、候補確定できなければ ValueError が発生することを確認。"""
+    events = []
+    config = SimpleNamespace(
+        capture_device_index=0, capture_width=1920, capture_height=1080,
+        ocr_languages="ja,en", ocr_use_gpu=False,
+    )
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def send_command(self, cmd):
+            events.append(("cmd", cmd))
+            return True
+
+    dummy_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: config)
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda timeout=70.0: DummyClient())
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: dummy_frame)
+    monkeypatch.setattr(ehr_input, "_request_ocr_results", lambda *a, **kw: [])
+    monkeypatch.setattr(ehr_input, "read_popup_candidates_numbered", lambda *a, **kw: [])
+    monkeypatch.setattr(ehr_input, "_read_popup_candidates_with_fallback", lambda *a, **kw: [])
+    monkeypatch.setattr(ehr_input, "_read_ime_candidate_with_vlm", lambda *a, **kw: None)
+    monkeypatch.setattr(ehr_input, "_save_debug_image", lambda *a, **kw: None)
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *a, **kw: "japanese")
+
+    with pytest.raises(ValueError, match="strict"):
+        ehr_input.type_kanji_via_ime(
+            "seimyaku", "静脈",
+            _current_ime_mode="japanese",
+            _strict=True,
+        )
+
+    # Verify escape + backspace cleanup happened (no hiragana fallback)
+    key_events = [e[1] for e in events if e[0] == "key"]
+    assert "right" not in key_events, "strict mode should not use hiragana fallback (right arrow)"
+
+
+def test_type_kanji_via_decomposition_calls_type_kanji_and_backspace(monkeypatch):
+    """分解入力が搬送語ごとに type_kanji_via_ime (strict) + backspace を呼ぶことを確認。"""
+    events = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    def fake_type_kanji_via_ime(romaji, target, **kwargs):
+        events.append(("ime", romaji, target, kwargs.get("_strict", False)))
+
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda timeout=70.0: DummyClient())
+    monkeypatch.setattr(ehr_input, "type_kanji_via_ime", fake_type_kanji_via_ime)
+
+    plan = [
+        {'carrier': '静脈', 'romaji': 'seimyaku', 'keep': '静'},
+        {'carrier': '注射', 'romaji': 'chuusha', 'keep': '注'},
+    ]
+    ehr_input._type_kanji_via_decomposition(plan, '静注', 'japanese')
+
+    # Verify: carrier 1 typed in strict mode, then 1 backspace; carrier 2 typed, then 1 backspace
+    ime_calls = [(e[1], e[2], e[3]) for e in events if e[0] == "ime"]
+    assert ime_calls == [
+        ('seimyaku', '静脈', True),
+        ('chuusha', '注射', True),
+    ]
+    backspace_events = [e for e in events if e == ("key", "backspace")]
+    assert len(backspace_events) == 2  # 1 for 脈, 1 for 射
+
+
+def test_type_kanji_via_decomposition_rollback_on_failure(monkeypatch):
+    """搬送語の変換失敗時に、既にコミットした文字がロールバックされることを確認。"""
+    events = []
+    call_count = [0]
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    def fake_type_kanji_via_ime(romaji, target, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First carrier succeeds
+            events.append(("ime_ok", target))
+        else:
+            # Second carrier fails
+            raise ValueError("IME候補に見つかりませんでした（strict モード）")
+
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda timeout=70.0: DummyClient())
+    monkeypatch.setattr(ehr_input, "type_kanji_via_ime", fake_type_kanji_via_ime)
+
+    plan = [
+        {'carrier': '静脈', 'romaji': 'seimyaku', 'keep': '静'},
+        {'carrier': '注射', 'romaji': 'chuusha', 'keep': '注'},
+    ]
+    with pytest.raises(ValueError, match="ステップ2"):
+        ehr_input._type_kanji_via_decomposition(plan, '静注', 'japanese')
+
+    # After step 1 success: 1 backspace for 脈. After step 2 failure: 1 backspace rollback for 静.
+    backspace_events = [e for e in events if e == ("key", "backspace")]
+    assert len(backspace_events) == 2  # 1 (trim 脈) + 1 (rollback 静)

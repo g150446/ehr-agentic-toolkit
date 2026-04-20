@@ -73,6 +73,8 @@ python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
 
 **医学用語ローマ字オーバーライド**: `_kanji_to_romaji()` 内の `_ROMAJI_OVERRIDES` 辞書で pykakasi が誤読する医学用語のローマ字を手動上書きします（例: 生食→seishoku, 静注→seichuu）。`_validate_vlm_romaji` による不正な上書きも防止されます。
 
+**分解入力戦略 (Decomposition Typing)**: IME 辞書にない医学略語（例: `静注`、`筋注`）を、辞書に存在する搬送語（carrier word）で入力し不要末尾を Backspace で削除する戦略です。`_DECOMPOSE_OVERRIDES` 辞書に登録された語は `_type_kanji_via_decomposition()` で処理されます。例: `静注` → `静脈`(seimyaku) を変換確定 → BS×1 で `脈` 削除 → `注射`(chuusha) を変換確定 → BS×1 で `射` 削除 → 結果: `静注`。搬送語は `_strict=True` で変換されるため、ひらがなフォールバックは発生しません。ステップ途中で失敗した場合は既にコミットした文字をロールバックします。
+
 4文字を超える文章や助詞を含む文は `type_japanese_sentence()` で文節単位に分割して**逐次入力**します。句読点（`、` → `,` / `。` → `.` + Enter）に加えて、改行・`[` `]` `(` `)` `%` `:` も専用キー送信に切り替えて処理します。
 
 日英混在テキスト（例: `"COVID-19の感染を確認した"`）では、ASCII のみの文節は英数字モード、日本語文節はひらがなモードで入力するよう IME を自動切替します。
