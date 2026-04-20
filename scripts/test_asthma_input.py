@@ -28,20 +28,41 @@ _PYTHON = sys.executable
 
 
 def _build_fragments(path: Path) -> list[str]:
-    """asthma_1.txt を句読点（。・、）で分割してフラグメントリストを返す。"""
+    """asthma_1.txt を句読点（。・、）で分割してフラグメントリストを返す。
+
+    元テキストの改行（空行による段落区切り）は ``"\\n"`` マーカーとして保持し、
+    実行時に Enter キーとして送信する。
+    """
     text = path.read_text(encoding="utf-8")
-    # セクションヘッダ [S][O][A][P] と # プレフィックスを除去
-    text = re.sub(r'^\s*\[[SOAP]\]\s*', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^\s*#\s*', '', text, flags=re.MULTILINE)
-    # 句読点の直後で分割（句読点は各フラグメントの末尾に残す）
-    raw = re.split(r'(?<=[。、])', text)
+    # セクションヘッダ [S][O][A][P] と # プレフィックスを除去（改行は消さない）
+    text = re.sub(r'^[^\S\n]*\[[SOAP]\][^\S\n]*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[^\S\n]*#[^\S\n]*', '', text, flags=re.MULTILINE)
+
+    # 段落単位に分割（空行を段落区切りとする）
+    paragraphs = re.split(r'\n\s*\n', text)
+
     fragments: list[str] = []
-    for f in raw:
-        # 複数行をスペースに変換、前後の空白を除去
-        f = re.sub(r'\s+', ' ', f).strip()
-        # 4文字以上 かつ 日本語文字を含むもののみ
-        if len(f) >= 4 and re.search(r'[\u3040-\u9FFF]', f):
-            fragments.append(f)
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        # 段落区切りマーカー（先頭段落を除く）
+        if fragments and fragments[-1] != "\n":
+            fragments.append("\n")
+
+        # 句読点の直後で分割（句読点は各フラグメントの末尾に残す）
+        raw = re.split(r'(?<=[。、])', para)
+        for f in raw:
+            # 段落内の改行はスペースに変換
+            f = re.sub(r'\s+', ' ', f).strip()
+            # 4文字以上 かつ 日本語文字を含むもののみ
+            if len(f) >= 4 and re.search(r'[\u3040-\u9FFF]', f):
+                fragments.append(f)
+
+    # 末尾の改行マーカーを除去
+    while fragments and fragments[-1] == "\n":
+        fragments.pop()
     return fragments
 
 
@@ -100,9 +121,14 @@ def _run_fragment(
     clear: bool = False,
     openrouter_model: str | None = None,
 ) -> bool:
-    """1フラグメントを ehr_input で実行する。成功時は True を返す。"""
+    """1フラグメントを ehr_input で実行する。成功時は True を返す。
+
+    fragment が ``"\\n"`` の場合は改行マーカーとして扱い、
+    ehr_input にそのまま渡して Enter キーを送信させる。
+    """
+    label = repr(fragment) if fragment != "\n" else '"\\n" (Enter)'
     print(f"\n{'='*60}")
-    print(f"[{index}/{total}] {fragment!r}")
+    print(f"[{index}/{total}] {label}")
     print('='*60)
     cmd = _build_ehr_input_command(
         fragment,
@@ -130,7 +156,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         for i, f in enumerate(fragments, 1):
-            print(f"{i:3d}: {f[:80]}")
+            if f == "\n":
+                print(f"{i:3d}: [Enter]")
+            else:
+                print(f"{i:3d}: {f[:80]}")
         return 0
 
     if args.fragment is not None and (args.start is not None or args.end is not None):
