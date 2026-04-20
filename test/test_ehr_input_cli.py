@@ -1014,6 +1014,60 @@ def test_validate_vlm_romaji_preserves_correct_hiragana_romaji():
     assert result[0] == {"text": "のみ", "romaji": "nomi"}
 
 
+def test_segment_text_for_input_haiya_override_uses_no_for_ya():
+    """肺野 override must split into 肺(hai)+野(no), not 野(ya).
+
+    'ya' produces too many candidates (屋,矢,也,野…) making VLM candidate
+    number misread likely.  'no' gives a shorter list (の,野,能…) where 野
+    appears near position 2, greatly reducing misselection risk.
+    """
+    result = ehr_input._segment_text_for_input("肺野")
+    assert result == [
+        {"text": "肺", "romaji": "hai"},
+        {"text": "野", "romaji": "no"},
+    ]
+
+
+def test_find_best_candidate_match_rejects_shorter_romaji_match(monkeypatch):
+    """Romaji pass must reject candidates shorter than target.
+
+    '昭かな' (3 chars, romaji 'akirakana') must NOT match '明らかな'
+    (4 chars, romaji 'akirakana') because the shorter candidate is a
+    genuinely different word, not an OCR misread.
+    """
+    monkeypatch.setattr(
+        ehr_input,
+        "_kanji_to_romaji",
+        lambda text: {
+            "明らかな": "akirakana",
+            "昭かな": "akirakana",
+            "昌かな": "akirakana",
+        }.get(text, "unknown"),
+    )
+    candidates = [(2, "昭かな"), (3, "昌かな")]
+    result = ehr_input._find_best_candidate_match("明らかな", candidates)
+    assert result is None
+
+
+def test_find_best_candidate_match_allows_longer_romaji_match(monkeypatch):
+    """Romaji pass must accept candidates longer-or-equal to target.
+
+    '見とめる' (4 chars) is an OCR expansion of '認める' (3 chars) where
+    the first kanji was split into kanji+kana.  Same romaji → accept.
+    """
+    monkeypatch.setattr(
+        ehr_input,
+        "_kanji_to_romaji",
+        lambda text: {
+            "認める": "mitomeru",
+            "見とめる": "mitomeru",
+        }.get(text, "unknown"),
+    )
+    candidates = [(5, "見とめる")]
+    result = ehr_input._find_best_candidate_match("認める", candidates)
+    assert result == (5, "見とめる")
+
+
 def test_type_kanji_via_ime_aborts_before_typing_when_capture_unavailable(monkeypatch):
     events = []
     config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)

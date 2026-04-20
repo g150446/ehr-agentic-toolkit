@@ -475,8 +475,10 @@ _SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
     "歳頃": [{"text": "歳", "romaji": "sai"}, {"text": "頃", "romaji": "koro"}],
     "吸入剤": [{"text": "吸入", "romaji": "kyuunyuu"}, {"text": "剤", "romaji": "zai"}],
     "過膨張": [{"text": "過", "romaji": "ka"}, {"text": "膨張", "romaji": "bouchou"}],
-    # 肺野 (はいや) は標準 IME 辞書にない医療用語 → 肺(hai)+野(ya) に分割
-    "肺野": [{"text": "肺", "romaji": "hai"}, {"text": "野", "romaji": "ya"}],
+    # 肺野 (はいや) は標準 IME 辞書にない医療用語 → 肺(hai)+野(no) に分割
+    # 野の読みは "ya" だが、"ya" で変換すると候補が多く (屋,矢,也,野…) VLM が
+    # 番号を誤読しやすい。"no" なら (の,野,能…) と候補が少なく安定する。
+    "肺野": [{"text": "肺", "romaji": "hai"}, {"text": "野", "romaji": "no"}],
     # 認めるが → 認める(mitomeru) + が(ga) に分割
     "認めるが": [{"text": "認める", "romaji": "mitomeru"}, {"text": "が", "romaji": "ga"}],
     # 動脈血ガス → 動脈血(doumyakuketsu) + ガス(gasu) に分割
@@ -2368,6 +2370,7 @@ def _find_best_candidate_match(
         if target_is_pure_kanji:
             return None
         target_has_kanji = _has_kanji(target)
+        target_len = len(target)
         for n, c in numbered:
             # Accept only mixed hiragana+kanji or pure katakana
             if _is_pure_hiragana(c):
@@ -2378,6 +2381,13 @@ def _find_best_candidate_match(
                 # target is katakana too → allow romaji match
             elif not _has_hiragana(c):
                 continue  # pure kanji = real homonym risk → skip
+            # Guard: reject candidates shorter than target.
+            # A shorter candidate with the same romaji is almost always a genuinely
+            # different word (e.g., '昭かな' for '明らかな') rather than an OCR
+            # misread. Longer-or-equal candidates may be OCR expansions of the
+            # correct kanji (e.g., '見とめる' for '認める') and are allowed.
+            if len(c) < target_len:
+                continue
             try:
                 if _kanji_to_romaji(c) == target_romaji:
                     print(f"  [候補照合/romaji] {c!r} → {_kanji_to_romaji(c)!r} ≈ {target!r} → 採用")
