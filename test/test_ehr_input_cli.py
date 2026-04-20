@@ -41,7 +41,7 @@ def test_run_cli_uses_file_contents_for_open_test(monkeypatch, tmp_path):
     assert events == ["open", "COVID-19の感染を確認した"]
 
 
-def test_run_cli_parses_openrouter_and_mactest(monkeypatch):
+def test_run_cli_parses_openrouter(monkeypatch):
     configured = {}
     events = []
 
@@ -58,18 +58,18 @@ def test_run_cli_parses_openrouter_and_mactest(monkeypatch):
 
     assert (
         ehr_input._run_cli(
-            ["--mactest", "--openrouter", "qwen/qwen3.5-9b", "--win10", "肺炎"]
+            ["--openrouter", "qwen/qwen3.5-9b", "--win10", "肺炎"]
         )
         == 0
     )
-    assert configured == {"mactest": True, "openrouter_model": "qwen/qwen3.5-9b"}
+    assert configured == {"openrouter_model": "qwen/qwen3.5-9b"}
     assert events == [("肺炎", {"windows_version": "windows10", "clear_field": False})]
 
 
 def test_configure_runtime_openrouter_updates_segmentation_and_ime(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "token-xyz")
 
-    ehr_input._configure_runtime(mactest=False, openrouter_model="qwen/vision-model")
+    ehr_input._configure_runtime(openrouter_model="qwen/vision-model")
 
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == "https://openrouter.ai/api/v1/chat/completions"
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "qwen/vision-model"
@@ -84,9 +84,9 @@ def test_configure_runtime_openrouter_updates_segmentation_and_ime(monkeypatch):
 
 def test_configure_runtime_without_openrouter_restores_defaults(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "token-xyz")
-    ehr_input._configure_runtime(mactest=False, openrouter_model="qwen/vision-model")
+    ehr_input._configure_runtime(openrouter_model="qwen/vision-model")
 
-    ehr_input._configure_runtime(mactest=False, openrouter_model=None)
+    ehr_input._configure_runtime(openrouter_model=None)
 
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["url"]
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -197,7 +197,7 @@ def test_build_run_log_path_adds_numeric_suffix_when_name_exists(monkeypatch, tm
 
 
 def test_build_run_log_header_records_executable_and_options():
-    raw_args = ["--mactest", "--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]
+    raw_args = ["--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]
     positional_args, option_summary = ehr_input._parse_cli_options(raw_args)
 
     header = ehr_input._build_run_log_header(
@@ -209,8 +209,8 @@ def test_build_run_log_header_records_executable_and_options():
 
     assert "=== ehr_input invocation ===" in header
     assert "executable: ehr_input.py" in header
-    assert 'argv: ["/tmp/automation/ehr_input.py", "--mactest", "--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]' in header
-    assert 'parsed_options: {"clear_field": true, "mactest": true, "openrouter_model": "qwen/qwen3.5-9b", "win10": true, "windows_version": "windows10"}' in header
+    assert 'argv: ["/tmp/automation/ehr_input.py", "--openrouter", "qwen/qwen3.5-9b", "--win10", "--clear", "open test", "肺炎"]' in header
+    assert 'parsed_options: {"clear_field": true, "openrouter_model": "qwen/qwen3.5-9b", "win10": true, "windows_version": "windows10"}' in header
     assert 'positional_args: ["open test", "肺炎"]' in header
 
 
@@ -226,7 +226,7 @@ def test_main_prepends_run_header_to_log(monkeypatch, tmp_path):
 
     log_text = log_files[0].read_text(encoding="utf-8")
     assert log_text.startswith("=== ehr_input invocation ===\nexecutable: ehr_input.py\n")
-    assert 'parsed_options: {"clear_field": false, "mactest": false, "openrouter_model": null, "win10": true, "windows_version": "windows10"}' in log_text
+    assert 'parsed_options: {"clear_field": false, "openrouter_model": null, "win10": true, "windows_version": "windows10"}' in log_text
     assert 'positional_args: ["help"]' in log_text
     assert "usage called\n" in log_text
 
@@ -604,7 +604,7 @@ def test_try_helper_word_fallback_clears_ime_before_helper_lookup(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
         "_cancel_ime_popup_safe",
-        lambda client, text, wait=0.15, config=None: events.append(("cancel", text)),
+        lambda client, text, wait=0.15, config=None, romaji="": events.append(("cancel", text)),
     )
     monkeypatch.setattr(
         ehr_input,
@@ -636,7 +636,7 @@ def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
         "_cancel_ime_popup_safe",
-        lambda client, text, wait=0.15, config=None: events.append(("cancel", text)),
+        lambda client, text, wait=0.15, config=None, romaji="": events.append(("cancel", text)),
     )
     monkeypatch.setattr(
         ehr_input,
@@ -783,47 +783,53 @@ def test_segment_japanese_with_openrouter_uses_runtime_aware_logs(monkeypatch):
     monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: "haien")
     stdout = io.StringIO()
 
-    ehr_input._configure_runtime(mactest=False, openrouter_model="google/gemma-4-26b-a4b-it")
+    ehr_input._configure_runtime(openrouter_model="google/gemma-4-26b-a4b-it")
     try:
         with redirect_stdout(stdout):
             assert ehr_input._segment_japanese_with_default_vlm("肺炎") == [
                 {"text": "肺炎", "romaji": "haien"}
             ]
     finally:
-        ehr_input._configure_runtime(mactest=False, openrouter_model=None)
+        ehr_input._configure_runtime(openrouter_model=None)
 
     output = stdout.getvalue()
     assert "OpenRouter(google/gemma-4-26b-a4b-it)分割結果" in output
     assert "Qwen分割結果" not in output
 
 
-def test_wait_for_ble_connected_returns_local_client_in_mactest(monkeypatch):
-    sentinel = object()
-    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "mactest", True)
-    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "local_client", sentinel)
-
-    assert ehr_input._wait_for_ble_connected() is sentinel
+def test_parse_cli_options_rejects_mactest():
+    """--mactest は廃止済み。不明オプションとしてエラーになることを確認。"""
+    with pytest.raises(RuntimeError, match="不明なオプション: --mactest"):
+        ehr_input._parse_cli_options(["--mactest", "肺炎"])
 
 
-def test_capture_screen_accepts_flush_duration_in_mactest(monkeypatch):
-    fake_rgb = np.zeros((8, 12, 3), dtype=np.uint8)
+def test_parse_cli_options_rejects_unknown_option():
+    with pytest.raises(RuntimeError, match="不明なオプション: --foobar"):
+        ehr_input._parse_cli_options(["--foobar"])
 
-    class FakePyAutoGUI:
-        def screenshot(self):
-            return fake_rgb
 
-    fake_client = type("FakeClient", (), {"_pyautogui": FakePyAutoGUI()})()
-    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "mactest", True)
-    monkeypatch.setattr(ehr_input._RUNTIME_OPTIONS, "local_client", fake_client)
-
-    frame = ehr_input.capture_screen(
-        device_index=0,
-        width=1920,
-        height=1080,
-        flush_duration=0.5,
-    )
-
-    assert frame.shape == (8, 12, 3)
+def test_romaji_to_hiragana_len_basic_cases():
+    """_romaji_to_hiragana_len がローマ字からひらがな文字数を正しく計算する。"""
+    f = ehr_input._romaji_to_hiragana_len
+    # 静注: seichuu → せいちゅう (5文字)
+    assert f("seichuu") == 5
+    # 入院: nyuuin → にゅういん (4文字) — nyu(2) + u(1) + i(1) + n(1)=5? Let me check.
+    # nyu → にゅ(2), u → う(1), i → い(1), n(末尾) → ん(1) → total 5
+    assert f("nyuuin") == 5
+    # 管理: kanri → かんり (3文字)
+    assert f("kanri") == 3
+    # 病棟: byoutou → びょうとう (5文字)
+    assert f("byoutou") == 5
+    # 静止: seishi → せいし (3文字)
+    assert f("seishi") == 3
+    # コントローラー: kontoro-ra- → こんとろーらー (7文字)
+    assert f("kontoro-ra-") == 7
+    # 促音: kekka → けっか (3文字)
+    assert f("kekka") == 3
+    # n' handling: kan'i → かんい (3文字)
+    assert f("kan'i") == 3
+    # 長音ダッシュ: a- → あー (2文字)
+    assert f("a-") == 2
 
 
 def test_type_kanji_via_ime_aborts_before_typing_when_capture_unavailable(monkeypatch):

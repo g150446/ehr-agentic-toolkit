@@ -142,9 +142,7 @@ _CHAR_ASCII_FALLBACK: dict[str, str] = {
 
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 _RUNTIME_OPTIONS = SimpleNamespace(
-    mactest=False,
     openrouter_model=None,
-    local_client=None,
 )
 _DEFAULT_SEGMENTATION_RUNTIME = {
     "url": mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
@@ -224,7 +222,6 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
     """Split raw CLI args into positional arguments and normalized option state."""
     win10 = False
     clear_field = False
-    mactest = False
     openrouter_model: Optional[str] = None
     filtered_args: list[str] = []
     index = 0
@@ -234,13 +231,13 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
             win10 = True
         elif arg == "--clear":
             clear_field = True
-        elif arg == "--mactest":
-            mactest = True
         elif arg == "--openrouter":
             if index + 1 >= len(args):
                 raise RuntimeError("--openrouter の後にモデル名を指定してください")
             openrouter_model = args[index + 1]
             index += 1
+        elif arg.startswith("--"):
+            raise RuntimeError(f"不明なオプション: {arg}")
         else:
             filtered_args.append(arg)
         index += 1
@@ -249,7 +246,6 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         "win10": win10,
         "windows_version": "windows10" if win10 else "windows7",
         "clear_field": clear_field,
-        "mactest": mactest,
         "openrouter_model": openrouter_model,
     }
     return filtered_args, option_summary
@@ -275,166 +271,10 @@ def _build_run_log_header(
     return "\n".join(lines)
 
 
-class MacTestClient:
-    """BLE の代わりに pyautogui でローカル Mac を操作するクライアント。"""
-
-    def __init__(self) -> None:
-        try:
-            import pyautogui
-        except ImportError as exc:
-            raise RuntimeError(
-                "--mactest を使うには pyautogui が必要です。requirements をインストールしてください"
-            ) from exc
-        pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.02
-        self._pyautogui = pyautogui
-
-    def is_server_running(self) -> bool:
-        return True
-
-    def switch_to_mouse_mode(self) -> bool:
-        return True
-
-    def switch_to_keyboard_mode(self) -> bool:
-        return True
-
-    def move_mouse_to_position(self, x: int, y: int) -> bool:
-        self._pyautogui.moveTo(x, y, duration=0)
-        return True
-
-    def move_mouse_absolute(self, x: int, y: int) -> bool:
-        return self.move_mouse_to_position(x, y)
-
-    def move_mouse(self, x: int, y: int) -> bool:
-        self._pyautogui.moveRel(x, y, duration=0)
-        return True
-
-    def click(self) -> bool:
-        self._pyautogui.click()
-        return True
-
-    def double_click(self) -> bool:
-        self._pyautogui.doubleClick()
-        return True
-
-    def right_click(self) -> bool:
-        self._pyautogui.rightClick()
-        return True
-
-    def scroll(self, amount: int) -> bool:
-        self._pyautogui.scroll(amount)
-        return True
-
-    def type_text(self, text: str) -> bool:
-        if not text.isascii():
-            bad = [(i, c, f"U+{ord(c):04X}") for i, c in enumerate(text) if ord(c) > 127]
-            raise ValueError(
-                f"type_text received non-ASCII characters {bad}; "
-                f"these would produce unpredictable HID key events"
-            )
-        buffer: list[str] = []
-        for ch in text:
-            if ch == "\x08":
-                if buffer:
-                    self._pyautogui.write("".join(buffer), interval=0.01)
-                    buffer.clear()
-                self._pyautogui.press("backspace")
-                continue
-            if ch == "\n":
-                if buffer:
-                    self._pyautogui.write("".join(buffer), interval=0.01)
-                    buffer.clear()
-                self._pyautogui.press("enter")
-                continue
-            buffer.append(ch)
-        if buffer:
-            self._pyautogui.write("".join(buffer), interval=0.01)
-        return True
-
-    def press_key(self, key: str) -> bool:
-        normalized = key.lower()
-        if normalized in {"esc", "escape"}:
-            self._pyautogui.press("esc")
-            return True
-        if normalized == "zenkaku":
-            self._pyautogui.hotkey("ctrl", "space")
-            return True
-        if normalized in {"ctrl+end", "command+end"}:
-            self._pyautogui.hotkey("command", "down")
-            return True
-        if normalized == "shift_right":
-            self._pyautogui.hotkey("shift", "right")
-            return True
-        if normalized == "lparen":
-            self._pyautogui.hotkey("shift", "9")
-            return True
-        if normalized == "rparen":
-            self._pyautogui.hotkey("shift", "0")
-            return True
-        if normalized == "percent":
-            self._pyautogui.hotkey("shift", "5")
-            return True
-        if normalized == "plus":
-            self._pyautogui.hotkey("shift", "=")
-            return True
-        if normalized == "colon":
-            self._pyautogui.hotkey("shift", ";")
-            return True
-        if "+" in normalized:
-            keys = [self._map_key_name(part) for part in normalized.split("+")]
-            self._pyautogui.hotkey(*keys)
-            return True
-        self._pyautogui.press(self._map_key_name(normalized))
-        return True
-
-    def press_ime_toggle(self) -> bool:
-        return self.press_key("zenkaku")
-
-    def send_command(self, command: str) -> bool:
-        if command.startswith("type:"):
-            return self.type_text(command[len("type:"):])
-        if command.startswith("key:"):
-            return self.press_key(command[len("key:"):])
-        return False
-
-    def clear_editor_document(self, max_chars: int = 200, delay: float = 0.12) -> None:
-        self.click()
-        time.sleep(0.2)
-        self.press_key("escape")
-        time.sleep(0.1)
-        self.press_key("ctrl+end")
-        time.sleep(0.1)
-        for _ in range(max_chars):
-            self.press_key("backspace")
-            time.sleep(delay)
-
-    @staticmethod
-    def _map_key_name(key: str) -> str:
-        mapping = {
-            "enter": "enter",
-            "return": "enter",
-            "space": "space",
-            "tab": "tab",
-            "backspace": "backspace",
-            "delete": "delete",
-            "up": "up",
-            "down": "down",
-            "left": "left",
-            "right": "right",
-            "f6": "f6",
-            "f7": "f7",
-            "f8": "f8",
-            "f9": "f9",
-            "lbracket": "[",
-            "rbracket": "]",
-        }
-        return mapping.get(key, key)
 
 
-def _configure_runtime(*, mactest: bool = False, openrouter_model: Optional[str] = None) -> None:
-    _RUNTIME_OPTIONS.mactest = mactest
+def _configure_runtime(*, openrouter_model: Optional[str] = None) -> None:
     _RUNTIME_OPTIONS.openrouter_model = openrouter_model
-    _RUNTIME_OPTIONS.local_client = None
 
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _DEFAULT_SEGMENTATION_RUNTIME["url"]
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = _DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -490,25 +330,12 @@ def _ime_text_runtime_label() -> str:
 
 
 def capture_screen(*, device_index: int, width: int, height: int, **kwargs):
-    if not _RUNTIME_OPTIONS.mactest:
-        return _capture_screen_hdmi(
-            device_index=device_index,
-            width=width,
-            height=height,
-            **kwargs,
-        )
-    client = _get_local_input_client()
-    screenshot = client._pyautogui.screenshot()
-    rgb = np.array(screenshot)
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-
-def _get_local_input_client() -> MacTestClient:
-    client = _RUNTIME_OPTIONS.local_client
-    if client is None:
-        client = MacTestClient()
-        _RUNTIME_OPTIONS.local_client = client
-    return client
+    return _capture_screen_hdmi(
+        device_index=device_index,
+        width=width,
+        height=height,
+        **kwargs,
+    )
 
 
 def _load_ocr_engine(config):
@@ -531,9 +358,6 @@ def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:
     Raises:
         RuntimeError: タイムアウトまでに接続が確立されなかった場合
     """
-    if _RUNTIME_OPTIONS.mactest:
-        return _get_local_input_client()
-
     client = BLEClient()
     if client.is_server_running():
         return client
@@ -1731,6 +1555,110 @@ def _text_to_hiragana_len(text: str) -> int:
     return max(len(hira), 1)
 
 
+# ── ローマ字→ひらがな文字数 変換テーブル ──
+# IME のローマ字入力で生成されるひらがなの *文字数* をマッピングする。
+# 長音記号 '-' はひらがなの「ー」(1文字)に対応する。
+_ROMAJI_KANA_COUNTS: dict[str, int] = {}
+
+def _build_romaji_kana_table() -> dict[str, int]:
+    """ローマ字→ひらがな文字数のマッピングテーブルを構築する。"""
+    t: dict[str, int] = {}
+    # 3文字コンボ (拗音: 2ひらがな文字を生成)
+    for prefix in ("ky", "gy", "sh", "ch", "ny", "hy", "by", "py", "my", "ry", "jy", "dy", "ty"):
+        for vowel in ("a", "u", "o"):
+            t[prefix + vowel] = 2
+    # shi/chi/tsu → 1ひらがな文字
+    t["shi"] = 1
+    t["chi"] = 1
+    t["tsu"] = 1
+    # 2文字コンボ (基本 CV)
+    for c in ("k", "g", "s", "z", "t", "d", "n", "h", "b", "p", "m", "r", "w", "y", "v"):
+        for v in ("a", "i", "u", "e", "o"):
+            if c + v not in t:
+                t[c + v] = 1
+    # ja/ju/jo → 2ひらがな文字 (じゃ/じゅ/じょ)
+    for combo in ("ja", "ju", "jo"):
+        t[combo] = 2
+    # fa/fi/fu/fe/fo → 2ひらがな文字 (ふぁ/ふぃ/ふ/ふぇ/ふぉ), ただし fu → 1
+    t["fu"] = 1
+    t["fa"] = 2
+    t["fi"] = 2
+    t["fe"] = 2
+    t["fo"] = 2
+    # 1文字母音
+    for v in ("a", "i", "u", "e", "o"):
+        t[v] = 1
+    # 長音記号
+    t["-"] = 1
+    return t
+
+_ROMAJI_KANA_COUNTS = _build_romaji_kana_table()
+
+
+def _romaji_to_hiragana_len(romaji: str) -> int:
+    """ローマ字文字列から IME が生成するひらがなの文字数を計算する。
+
+    pykakasi の漢字→ひらがな変換 (_text_to_hiragana_len) は熟語の読みが
+    実際にタイプしたローマ字と異なる場合がある
+    (例: 静注 → pykakasi は「じょうちゅう」(6文字)、実際は「せいちゅう」(5文字))。
+    この関数はローマ字文字列を直接解析して正確なひらがな文字数を返す。
+    """
+    s = romaji.lower()
+    count = 0
+    i = 0
+    while i < len(s):
+        # 促音: 同じ子音の連続 (nn を除く。nn は「ん」)
+        if (
+            i + 1 < len(s)
+            and s[i] == s[i + 1]
+            and s[i].isalpha()
+            and s[i] not in "aiueon"
+        ):
+            count += 1  # っ
+            i += 1
+            continue
+
+        # 「ん」: n + 非母音/非y (n' も含む)
+        if s[i] == "n":
+            # n' → ん
+            if i + 1 < len(s) and s[i + 1] == "'":
+                count += 1
+                i += 2
+                continue
+            # nn → ん
+            if i + 1 < len(s) and s[i + 1] == "n":
+                count += 1
+                i += 2
+                continue
+            # 末尾の n → ん
+            if i + 1 >= len(s):
+                count += 1
+                i += 1
+                continue
+            # n + 子音 (母音/y 以外) → ん
+            if s[i + 1] not in "aiueoy":
+                count += 1
+                i += 1
+                continue
+
+        # テーブル検索: 3文字 → 2文字 → 1文字 の最長一致
+        matched = False
+        for length in (3, 2, 1):
+            chunk = s[i:i + length]
+            if chunk in _ROMAJI_KANA_COUNTS:
+                count += _ROMAJI_KANA_COUNTS[chunk]
+                i += length
+                matched = True
+                break
+
+        if not matched:
+            # 不明文字 (数字、句読点など) → 1文字として扱う
+            count += 1
+            i += 1
+
+    return max(count, 1)
+
+
 def _has_ime_composition(frame: np.ndarray) -> bool:
     """フレームに IME 組成テキスト（変換中・ひらがな）がアクティブなら True を返す。
 
@@ -1748,6 +1676,7 @@ def _cancel_ime_popup_safe(
     text: str,
     wait: float = 0.15,
     config=None,
+    romaji: str = "",
 ) -> None:
     """IMEポップアップをコミットなしでキャンセルし、組成バッファをクリアする。
 
@@ -1766,8 +1695,12 @@ def _cancel_ime_popup_safe(
         text: IME組成バッファに対応する漢字/かな文字列 (ひらがな文字数の計算に使用)
         wait: キー操作間の待機秒数
         config: キャプチャ設定 (指定時はVLM後確認ループを実行)
+        romaji: 入力に使用したローマ字 (指定時はより正確なひらがな文字数を計算)
     """
-    hira_len = _text_to_hiragana_len(text)
+    if romaji:
+        hira_len = _romaji_to_hiragana_len(romaji)
+    else:
+        hira_len = _text_to_hiragana_len(text)
 
     # Step 1: Esc でポップアップを閉じる（インライン変換状態へ）
     client.press_key("escape")
@@ -2034,7 +1967,7 @@ def _try_helper_word_fallback(
     # コミットなしでキャンセルしてから問い合わせに入る。問い合わせ待ちの間に
     # 誤候補（例: 「化」）を残したままにしないため、先に IME 組成を必ずクリアする。
     print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
-    _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config)
+    _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config, romaji=romaji)
     # _cancel_ime_popup_safe 内で固定 BS + VLM ガード済み。追加の安全ネットとして
     # VLM 確認のみ実施（budget=2 で過削除を防ぐ）。
     _clear_pending_ime_composition(
@@ -2085,7 +2018,7 @@ def _try_helper_word_fallback(
         )
         if helper_frame is None:
             print("  [ヘルパー単語] フレーム取得失敗 → 次の提案を試みます")
-            _cancel_ime_popup_safe(client, helper_word, config=config)
+            _cancel_ime_popup_safe(client, helper_word, config=config, romaji=helper_romaji)
             continue
 
         _save_debug_image(helper_frame, f"ime_helper_{target_kanji}_{helper_word}")
@@ -2186,7 +2119,7 @@ def _try_helper_word_fallback(
                     )
                 return True
             print(f"  [ヘルパー単語] 「{helper_word}」がハイライト候補に見つかりません → 次の提案を試みます")
-            _cancel_ime_popup_safe(client, helper_word, config=config)
+            _cancel_ime_popup_safe(client, helper_word, config=config, romaji=helper_romaji)
             continue
 
         print(f"  [ヘルパー単語] 「{helper_word}」→ 現在候補 {highlighted_text!r} を Enter で確定")
@@ -2765,7 +2698,6 @@ def _print_usage() -> None:
     print("  --win10              Windows 10 モードで実行（カンマ後 Enter、インライン変換スキップ等）")
     print("  --clear              入力前に Backspace を 50 回送信してフィールドをクリアする")
     print("  --openrouter <model> 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
-    print("  --mactest            HDMI/BLE の代わりに Mac 画面 + pyautogui でローカル検証する")
     print("  --help, -h, help     このヘルプを表示")
     print()
     print("コマンド:")
@@ -2788,7 +2720,6 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input --win10 --clear 肺炎')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-9b "両肺野に"')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-35b-a3b "聴診"')
-    print('  python -m automation.ehr_input --mactest "両肺野に"')
     print('  python -m automation.ehr_input "COVID-19の検査"')
     print('  python -m automation.ehr_input note.txt')
     print('  python -m automation.ehr_input "open test" 肺炎')
@@ -2798,12 +2729,11 @@ def _print_usage() -> None:
 
 def _run_cli_with_parsed_args(args: list[str], option_summary: dict[str, object]) -> int:
     """Run the CLI using already-normalized option state."""
-    mactest = bool(option_summary["mactest"])
     openrouter_model = option_summary["openrouter_model"]
     clear_field = bool(option_summary["clear_field"])
     windows_version = str(option_summary["windows_version"])
 
-    _configure_runtime(mactest=mactest, openrouter_model=openrouter_model)
+    _configure_runtime(openrouter_model=openrouter_model)
 
     if not args:
         # 引数なし: デフォルト動作（後方互換）
