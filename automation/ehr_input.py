@@ -2280,11 +2280,28 @@ def _extract_ime_candidates(ocr_texts: list[str]) -> list[str]:
     return result
 
 
+def _is_kana_kanji_crosstype(a: str, b: str) -> bool:
+    """Return True if one char is kana and the other is kanji.
+
+    Kana (hiragana U+3040-30FF) and kanji (CJK U+4E00-9FFF) belong to
+    different character classes.  A single-char mismatch between them is
+    almost never OCR noise — it indicates a genuinely different candidate.
+    """
+    a_kana = '\u3040' <= a <= '\u30FF'
+    b_kana = '\u3040' <= b <= '\u30FF'
+    a_kanji = '\u4E00' <= a <= '\u9FFF'
+    b_kanji = '\u4E00' <= b <= '\u9FFF'
+    return (a_kana and b_kanji) or (a_kanji and b_kana)
+
+
 def _ime_candidate_matches(target: str, combined: str) -> bool:
     """IME候補OCRにターゲット文字列が含まれているか確認する。
 
     OCR ノイズを 1 文字まで許容する: 先頭文字が一致し、残りの差異が 1 文字以内の
     部分文字列も一致とみなす（例: 感冒 → 感昌 のような視覚的誤読への対策）。
+
+    ただし、かな↔漢字の差異は OCR ノイズとみなさない。
+    例: 直地に (地=kanji) は 直ちに (ち=hiragana) に一致しない。
     """
     if target in combined:
         return True
@@ -2294,7 +2311,15 @@ def _ime_candidate_matches(target: str, combined: str) -> bool:
     for i in range(len(combined) - n + 1):
         substr = combined[i:i + n]
         if substr[0] == target[0]:
-            mismatches = sum(a != b for a, b in zip(substr, target))
+            mismatches = 0
+            for a, b in zip(substr, target):
+                if a != b:
+                    if _is_kana_kanji_crosstype(a, b):
+                        mismatches = 2  # not OCR noise → reject
+                        break
+                    mismatches += 1
+                    if mismatches > 1:
+                        break
             if mismatches <= 1:
                 return True
     return False
@@ -2400,11 +2425,16 @@ def _find_best_candidate_match(
     # OCR sometimes misreads only the first kanji (e.g., '著'→'善', '聴'→'徳').
     # If all chars except the first match exactly, the first char is a visual confusible
     # and this is almost certainly an OCR misread of the correct candidate.
-    # Requires length ≥ 2 to avoid false positives on single-char targets.
-    if len(target) >= 2:
+    # Requires length ≥ 2 and both first characters must be kanji — the pass
+    # targets kanji↔kanji visual confusibles only (e.g., 署↔著).
+    # Kana, Latin, or digit first characters are not visual confusibles of kanji.
+    if len(target) >= 2 and '\u4E00' <= target[0] <= '\u9FFF':
         target_suffix = target[1:]
         for n, c in numbered:
-            if len(c) == len(target) and c[1:] == target_suffix and c[0] != target[0]:
+            if (len(c) == len(target)
+                    and c[1:] == target_suffix
+                    and c[0] != target[0]
+                    and '\u4E00' <= c[0] <= '\u9FFF'):
                 print(f"  [候補照合/suffix] {c!r} suffix={target_suffix!r} ≈ {target!r} → 採用")
                 return (n, c)
     return None
@@ -2569,6 +2599,10 @@ def _kanji_to_romaji(text: str) -> str:
         "胸水": "kyousui",
         "肺炎": "haien",
         "動脈血": "doumyakuketsu",
+        # 生食 (せいしょく) – 医療略語: 生理食塩水。pykakasi は いけづき と誤読する。
+        "生食": "seishoku",
+        # 静注 (せいちゅう) – 医療略語: 静脈注射。pykakasi は じょうちゅう と誤読する。
+        "静注": "seichuu",
     }
     if text in _ROMAJI_OVERRIDES:
         return _ROMAJI_OVERRIDES[text]

@@ -1068,6 +1068,59 @@ def test_find_best_candidate_match_allows_longer_romaji_match(monkeypatch):
     assert result == (5, "見とめる")
 
 
+# ------------------------------------------------------------------
+# 生食 romaji override (medical: saline = seishoku, not ikezuki)
+# ------------------------------------------------------------------
+
+def test_kanji_to_romaji_seishoku():
+    """生食 (medical saline) must return 'seishoku', not pykakasi's 'ikezuki'."""
+    assert ehr_input._kanji_to_romaji("生食") == "seishoku"
+
+
+def test_kanji_to_romaji_seichuu():
+    """静注 (medical IV injection) must return 'seichuu'."""
+    assert ehr_input._kanji_to_romaji("静注") == "seichuu"
+
+
+def test_validate_vlm_romaji_preserves_seishoku():
+    """_validate_vlm_romaji must NOT override VLM's correct 'seishoku' for 生食."""
+    segments = [{"text": "生食", "romaji": "seishoku"}]
+    result = ehr_input._validate_vlm_romaji(segments)
+    assert result[0] == {"text": "生食", "romaji": "seishoku"}
+
+
+# ------------------------------------------------------------------
+# kana↔kanji crosstype guard in _ime_candidate_matches
+# ------------------------------------------------------------------
+
+def test_ime_candidate_matches_rejects_kana_kanji_crosstype():
+    """直地に must NOT match 直ちに (地=kanji ≠ ち=hiragana)."""
+    assert ehr_input._ime_candidate_matches("直ちに", "直地に") is False
+
+
+def test_ime_candidate_matches_accepts_kanji_kanji_noise():
+    """感昌 must match 感冒 (昌↔冒 are both kanji — legitimate OCR noise)."""
+    assert ehr_input._ime_candidate_matches("感冒", "感昌") is True
+
+
+# ------------------------------------------------------------------
+# Pass 5: visual confusible suffix — kanji-only first chars
+# ------------------------------------------------------------------
+
+def test_find_best_candidate_match_rejects_hiragana_first_suffix():
+    """Pass 5 must NOT match 'なって' for '伴って' (な=hiragana ≠ 伴=kanji)."""
+    candidates = [(1, "なって")]
+    result = ehr_input._find_best_candidate_match("伴って", candidates)
+    assert result is None
+
+
+def test_find_best_candidate_match_accepts_kanji_visual_confusible():
+    """Pass 5 must match '署明な' for '著明な' (署↔著 are both kanji confusibles)."""
+    candidates = [(3, "署明な")]
+    result = ehr_input._find_best_candidate_match("著明な", candidates)
+    assert result == (3, "署明な")
+
+
 def test_type_kanji_via_ime_aborts_before_typing_when_capture_unavailable(monkeypatch):
     events = []
     config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
