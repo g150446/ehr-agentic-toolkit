@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 import automation.ehr_input as ehr_input
+import automation.mlx_vlm_ime as mlx_vlm_ime
 from automation.mlx_vlm_segmentation import MlxVlmSegmentationError
 
 
@@ -434,6 +435,13 @@ def _make_frame(h=200, w=400) -> np.ndarray:
     return np.zeros((h, w, 3), dtype=np.uint8)
 
 
+def _make_patient_record_frame() -> np.ndarray:
+    frame = np.full((240, 600, 3), 255, dtype=np.uint8)
+    for x in (100, 200, 300, 400):
+        frame[:, x - 1:x + 2] = 180
+    return frame
+
+
 
 def test_detect_ime_mode_returns_japanese_via_vlm(monkeypatch):
     """detect_ime_mode は VLM が 'あ' を返せば 'japanese' を返す。"""
@@ -564,7 +572,12 @@ def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
         "_reset_ime_before_helper_lookup",
-        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: True,
+        lambda client, config, target_kanji, left_context="", anchor_text="", baseline_state=None, max_escape_count=4, wait=0.5: True,
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_baseline",
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": {"final_line": "過", "char_count": 1, "anchor_present": True},
     )
     monkeypatch.setattr(ehr_input, "_cancel_ime_popup_safe", lambda *args, **kwargs: None)
     monkeypatch.setattr(ehr_input, "_clear_pending_ime_composition", lambda *args, **kwargs: None)
@@ -597,7 +610,18 @@ def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
     assert events.count(("key", "space")) == 10
     assert ("key", "enter") in events
     assert ("key", "backspace") in events
-    assert ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "_current_ime_mode": "japanese"}) in events
+    assert (
+        "ime",
+        "bouchou",
+        "膨張",
+        {
+            "wait_sec": 0.0,
+            "_current_ime_mode": "japanese",
+            "_typed_prefix_context": "過",
+            "_helper_anchor_text": "過",
+            "_helper_reset_baseline": {"final_line": "過", "char_count": 1, "anchor_present": True},
+        },
+    ) in events
 
 
 def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
@@ -632,7 +656,12 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
         "_reset_ime_before_helper_lookup",
-        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: True,
+        lambda client, config, target_kanji, left_context="", anchor_text="", baseline_state=None, max_escape_count=4, wait=0.5: True,
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_baseline",
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": {"final_line": "過", "char_count": 1, "anchor_present": True},
     )
     monkeypatch.setattr(ehr_input, "_cancel_ime_popup_safe", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -658,7 +687,18 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
     assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0)
     assert ("cleanup", "過剰", 1) in events
     assert events.index(("cleanup", "過剰", 1)) < events.index(
-        ("ime", "bouchou", "膨張", {"wait_sec": 0.0, "_current_ime_mode": "japanese"})
+        (
+            "ime",
+            "bouchou",
+            "膨張",
+            {
+                "wait_sec": 0.0,
+                "_current_ime_mode": "japanese",
+                "_typed_prefix_context": "過",
+                "_helper_anchor_text": "過",
+                "_helper_reset_baseline": {"final_line": "過", "char_count": 1, "anchor_present": True},
+            },
+        )
     )
 
 
@@ -684,8 +724,8 @@ def test_try_helper_word_fallback_resets_ime_with_vlm_checked_escape_loop_before
     monkeypatch.setattr(
         ehr_input,
         "_reset_ime_before_helper_lookup",
-        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: (
-            events.append(("reset", target_kanji, left_context, max_escape_count, wait)) or True
+        lambda client, config, target_kanji, left_context="", anchor_text="", baseline_state=None, max_escape_count=4, wait=0.5: (
+            events.append(("reset", target_kanji, left_context, anchor_text, baseline_state, max_escape_count, wait)) or True
         ),
     )
     monkeypatch.setattr(
@@ -702,15 +742,15 @@ def test_try_helper_word_fallback_resets_ime_with_vlm_checked_escape_loop_before
         lambda helper_word, image, debug_name="": [(1, "過剰")],
     )
 
-    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0)
-    assert events[:2] == [("reset", "過", "", 4, 0.5), ("suggest", "過")]
+    assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0, anchor_text="咽頭")
+    assert events[:2] == [("reset", "過", "", "咽頭", None, 4, 0.5), ("suggest", "過")]
 
 
 def test_try_helper_word_fallback_stops_when_adaptive_reset_is_not_safe(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
         "_reset_ime_before_helper_lookup",
-        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: False,
+        lambda client, config, target_kanji, left_context="", anchor_text="", baseline_state=None, max_escape_count=4, wait=0.5: False,
     )
     monkeypatch.setattr(
         ehr_input,
@@ -738,6 +778,11 @@ def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
     monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: {"血": "ketsu"}[text])
     monkeypatch.setattr(
         ehr_input,
+        "_capture_helper_reset_baseline",
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": {"final_line": "咽頭", "char_count": 2, "anchor_present": True},
+    )
+    monkeypatch.setattr(
+        ehr_input,
         "type_kanji_via_ime",
         lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
     )
@@ -747,11 +792,24 @@ def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
         config,
         remaining_target="血",
         wait_sec=0.0,
+        typed_prefix_context="咽頭",
+        helper_anchor_text="咽頭",
     )
 
     assert events[0] == ("cancel", "血")
     assert events[1][0] == "clear"
-    assert events[2] == ("ime", "ketsu", "血", {"wait_sec": 0.0, "_current_ime_mode": "japanese"})
+    assert events[2] == (
+        "ime",
+        "ketsu",
+        "血",
+        {
+            "wait_sec": 0.0,
+            "_current_ime_mode": "japanese",
+            "_typed_prefix_context": "咽頭",
+            "_helper_anchor_text": "咽頭",
+            "_helper_reset_baseline": {"final_line": "咽頭", "char_count": 2, "anchor_present": True},
+        },
+    )
 
 
 def test_cancel_ime_popup_safe_vlm_guided_stops_when_composition_cleared(monkeypatch):
@@ -1011,15 +1069,102 @@ def test_reset_ime_before_helper_lookup_stops_when_vlm_says_ready(monkeypatch):
         {"left_context_preserved": True, "composition_cleared": True, "ready": True},
     ])
     monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
-    monkeypatch.setattr(ehr_input, "assess_helper_reset_state", lambda frame, left_context, target_text: next(states))
+    captured = []
+    monkeypatch.setattr(
+        ehr_input,
+        "assess_helper_reset_state",
+        lambda frame, left_context, anchor_text, target_text: (
+            captured.append((left_context, anchor_text, target_text)) or next(states)
+        ),
+    )
 
     assert ehr_input._reset_ime_before_helper_lookup(
         DummyClient(),
         config,
         target_kanji="咽頭痛",
         left_context="昨日から",
+        anchor_text="咽頭",
     )
     assert events == [("key", "escape"), ("key", "escape")]
+    assert captured == [("昨日から", "咽頭", "咽頭痛"), ("昨日から", "咽頭", "咽頭痛")]
+
+
+def test_reset_ime_before_helper_lookup_stops_when_compare_matches_baseline(monkeypatch):
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    frame = _make_frame()
+    baseline_crop = np.zeros((40, 120, 3), dtype=np.uint8)
+    current_crop = np.ones((40, 120, 3), dtype=np.uint8)
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    states = iter([False, True])
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_compare_frame",
+        lambda frame, debug_name="": current_crop,
+    )
+    captured = []
+    monkeypatch.setattr(
+        ehr_input,
+        "compare_helper_reset_images",
+        lambda baseline, current, left_context="", anchor_text="", target_text="": (
+            captured.append((baseline, current, left_context, anchor_text, target_text)) or next(states)
+        ),
+    )
+
+    assert ehr_input._reset_ime_before_helper_lookup(
+        DummyClient(),
+        config,
+        target_kanji="痛",
+        left_context="昨日から感冒症状(",
+        anchor_text="咽頭",
+        baseline_state={"cropped_frame": baseline_crop, "anchor_text": "咽頭"},
+    )
+    assert events == [("key", "escape"), ("key", "escape")]
+    trimmed_left_context = ehr_input._trim_helper_left_context("昨日から感冒症状(")
+    assert captured == [
+        (baseline_crop, current_crop, trimmed_left_context, "咽頭", "痛"),
+        (baseline_crop, current_crop, trimmed_left_context, "咽頭", "痛"),
+    ]
+
+
+def test_reset_ime_before_helper_lookup_fails_after_compare_never_matches(monkeypatch):
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    frame = _make_frame()
+    baseline_crop = np.zeros((40, 120, 3), dtype=np.uint8)
+    current_crop = np.ones((40, 120, 3), dtype=np.uint8)
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_compare_frame",
+        lambda frame, debug_name="": current_crop,
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "compare_helper_reset_images",
+        lambda baseline, current, left_context="", anchor_text="", target_text="": False,
+    )
+
+    assert not ehr_input._reset_ime_before_helper_lookup(
+        DummyClient(),
+        config,
+        target_kanji="痛",
+        anchor_text="咽頭",
+        baseline_state={"cropped_frame": baseline_crop, "anchor_text": "咽頭"},
+    )
+    assert events == [("key", "escape"), ("key", "escape"), ("key", "escape"), ("key", "escape")]
 
 
 def test_reset_ime_before_helper_lookup_aborts_when_left_context_breaks(monkeypatch):
@@ -1036,7 +1181,7 @@ def test_reset_ime_before_helper_lookup_aborts_when_left_context_breaks(monkeypa
     monkeypatch.setattr(
         ehr_input,
         "assess_helper_reset_state",
-        lambda frame, left_context, target_text: {
+        lambda frame, left_context, anchor_text, target_text: {
             "left_context_preserved": False,
             "composition_cleared": False,
             "ready": False,
@@ -1048,8 +1193,126 @@ def test_reset_ime_before_helper_lookup_aborts_when_left_context_breaks(monkeypa
         config,
         target_kanji="咽頭痛",
         left_context="昨日から",
+        anchor_text="咽頭",
     )
     assert events == [("key", "escape")]
+
+
+def test_assess_helper_reset_state_prompt_uses_anchor_text(monkeypatch):
+    frame = _make_frame()
+    captured = {}
+
+    monkeypatch.setattr(mlx_vlm_ime, "crop_to_input_region", lambda image, **kwargs: image)
+    monkeypatch.setattr(mlx_vlm_ime, "_crop_center_band", lambda image, **kwargs: image)
+    monkeypatch.setattr(mlx_vlm_ime, "_encode_image_data_url", lambda image, **kwargs: "data:image/mock")
+
+    def _fake_call(data_url, prompt, timeout):
+        captured["prompt"] = prompt
+        return '{"left_context_preserved": true, "composition_cleared": false, "ready": false}'
+
+    monkeypatch.setattr(mlx_vlm_ime, "_call_mlx_vlm_with_image", _fake_call)
+
+    state = mlx_vlm_ime.assess_helper_reset_state(
+        frame,
+        left_context="昨日から感冒症状(",
+        anchor_text="咽頭",
+        target_text="痛",
+    )
+
+    assert state == {
+        "left_context_preserved": True,
+        "composition_cleared": False,
+        "ready": False,
+    }
+    assert "確定済みアンカー語として '咽頭'" in captured["prompt"]
+    assert "'咽頭' の直後に、'痛'" in captured["prompt"]
+
+
+def test_detect_patient_record_panel3_finds_third_pane_from_four_gray_dividers():
+    frame = _make_patient_record_frame()
+
+    assert mlx_vlm_ime.detect_patient_record_panel3(frame) == (200, 300)
+
+
+def test_detect_patient_record_panel3_saves_opencv_overlay(monkeypatch):
+    frame = _make_patient_record_frame()
+    saved = []
+
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_save_debug_frame",
+        lambda image, *, name, prefix: saved.append((image.shape, name, prefix)),
+    )
+
+    assert mlx_vlm_ime.detect_patient_record_panel3(frame, debug_name="helper_reset_panel") == (200, 300)
+    assert saved == [((240, 600, 3), "helper_reset_panel", "debug_panel_detection")]
+
+
+def test_assess_helper_reset_state_requests_panel_and_vlm_debug(monkeypatch):
+    frame = _make_frame()
+    calls = []
+
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_input_region",
+        lambda image, **kwargs: calls.append(("crop", kwargs.get("debug_name"))) or image,
+    )
+    monkeypatch.setattr(mlx_vlm_ime, "_crop_center_band", lambda image, **kwargs: image)
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_encode_image_data_url",
+        lambda image, **kwargs: calls.append(("encode", kwargs.get("debug_name"))) or "data:image/mock",
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_call_mlx_vlm_with_image",
+        lambda data_url, prompt, timeout: '{"left_context_preserved": true, "composition_cleared": true, "ready": true}',
+    )
+
+    state = mlx_vlm_ime.assess_helper_reset_state(
+        frame,
+        left_context="昨日から",
+        anchor_text="咽頭",
+        target_text="痛",
+    )
+
+    assert state["ready"] is True
+    assert calls == [("crop", "helper_reset_panel"), ("encode", "helper_reset_state")]
+
+
+def test_compare_helper_reset_images_prompt_uses_anchor_and_two_images(monkeypatch):
+    baseline = _make_frame()
+    current = _make_frame()
+    calls = []
+    captured = {}
+
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_encode_image_data_url",
+        lambda image, **kwargs: calls.append(("encode", kwargs.get("debug_name"))) or f"data:image/{len(calls)}",
+    )
+
+    def _fake_call(data_urls, prompt, timeout):
+        captured["data_urls"] = data_urls
+        captured["prompt"] = prompt
+        return "yes"
+
+    monkeypatch.setattr(mlx_vlm_ime, "_call_mlx_vlm_with_images", _fake_call)
+
+    assert mlx_vlm_ime.compare_helper_reset_images(
+        baseline,
+        current,
+        anchor_text="咽頭",
+        target_text="痛",
+        left_context="昨日から感冒症状(",
+    ) is True
+    assert calls == [
+        ("encode", "helper_reset_compare_baseline"),
+        ("encode", "helper_reset_compare_current"),
+    ]
+    assert captured["data_urls"] == ["data:image/1", "data:image/2"]
+    assert "最後の確定語 '咽頭' の直後" in captured["prompt"]
+    assert "yes または no のみで答えてください" in captured["prompt"]
 
 
 def test_type_japanese_sentence_routes_japanese_punctuation_via_ascii_keys(monkeypatch):
@@ -1108,10 +1371,68 @@ def test_type_japanese_sentence_passes_prefix_context_to_kanji_segments(monkeypa
         "type_kanji_via_ime",
         lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
     )
+    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
 
     ehr_input.type_japanese_sentence("から咽頭痛")
 
-    assert ("ime", "intoutsuu", "咽頭痛", {"_current_ime_mode": "japanese", "_typed_prefix_context": "から"}) in events
+    assert (
+        "ime",
+        "intoutsuu",
+        "咽頭痛",
+        {
+            "_current_ime_mode": "japanese",
+            "_typed_prefix_context": "から",
+            "_helper_anchor_text": "から",
+            "_helper_reset_baseline": None,
+        },
+    ) in events
+
+
+def test_type_japanese_sentence_uses_previous_confirmed_segment_as_helper_anchor(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "咽頭", "romaji": "intou"},
+            {"text": "痛", "romaji": "ita"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_baseline",
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": (
+            {"final_line": "咽頭", "char_count": 2, "anchor_present": True}
+            if anchor_text == "咽頭"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+
+    ehr_input.type_japanese_sentence("咽頭痛")
+
+    assert events == [
+        ("ime", "intou", "咽頭", {"_current_ime_mode": "japanese", "_typed_prefix_context": "", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
+        ("ime", "ita", "痛", {"_current_ime_mode": "japanese", "_typed_prefix_context": "咽頭", "_helper_anchor_text": "咽頭", "_helper_reset_baseline": {"final_line": "咽頭", "char_count": 2, "anchor_present": True}}),
+    ]
 
 
 def test_segment_japanese_with_openrouter_uses_runtime_aware_logs(monkeypatch):

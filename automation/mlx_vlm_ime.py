@@ -59,6 +59,22 @@ _MIN_FRAME_HEIGHT = 80
 _MIN_FRAME_WIDTH = 200
 
 
+def _captures_dir() -> str:
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "captures")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _safe_debug_name(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)
+
+
+def _save_debug_frame(frame: np.ndarray, *, name: str, prefix: str) -> None:
+    path = os.path.join(_captures_dir(), f"{prefix}_{_safe_debug_name(name)}.png")
+    cv2.imwrite(path, frame)
+    print(f"  [debug] 保存: {path}")
+
+
 def _ensure_min_size(frame: np.ndarray) -> np.ndarray:
     """VLM が処理できる最小サイズに拡大する（アスペクト比維持）。"""
     h, w = frame.shape[:2]
@@ -68,9 +84,11 @@ def _ensure_min_size(frame: np.ndarray) -> np.ndarray:
     return cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
 
 
-def _encode_image_data_url(frame: np.ndarray) -> str:
+def _encode_image_data_url(frame: np.ndarray, *, debug_name: str = "") -> str:
     """numpy BGR フレームを data URI 形式の PNG base64 文字列に変換する。"""
     frame = _ensure_min_size(frame)
+    if debug_name:
+        _save_debug_frame(frame, name=debug_name, prefix="debug_vlm_input")
     ok, encoded = cv2.imencode(".png", frame)
     if not ok:
         raise MlxVlmImeError("画像の PNG エンコードに失敗しました")
@@ -82,8 +100,57 @@ def _encode_image_data_url(frame: np.ndarray) -> str:
 # Geometry helpers (ported from ollama_vlm_ime.py)
 # ---------------------------------------------------------------------------
 
-def detect_patient_record_panel3(frame: np.ndarray) -> Optional[tuple[int, int]]:
-    """患者記録画面の第3ペインの x 座標範囲を検出する。"""
+def _cluster_x_positions(xs: list[int], *, max_gap: int = 20) -> list[int]:
+    if not xs:
+        return []
+    xs.sort()
+    clusters: list[int] = []
+    current: list[int] = [xs[0]]
+    for x in xs[1:]:
+        if x - current[-1] <= max_gap:
+            current.append(x)
+        else:
+            clusters.append(int(round(sum(current) / len(current))))
+            current = [x]
+    clusters.append(int(round(sum(current) / len(current))))
+    return clusters
+
+
+def _find_gray_divider_candidates(frame: np.ndarray) -> list[int]:
+    h, w = frame.shape[:2]
+    y1 = int(h * 0.05)
+    y2 = int(h * 0.95)
+    band = frame[y1:y2, :]
+    b = band[:, :, 0].astype(np.int16)
+    g = band[:, :, 1].astype(np.int16)
+    r = band[:, :, 2].astype(np.int16)
+    spread = np.maximum(np.maximum(b, g), r) - np.minimum(np.minimum(b, g), r)
+    value = ((b + g + r) / 3.0)
+    mask = ((spread <= 14) & (value >= 120) & (value <= 235)).astype(np.uint8) * 255
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(25, (y2 - y1) // 6)))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, vertical_kernel)
+    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 15)))
+
+    col_strength = np.count_nonzero(mask, axis=0)
+    threshold = max(int((y2 - y1) * 0.45), 40)
+    candidates: list[int] = []
+    start: Optional[int] = None
+    for x, strength in enumerate(col_strength):
+        if strength >= threshold and start is None:
+            start = x
+        elif strength < threshold and start is not None:
+            end = x - 1
+            if 1 <= end - start + 1 <= max(18, w // 30):
+                candidates.append((start + end) // 2)
+            start = None
+    if start is not None:
+        end = len(col_strength) - 1
+        if 1 <= end - start + 1 <= max(18, w // 30):
+            candidates.append((start + end) // 2)
+    return candidates
+
+
+def _find_hough_divider_candidates(frame: np.ndarray) -> list[int]:
     h, w = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
@@ -91,44 +158,91 @@ def detect_patient_record_panel3(frame: np.ndarray) -> Optional[tuple[int, int]]
         edges,
         rho=1,
         theta=np.pi / 180,
-        threshold=200,
-        minLineLength=h // 3,
-        maxLineGap=30,
+        threshold=120,
+        minLineLength=int(h * 0.45),
+        maxLineGap=20,
     )
     if lines is None:
-        return None
-
-    vert_xs: list[int] = []
+        return []
+    xs: list[int] = []
     for line in lines:
         x1, y1, x2, y2 = line[0]
-        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-        if angle > 75:
-            vert_xs.append(int(x1))
+        if abs(x2 - x1) > 8:
+            continue
+        if abs(y2 - y1) < int(h * 0.45):
+            continue
+        if x1 < 40 or x1 > w - 40:
+            continue
+        xs.append(int(round((x1 + x2) / 2)))
+    return xs
 
-    if not vert_xs:
+
+def _select_divider_group(dividers: list[int], *, width: int) -> Optional[list[int]]:
+    dividers = [x for x in dividers if 40 < x < width - 40]
+    if len(dividers) < 4:
         return None
+    if len(dividers) == 4:
+        return dividers
 
-    vert_xs.sort()
-    clusters: list[int] = []
-    current: list[int] = [vert_xs[0]]
-    for x in vert_xs[1:]:
-        if x - current[-1] < 30:
-            current.append(x)
-        else:
-            clusters.append(int(np.mean(current)))
-            current = [x]
-    clusters.append(int(np.mean(current)))
+    best_group: Optional[list[int]] = None
+    best_score: Optional[float] = None
+    for start in range(0, len(dividers) - 3):
+        group = dividers[start:start + 4]
+        gaps = np.diff(group)
+        if np.any(gaps < width * 0.05) or np.any(gaps > width * 0.45):
+            continue
+        score = float(np.std(gaps))
+        if best_score is None or score < best_score:
+            best_score = score
+            best_group = group
+    return best_group
 
-    main_dividers = [x for x in clusters if 50 < x < w - 50]
-    if len(main_dividers) < 3:
+
+def _save_divider_debug_overlay(
+    frame: np.ndarray,
+    *,
+    name: str,
+    candidate_dividers: list[int],
+    accepted_dividers: Optional[list[int]],
+) -> None:
+    overlay = frame.copy()
+    h = overlay.shape[0]
+    for x in candidate_dividers:
+        cv2.line(overlay, (x, 0), (x, h - 1), (0, 215, 255), 1)
+    if accepted_dividers:
+        for x in accepted_dividers:
+            cv2.line(overlay, (x, 0), (x, h - 1), (0, 255, 0), 2)
+        x1, x2 = accepted_dividers[1], accepted_dividers[2]
+        cv2.rectangle(overlay, (x1, 0), (x2, h - 1), (255, 0, 0), 2)
+    _save_debug_frame(overlay, name=name, prefix="debug_panel_detection")
+
+
+def detect_patient_record_panel3(
+    frame: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> Optional[tuple[int, int]]:
+    """患者記録画面の第3ペインの x 座標範囲を検出する。"""
+    _, w = frame.shape[:2]
+    gray_candidates = _find_gray_divider_candidates(frame)
+    hough_candidates = _find_hough_divider_candidates(frame)
+    clustered = _cluster_x_positions(gray_candidates + hough_candidates)
+    accepted = _select_divider_group(clustered, width=w)
+    if debug_name:
+        _save_divider_debug_overlay(
+            frame,
+            name=debug_name,
+            candidate_dividers=clustered,
+            accepted_dividers=accepted,
+        )
+    if not accepted:
         return None
+    return (accepted[1], accepted[2])
 
-    return (main_dividers[1], main_dividers[2])
 
-
-def crop_to_input_region(frame: np.ndarray) -> np.ndarray:
+def crop_to_input_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
     """フレームをテキスト入力領域にクロップする（第3ペイン検出 → フォールバック全画面）。"""
-    panel = detect_patient_record_panel3(frame)
+    panel = detect_patient_record_panel3(frame, debug_name=debug_name)
     if panel is not None:
         x1, x2 = panel
         return frame[:, x1:x2]
@@ -271,7 +385,7 @@ def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray
         return popup
 
     # フォールバック: 入力ペインに限定してグレースケール閾値で検出
-    roi = crop_to_input_region(frame)
+    roi = crop_to_input_region(frame, debug_name=f"popup_region_{debug_name or 'current'}")
     center_y = _find_dark_region_y(roi)
     fh = roi.shape[0]
 
@@ -291,20 +405,15 @@ def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray
 
 def _save_debug_popup(frame: np.ndarray, name: str) -> None:
     """ポップアップクロップ画像をデバッグ用に保存する。"""
-    import os
-    captures_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "captures")
-    os.makedirs(captures_dir, exist_ok=True)
-    path = os.path.join(captures_dir, f"debug_popup_crop_{name}.png")
-    cv2.imwrite(path, frame)
-    print(f"  [debug] ポップアップクロップ保存: {path}")
+    _save_debug_frame(frame, name=name, prefix="debug_popup_crop")
 
 
 # ---------------------------------------------------------------------------
 # mlx_vlm API call
 # ---------------------------------------------------------------------------
 
-def _call_mlx_vlm_with_image(
-    image_data_url: str,
+def _call_mlx_vlm_with_content(
+    content: list[dict[str, object]],
     prompt: str,
     *,
     model: Optional[str] = None,
@@ -324,10 +433,7 @@ def _call_mlx_vlm_with_image(
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
+                "content": [{"type": "text", "text": prompt}, *content],
             }
         ],
         "stream": False,
@@ -361,6 +467,44 @@ def _call_mlx_vlm_with_image(
         raise MlxVlmImeError("mlx_vlm IME 応答の JSON を解析できませんでした") from exc
 
     return _extract_message_text(result, error_prefix="mlx_vlm IME")
+
+
+def _call_mlx_vlm_with_image(
+    image_data_url: str,
+    prompt: str,
+    *,
+    model: Optional[str] = None,
+    url: Optional[str] = None,
+    timeout: Optional[float] = None,
+    api_key: Optional[str] = None,
+) -> str:
+    return _call_mlx_vlm_with_content(
+        [{"type": "image_url", "image_url": {"url": image_data_url}}],
+        prompt,
+        model=model,
+        url=url,
+        timeout=timeout,
+        api_key=api_key,
+    )
+
+
+def _call_mlx_vlm_with_images(
+    image_data_urls: list[str],
+    prompt: str,
+    *,
+    model: Optional[str] = None,
+    url: Optional[str] = None,
+    timeout: Optional[float] = None,
+    api_key: Optional[str] = None,
+) -> str:
+    return _call_mlx_vlm_with_content(
+        [{"type": "image_url", "image_url": {"url": image_url}} for image_url in image_data_urls],
+        prompt,
+        model=model,
+        url=url,
+        timeout=timeout,
+        api_key=api_key,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +615,7 @@ def read_inline_candidate_roi(roi: np.ndarray) -> Optional[str]:
         "JSONのみで回答してください（余分なコメントや思考過程は不要）。"
         ' 形式: {"candidate": "候補文字列"} または {"candidate": null}'
     )
-    data_url = _encode_image_data_url(roi)
+    data_url = _encode_image_data_url(roi, debug_name="inline_candidate_roi")
     content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
     return _parse_candidate_response(content)
 
@@ -485,7 +629,11 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
     Returns:
         変換中の文字列のみ、または None
     """
-    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.05, bottom_ratio=0.75)
+    cropped = _crop_center_band(
+        crop_to_input_region(frame, debug_name="inline_candidate_context_panel"),
+        top_ratio=0.05,
+        bottom_ratio=0.75,
+    )
     prompt = (
         "この画像はWindowsの画面の一部（入力フィールド周辺）です。"
         "テキスト入力フィールドの中で、下線または黒背景・白文字で強調表示されている、"
@@ -495,7 +643,7 @@ def read_inline_candidate_context(frame: np.ndarray) -> Optional[str]:
         "JSONのみで回答してください（余分なコメントや思考過程は不要）。"
         ' 形式: {"candidate": "文字列"} または {"candidate": null}'
     )
-    data_url = _encode_image_data_url(cropped)
+    data_url = _encode_image_data_url(cropped, debug_name="inline_candidate_context")
     content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
     return _parse_candidate_response(content)
 
@@ -512,7 +660,10 @@ def read_highlighted_popup_candidate(frame: np.ndarray, *, debug_name: str = "")
         "JSONのみで回答してください。"
         ' 形式: {"candidate": "候補文字列"} または {"candidate": null}'
     )
-    data_url = _encode_image_data_url(cropped)
+    data_url = _encode_image_data_url(
+        cropped,
+        debug_name=f"highlighted_popup_{debug_name or 'current'}",
+    )
     content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
     return _parse_candidate_response(content)
 
@@ -618,7 +769,10 @@ def read_popup_candidates_numbered_vlm(frame: np.ndarray, *, debug_name: str = "
         '形式: {"candidates": [{"n": 1, "text": "イン"}, {"n": 2, "text": "院"}, {"n": 3, "text": "員"}, {"n": 4, "text": "咽頭"}]}'
         "候補リスト以外のテキストは含めないでください。JSONのみ返してください。"
     )
-    data_url = _encode_image_data_url(cropped)
+    data_url = _encode_image_data_url(
+        cropped,
+        debug_name=f"popup_numbered_{debug_name or 'current'}",
+    )
     try:
         content = _call_mlx_vlm_with_image(data_url, prompt)
         content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
@@ -709,7 +863,7 @@ def read_popup_candidates(frame: np.ndarray) -> list[str]:
         "JSONのみで回答してください（余分なコメントや思考過程は不要）。"
         ' 形式: {"candidates": ["候補1", "候補2", "候補3", ...]}'
     )
-    data_url = _encode_image_data_url(cropped)
+    data_url = _encode_image_data_url(cropped, debug_name="popup_candidates")
     try:
         content = _call_mlx_vlm_with_image(data_url, prompt)
         return _parse_candidates_response(content)
@@ -788,7 +942,7 @@ def detect_ime_mode_from_typed_a(
             diff_crop = _ensure_min_size(diff_crop)
             # デバッグ用に差分クロップを保存
             _save_debug_popup(diff_crop, "ime_mode_diff")
-            data_url = _encode_image_data_url(diff_crop)
+            data_url = _encode_image_data_url(diff_crop, debug_name="ime_mode_diff")
             prompt = (
                 "この画像は 'a' キーを1回押した直後に画面で変化した部分だけを切り抜いたものです。"
                 "新しく追加された1文字を特定してください。"
@@ -812,9 +966,9 @@ def detect_ime_mode_from_typed_a(
             print("  [VLM IME検出/diff] 差分なし → 全体フレームで再試行")
 
     # --- フォールバック: 入力エリア全体を VLM で判定 ---
-    cropped = crop_to_input_region(frame)
+    cropped = crop_to_input_region(frame, debug_name="ime_mode_typed_a_panel")
     cropped = _ensure_min_size(cropped)
-    data_url = _encode_image_data_url(cropped)
+    data_url = _encode_image_data_url(cropped, debug_name="ime_mode_typed_a")
     prompt = (
         "テキスト入力フィールドに 'a' というキーを1回押しました。"
         "直前に入力した最後の1文字だけに注目してください。"
@@ -988,38 +1142,111 @@ def _parse_helper_reset_state_response(content: str) -> dict[str, bool]:
 def assess_helper_reset_state(
     frame: np.ndarray,
     *,
-    left_context: str,
+    left_context: str = "",
+    anchor_text: str = "",
     target_text: str,
 ) -> dict[str, bool]:
     """Judge whether helper-word precomposition was cleared without harming left context."""
-    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.15, bottom_ratio=0.80)
+    cropped = _crop_center_band(
+        crop_to_input_region(frame, debug_name="helper_reset_panel"),
+        top_ratio=0.15,
+        bottom_ratio=0.80,
+    )
     expected_left = left_context[-8:]
-    if expected_left:
+    expected_anchor = anchor_text.strip()[-8:]
+    if expected_anchor:
+        left_rule = (
+            f"入力カーソル直前の確定済みアンカー語として {expected_anchor!r} がそのまま見えており、"
+            "その語が欠けたり別の文字に変わったり、全選択/反転されたりしていないこと。"
+        )
+        composition_rule = (
+            f"{expected_anchor!r} の直後に、{target_text!r} に対応する未確定組成、下線、反転候補、"
+            "ポップアップ候補、またはそれに準ずる変換中表示や余分な続き文字が、"
+            "入力欄内にもう残っていないこと。"
+        )
+    elif expected_left:
         left_rule = (
             f"入力カーソル直前の確定済み文字列として {expected_left!r} が見えており、"
             "その文字列が欠けたり、全選択/反転されたりしていないこと。"
         )
+        composition_rule = (
+            f"{target_text!r} に対応する未確定組成、下線、反転候補、ポップアップ候補、"
+            "またはそれに準ずる変換中表示が、入力欄内にもう残っていないこと。"
+        )
     else:
         left_rule = "左側コンテキスト条件は常に true として扱ってください。"
+        composition_rule = (
+            f"{target_text!r} に対応する未確定組成、下線、反転候補、ポップアップ候補、"
+            "またはそれに準ずる変換中表示が、入力欄内にもう残っていないこと。"
+        )
     prompt = (
         "この画像は EHR の入力欄周辺です。"
         f"ヘルパー単語入力前に、変換中だった {target_text!r} を Escape でキャンセルした直後です。"
         "次の2点だけを判定してください。"
         f"1. left_context_preserved: {left_rule}"
-        f"2. composition_cleared: {target_text!r} に対応する未確定組成、下線、反転候補、ポップアップ候補、"
-        "またはそれに準ずる変換中表示が、入力欄内にもう残っていないこと。"
+        f"2. composition_cleared: {composition_rule}"
         "全入力欄が選択されている、または左側の確定済み文字が壊れている場合は left_context_preserved=false にしてください。"
         "JSONのみで答えてください。"
         ' 形式: {"left_context_preserved": true|false, "composition_cleared": true|false, "ready": true|false}'
     )
-    data_url = _encode_image_data_url(cropped)
+    data_url = _encode_image_data_url(cropped, debug_name="helper_reset_state")
     content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
     return _parse_helper_reset_state_response(content)
 
 
+def compare_helper_reset_images(
+    baseline_frame: np.ndarray,
+    current_frame: np.ndarray,
+    *,
+    anchor_text: str = "",
+    target_text: str,
+    left_context: str = "",
+) -> bool:
+    """Compare helper-reset baseline/current images and return True only when reset is complete."""
+    expected_anchor = anchor_text.strip()[-8:]
+    expected_left = left_context.strip()[-8:]
+    if expected_anchor:
+        focus_rule = (
+            f"特に最後の確定語 {expected_anchor!r} の直後に、別の文字、未確定組成、"
+            "下線、反転、候補ポップアップが追加されていないかを厳密に見てください。"
+        )
+    elif expected_left:
+        focus_rule = (
+            f"特に確定済み文字列 {expected_left!r} の直後に、別の文字、未確定組成、"
+            "下線、反転、候補ポップアップが追加されていないかを厳密に見てください。"
+        )
+    else:
+        focus_rule = (
+            f"特に {target_text!r} に対応する余分な文字、未確定組成、下線、反転、"
+            "候補ポップアップが残っていないかを厳密に見てください。"
+        )
+    prompt = (
+        "同じ EHR 入力エリアの2枚の画像を比較してください。"
+        "1枚目は正常に確定した baseline、2枚目は helper word 入力前に Escape を押した後の current です。"
+        "最終行の文字列だけを比較し、current が baseline と同じ長さ・同じ状態に戻っているか判定してください。"
+        f"{focus_rule}"
+        "current 側で最後の確定語の後ろに1文字でも追加されている、"
+        "文字数が増減している、確定済み文字が壊れている、入力欄全体が選択されている場合は no です。"
+        "baseline と同じ状態に戻っている時だけ yes、それ以外は no を返してください。"
+        "yes または no のみで答えてください。"
+    )
+    baseline_data_url = _encode_image_data_url(baseline_frame, debug_name="helper_reset_compare_baseline")
+    current_data_url = _encode_image_data_url(current_frame, debug_name="helper_reset_compare_current")
+    content = _call_mlx_vlm_with_images(
+        [baseline_data_url, current_data_url],
+        prompt,
+        timeout=MLX_VLM_INLINE_TIMEOUT,
+    )
+    return _parse_yes_no_response(content) is True
+
+
 def has_active_ime_composition(frame: np.ndarray) -> bool:
     """入力欄近傍に未確定の IME 組成文字が見えていれば True を返す。"""
-    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.15, bottom_ratio=0.80)
+    cropped = _crop_center_band(
+        crop_to_input_region(frame, debug_name="has_active_composition_panel"),
+        top_ratio=0.15,
+        bottom_ratio=0.80,
+    )
     # 暗い反転/選択領域が物理的に見えない場合は、VLM の hallucination による
     # false positive で追加 Backspace を送らないようにする。
     if _find_dark_region_y(cropped) is None:
@@ -1031,7 +1258,7 @@ def has_active_ime_composition(frame: np.ndarray) -> bool:
         "通常の確定済み文字列、ラベル、患者名、一覧表、病名欄の見出しは無視してください。"
         "入力欄の中に未確定組成が見えるなら yes、見えないなら no のみで答えてください。"
     )
-    data_url = _encode_image_data_url(cropped)
+    data_url = _encode_image_data_url(cropped, debug_name="has_active_composition")
     content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
     return _parse_yes_no_response(content) is True
 

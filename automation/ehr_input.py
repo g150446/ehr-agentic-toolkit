@@ -46,6 +46,7 @@ from automation.mlx_vlm_segmentation import (
 from automation.mlx_vlm_ime import (
     MlxVlmImeError,
     assess_helper_reset_state,
+    compare_helper_reset_images,
     detect_ime_mode_from_typed_a,
     has_active_ime_composition,
     read_highlighted_popup_candidate,
@@ -386,6 +387,43 @@ def _capture_frame(config):
 
 def _request_ocr_results(frame, config) -> list[tuple]:
     return run_ocr(_load_ocr_engine(config), frame)
+
+
+def _capture_helper_reset_compare_frame(
+    frame: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> Optional[np.ndarray]:
+    cropped = mlx_vlm_ime.crop_to_input_region(frame, debug_name=f"{debug_name}_panel" if debug_name else "")
+    if cropped.size == 0:
+        return None
+    if debug_name:
+        _save_debug_image(cropped, f"{debug_name}_compare_crop")
+    return cropped
+
+
+def _capture_helper_reset_baseline(
+    config,
+    *,
+    anchor_text: str = "",
+    debug_name: str = "helper_reset_baseline",
+) -> Optional[dict[str, object]]:
+    required_attrs = ("capture_device_index", "capture_width", "capture_height")
+    if any(not hasattr(config, attr) for attr in required_attrs):
+        return None
+    frame = _capture_frame(config)
+    if frame is None:
+        return None
+    cropped = _capture_helper_reset_compare_frame(
+        frame,
+        debug_name=debug_name,
+    )
+    if cropped is None:
+        return None
+    return {
+        "cropped_frame": cropped,
+        "anchor_text": anchor_text,
+    }
 
 
 def _normalize_ocr_ui_text(text: str) -> str:
@@ -1276,6 +1314,8 @@ def type_kanji_via_ime(
     _no_helper_fallback: bool = False,
     _strict: bool = False,
     _typed_prefix_context: str = "",
+    _helper_anchor_text: str = "",
+    _helper_reset_baseline: Optional[dict[str, object]] = None,
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -1543,6 +1583,8 @@ def type_kanji_via_ime(
                     config,
                     remaining_target=remaining_target,
                     wait_sec=wait_sec,
+                    typed_prefix_context=f"{_typed_prefix_context}{prefix_text}",
+                    helper_anchor_text=prefix_text,
                 )
                 print("完了（残りフレーム取得失敗 → 残りを再入力）")
                 return
@@ -1578,6 +1620,8 @@ def type_kanji_via_ime(
                     config,
                     remaining_target=remaining_target,
                     wait_sec=wait_sec,
+                    typed_prefix_context=f"{_typed_prefix_context}{prefix_text}",
+                    helper_anchor_text=prefix_text,
                 )
                 print("完了（残り部分を再入力）")
             except Exception as exc:
@@ -1587,6 +1631,8 @@ def type_kanji_via_ime(
                     config,
                     remaining_target=remaining_target,
                     wait_sec=wait_sec,
+                    typed_prefix_context=f"{_typed_prefix_context}{prefix_text}",
+                    helper_anchor_text=prefix_text,
                 )
             print("完了（残り部分を再入力）")
             return
@@ -1644,6 +1690,8 @@ def type_kanji_via_ime(
             wait_sec,
             romaji=romaji,
             left_context=_typed_prefix_context,
+            anchor_text=_helper_anchor_text,
+            baseline_state=_helper_reset_baseline,
         ):
             return
 
@@ -2024,10 +2072,12 @@ def _reset_ime_before_helper_lookup(
     *,
     target_kanji: str,
     left_context: str = "",
+    anchor_text: str = "",
+    baseline_state: Optional[dict[str, object]] = None,
     max_escape_count: int = 4,
     wait: float = 0.5,
 ) -> bool:
-    """Cancel helper-word precomposition with per-attempt VLM verification."""
+    """Cancel helper-word precomposition with per-attempt baseline/VLM verification."""
     if config is None:
         ok = client.press_key("escape")
         print(f"  [helper reset] key:escape -> {'OK' if ok else 'NG'} (configなし)")
@@ -2035,6 +2085,14 @@ def _reset_ime_before_helper_lookup(
         return True
 
     trimmed_left_context = _trim_helper_left_context(left_context)
+    baseline_frame = None
+    if baseline_state is not None:
+        baseline_frame = baseline_state.get("cropped_frame")
+    if isinstance(baseline_frame, np.ndarray):
+        print(
+            "  [helper reset] baseline image ready: "
+            f"shape={baseline_frame.shape} anchor={anchor_text or baseline_state.get('anchor_text', '')!r}"
+        )
     for attempt in range(1, max_escape_count + 1):
         ok = client.press_key("escape")
         print(f"  [helper reset] key:escape ({attempt}/{max_escape_count}) -> {'OK' if ok else 'NG'}")
@@ -2043,10 +2101,35 @@ def _reset_ime_before_helper_lookup(
         if frame is None:
             print("  [helper reset] フレーム取得失敗 → 次の Escape を試します")
             continue
+        if isinstance(baseline_frame, np.ndarray):
+            current_frame = _capture_helper_reset_compare_frame(
+                frame,
+                debug_name=f"helper_reset_compare_attempt_{attempt}",
+            )
+            if current_frame is None:
+                print("  [helper reset] 比較用クロップ取得失敗 → 次の Escape を試します")
+                continue
+            try:
+                ready = compare_helper_reset_images(
+                    baseline_frame,
+                    current_frame,
+                    left_context=trimmed_left_context,
+                    anchor_text=anchor_text,
+                    target_text=target_kanji,
+                )
+            except MlxVlmImeError as exc:
+                print(f"  [helper reset] 二画像VLM比較失敗 → 次の Escape を試します: {exc}")
+                continue
+            print(f"  [helper reset][compare] baseline_vs_current={'yes' if ready else 'no'}")
+            if ready:
+                print("  [helper reset][compare] baseline と一致 → Escape 停止")
+                return True
+            continue
         try:
             state = assess_helper_reset_state(
                 frame,
                 left_context=trimmed_left_context,
+                anchor_text=anchor_text,
                 target_text=target_kanji,
             )
         except MlxVlmImeError as exc:
@@ -2089,6 +2172,8 @@ def _fallback_remaining_after_prefix(
     *,
     remaining_target: str,
     wait_sec: float,
+    typed_prefix_context: str = "",
+    helper_anchor_text: str = "",
 ) -> None:
     """Cancel an ambiguous remaining popup and re-enter the rest safely."""
     print(f"  残りポップアップに「{remaining_target}」なし → ポップアップをキャンセルして再入力")
@@ -2099,11 +2184,19 @@ def _fallback_remaining_after_prefix(
         max_backspaces=max(_text_to_hiragana_len(remaining_target) + 2, 4),
     )
     time.sleep(0.3)
+    helper_reset_baseline = _capture_helper_reset_baseline(
+        config,
+        anchor_text=helper_anchor_text,
+        debug_name=f"helper_reset_baseline_{helper_anchor_text or 'remaining'}",
+    )
     type_kanji_via_ime(
         _kanji_to_romaji(remaining_target),
         remaining_target,
         wait_sec=wait_sec,
         _current_ime_mode="japanese",
+        _typed_prefix_context=typed_prefix_context,
+        _helper_anchor_text=helper_anchor_text,
+        _helper_reset_baseline=helper_reset_baseline,
     )
 
 
@@ -2270,6 +2363,8 @@ def _try_helper_word_fallback(
     wait_sec: float,
     romaji: str = "",
     left_context: str = "",
+    anchor_text: str = "",
+    baseline_state: Optional[dict[str, object]] = None,
 ) -> bool:
     """ヘルパー単語フォールバック: テキストモデルにヘルパー単語を問い合わせ、
     変換後に余分な文字を削除して目標漢字を入力する。
@@ -2298,12 +2393,14 @@ def _try_helper_word_fallback(
     # エントリー状態: target_kanji に対応するIMEポップアップが開いている
     # コミットなしでキャンセルしてから問い合わせに入る。問い合わせ待ちの間に
     # 誤候補（例: 「化」）を残したままにしないため、先に IME 組成を必ずクリアする。
-    print("  [ヘルパー単語] IMEポップアップをキャンセルし、各 Esc 後に VLM で状態確認します...")
+    print("  [ヘルパー単語] IMEポップアップをキャンセルし、各 Esc 後に baseline 画像と比較します...")
     if not _reset_ime_before_helper_lookup(
         client,
         config,
         target_kanji=target_kanji,
         left_context=left_context,
+        anchor_text=anchor_text,
+        baseline_state=baseline_state,
     ):
         print("  [ヘルパー単語] IME キャンセル完了を安全に確認できませんでした → フォールバック失敗")
         return False
@@ -2459,11 +2556,19 @@ def _try_helper_word_fallback(
                     print(f"  [ヘルパー単語] 残り「{remaining}」を続けて入力します...")
                     remaining_romaji = _kanji_to_romaji(remaining)
                     time.sleep(1.0)
+                    helper_reset_baseline = _capture_helper_reset_baseline(
+                        config,
+                        anchor_text=covered_prefix,
+                        debug_name=f"helper_reset_baseline_{covered_prefix}",
+                    )
                     type_kanji_via_ime(
                         remaining_romaji,
                         remaining,
                         wait_sec=wait_sec,
                         _current_ime_mode="japanese",
+                        _typed_prefix_context=f"{left_context}{covered_prefix}",
+                        _helper_anchor_text=covered_prefix,
+                        _helper_reset_baseline=helper_reset_baseline,
                     )
                 return True
             print(f"  [ヘルパー単語] 「{helper_word}」がハイライト候補に見つかりません → 次の提案を試みます")
@@ -2497,11 +2602,19 @@ def _try_helper_word_fallback(
             remaining_romaji = _kanji_to_romaji(remaining)
             # ESP32がBackspace処理を完了するまで待機してから次のセグメントへ
             time.sleep(1.0)
+            helper_reset_baseline = _capture_helper_reset_baseline(
+                config,
+                anchor_text=covered_prefix,
+                debug_name=f"helper_reset_baseline_{covered_prefix}",
+            )
             type_kanji_via_ime(
                 remaining_romaji,
                 remaining,
                 wait_sec=wait_sec,
                 _current_ime_mode="japanese",
+                _typed_prefix_context=f"{left_context}{covered_prefix}",
+                _helper_anchor_text=covered_prefix,
+                _helper_reset_baseline=helper_reset_baseline,
             )
 
         return True
@@ -2921,6 +3034,8 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
 
     segments = list(_iter_segments_for_input(text))
     typed_prefix_context = ""
+    helper_anchor_text = ""
+    helper_reset_baseline: Optional[dict[str, object]] = None
     for index, seg in enumerate(segments):
         seg_text = seg["text"]
         seg_romaji = seg["romaji"]
@@ -2965,6 +3080,8 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                     seg_romaji, seg_text,
                     _current_ime_mode=current_mode,
                     _typed_prefix_context=typed_prefix_context,
+                    _helper_anchor_text=helper_anchor_text,
+                    _helper_reset_baseline=helper_reset_baseline,
                 )
             time.sleep(0.25)
 
@@ -2994,6 +3111,8 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             # ※ などの特殊記号、または μ などの ASCII 代替文字を含む: 文字単位で処理
             # ASCII 部分は英数字モードで直接入力、特殊記号は IME で読み変換
             segment_prefix_context = typed_prefix_context
+            segment_anchor_text = helper_anchor_text
+            segment_baseline_state = helper_reset_baseline
             for ch in seg_text:
                 if ch in _JP_SYMBOL_IME_READINGS:
                     reading = _JP_SYMBOL_IME_READINGS[ch]
@@ -3003,6 +3122,8 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                         reading, ch,
                         _current_ime_mode=current_mode,
                         _typed_prefix_context=segment_prefix_context,
+                        _helper_anchor_text=segment_anchor_text,
+                        _helper_reset_baseline=segment_baseline_state,
                     )
                 elif ch in _CHAR_ASCII_FALLBACK:
                     # μ など BLE 経由で直接送れない文字は ASCII 代替文字で入力
@@ -3022,7 +3143,16 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                     if ok:
                         client.press_key("enter")
                 segment_prefix_context += ch
+                if _is_japanese(ch):
+                    segment_anchor_text = ch
+                    segment_baseline_state = _capture_helper_reset_baseline(
+                        config,
+                        anchor_text=segment_anchor_text,
+                        debug_name=f"helper_reset_baseline_{segment_anchor_text}",
+                    )
             typed_prefix_context = segment_prefix_context
+            helper_anchor_text = segment_anchor_text
+            helper_reset_baseline = segment_baseline_state
             continue
 
         else:
@@ -3037,6 +3167,13 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             time.sleep(0.15)
 
         typed_prefix_context += seg_text
+        if _is_japanese(seg_text):
+            helper_anchor_text = seg_text
+        helper_reset_baseline = _capture_helper_reset_baseline(
+            config,
+            anchor_text=helper_anchor_text,
+            debug_name=f"helper_reset_baseline_{helper_anchor_text or 'segment'}",
+        )
 
     print("\n文章入力完了")
 
