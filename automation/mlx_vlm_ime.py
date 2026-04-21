@@ -927,6 +927,96 @@ def _parse_yes_no_response(content: str) -> Optional[bool]:
     return None
 
 
+def _parse_helper_reset_state_response(content: str) -> dict[str, bool]:
+    """VLM 応答から helper reset 判定 JSON を抽出する。"""
+    cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    cleaned = re.sub(r"```[a-z]*\n?", "", cleaned).strip().rstrip("`").strip()
+    if not cleaned:
+        return {
+            "left_context_preserved": False,
+            "composition_cleared": False,
+            "ready": False,
+        }
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not match:
+            return {
+                "left_context_preserved": False,
+                "composition_cleared": False,
+                "ready": False,
+            }
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {
+                "left_context_preserved": False,
+                "composition_cleared": False,
+                "ready": False,
+            }
+
+    if not isinstance(parsed, dict):
+        return {
+            "left_context_preserved": False,
+            "composition_cleared": False,
+            "ready": False,
+        }
+
+    def _as_bool(value) -> bool:
+        if value is True:
+            return True
+        if value is False or value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "yes", "ok"}
+        return False
+
+    left_context_preserved = _as_bool(parsed.get("left_context_preserved"))
+    composition_cleared = _as_bool(parsed.get("composition_cleared"))
+    ready = _as_bool(parsed.get("ready"))
+    if "ready" not in parsed:
+        ready = left_context_preserved and composition_cleared
+    return {
+        "left_context_preserved": left_context_preserved,
+        "composition_cleared": composition_cleared,
+        "ready": ready,
+    }
+
+
+def assess_helper_reset_state(
+    frame: np.ndarray,
+    *,
+    left_context: str,
+    target_text: str,
+) -> dict[str, bool]:
+    """Judge whether helper-word precomposition was cleared without harming left context."""
+    cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.15, bottom_ratio=0.80)
+    expected_left = left_context[-8:]
+    if expected_left:
+        left_rule = (
+            f"入力カーソル直前の確定済み文字列として {expected_left!r} が見えており、"
+            "その文字列が欠けたり、全選択/反転されたりしていないこと。"
+        )
+    else:
+        left_rule = "左側コンテキスト条件は常に true として扱ってください。"
+    prompt = (
+        "この画像は EHR の入力欄周辺です。"
+        f"ヘルパー単語入力前に、変換中だった {target_text!r} を Escape でキャンセルした直後です。"
+        "次の2点だけを判定してください。"
+        f"1. left_context_preserved: {left_rule}"
+        f"2. composition_cleared: {target_text!r} に対応する未確定組成、下線、反転候補、ポップアップ候補、"
+        "またはそれに準ずる変換中表示が、入力欄内にもう残っていないこと。"
+        "全入力欄が選択されている、または左側の確定済み文字が壊れている場合は left_context_preserved=false にしてください。"
+        "JSONのみで答えてください。"
+        ' 形式: {"left_context_preserved": true|false, "composition_cleared": true|false, "ready": true|false}'
+    )
+    data_url = _encode_image_data_url(cropped)
+    content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
+    return _parse_helper_reset_state_response(content)
+
+
 def has_active_ime_composition(frame: np.ndarray) -> bool:
     """入力欄近傍に未確定の IME 組成文字が見えていれば True を返す。"""
     cropped = _crop_center_band(crop_to_input_region(frame), top_ratio=0.15, bottom_ratio=0.80)

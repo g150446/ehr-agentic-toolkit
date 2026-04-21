@@ -561,6 +561,11 @@ def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
         "_kanji_to_romaji",
         lambda text: {"過剰": "kajou", "膨張": "bouchou"}[text],
     )
+    monkeypatch.setattr(
+        ehr_input,
+        "_reset_ime_before_helper_lookup",
+        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: True,
+    )
     monkeypatch.setattr(ehr_input, "_cancel_ime_popup_safe", lambda *args, **kwargs: None)
     monkeypatch.setattr(ehr_input, "_clear_pending_ime_composition", lambda *args, **kwargs: None)
     monkeypatch.setattr(ehr_input, "_save_debug_image", lambda *args, **kwargs: None)
@@ -624,6 +629,11 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
         "_kanji_to_romaji",
         lambda text: {"過剰": "kajou", "膨張": "bouchou"}[text],
     )
+    monkeypatch.setattr(
+        ehr_input,
+        "_reset_ime_before_helper_lookup",
+        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: True,
+    )
     monkeypatch.setattr(ehr_input, "_cancel_ime_popup_safe", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         ehr_input,
@@ -652,7 +662,7 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
     )
 
 
-def test_try_helper_word_fallback_resets_ime_with_four_escapes_before_helper_lookup(monkeypatch):
+def test_try_helper_word_fallback_resets_ime_with_vlm_checked_escape_loop_before_helper_lookup(monkeypatch):
     events = []
     frame = _make_frame()
 
@@ -674,7 +684,9 @@ def test_try_helper_word_fallback_resets_ime_with_four_escapes_before_helper_loo
     monkeypatch.setattr(
         ehr_input,
         "_reset_ime_before_helper_lookup",
-        lambda client, escape_count=4, wait=0.5: events.append(("reset", escape_count, wait)),
+        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: (
+            events.append(("reset", target_kanji, left_context, max_escape_count, wait)) or True
+        ),
     )
     monkeypatch.setattr(
         ehr_input,
@@ -691,7 +703,22 @@ def test_try_helper_word_fallback_resets_ime_with_four_escapes_before_helper_loo
     )
 
     assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0)
-    assert events[:2] == [("reset", 4, 0.5), ("suggest", "過")]
+    assert events[:2] == [("reset", "過", "", 4, 0.5), ("suggest", "過")]
+
+
+def test_try_helper_word_fallback_stops_when_adaptive_reset_is_not_safe(monkeypatch):
+    monkeypatch.setattr(
+        ehr_input,
+        "_reset_ime_before_helper_lookup",
+        lambda client, config, target_kanji, left_context="", max_escape_count=4, wait=0.5: False,
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "suggest_ime_helper_word",
+        lambda target: (_ for _ in ()).throw(AssertionError("should not query helper words")),
+    )
+
+    assert not ehr_input._try_helper_word_fallback(object(), object(), "咽頭痛", 0.0, left_context="昨日から")
 
 
 def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
@@ -969,17 +996,60 @@ def test_clear_pending_ime_composition_sends_trailing_esc_after_clearing(monkeyp
     assert events == [("key", "backspace"), ("key", "escape")]
 
 
-def test_reset_ime_before_helper_lookup_sends_escape_four_times():
+def test_reset_ime_before_helper_lookup_stops_when_vlm_says_ready(monkeypatch):
     events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    frame = _make_frame()
 
     class DummyClient:
         def press_key(self, key):
             events.append(("key", key))
             return True
 
-    ehr_input._reset_ime_before_helper_lookup(DummyClient())
+    states = iter([
+        {"left_context_preserved": True, "composition_cleared": False, "ready": False},
+        {"left_context_preserved": True, "composition_cleared": True, "ready": True},
+    ])
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
+    monkeypatch.setattr(ehr_input, "assess_helper_reset_state", lambda frame, left_context, target_text: next(states))
 
-    assert events == [("key", "escape"), ("key", "escape"), ("key", "escape"), ("key", "escape")]
+    assert ehr_input._reset_ime_before_helper_lookup(
+        DummyClient(),
+        config,
+        target_kanji="咽頭痛",
+        left_context="昨日から",
+    )
+    assert events == [("key", "escape"), ("key", "escape")]
+
+
+def test_reset_ime_before_helper_lookup_aborts_when_left_context_breaks(monkeypatch):
+    events = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    frame = _make_frame()
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "assess_helper_reset_state",
+        lambda frame, left_context, target_text: {
+            "left_context_preserved": False,
+            "composition_cleared": False,
+            "ready": False,
+        },
+    )
+
+    assert not ehr_input._reset_ime_before_helper_lookup(
+        DummyClient(),
+        config,
+        target_kanji="咽頭痛",
+        left_context="昨日から",
+    )
+    assert events == [("key", "escape")]
 
 
 def test_type_japanese_sentence_routes_japanese_punctuation_via_ascii_keys(monkeypatch):
@@ -1007,6 +1077,41 @@ def test_type_japanese_sentence_routes_japanese_punctuation_via_ascii_keys(monke
     ehr_input.type_japanese_sentence("、")
 
     assert events == [("type", ","), ("key", "enter")]
+
+
+def test_type_japanese_sentence_passes_prefix_context_to_kanji_segments(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "から", "romaji": "kara"},
+            {"text": "咽頭痛", "romaji": "intoutsuu"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+
+    ehr_input.type_japanese_sentence("から咽頭痛")
+
+    assert ("ime", "intoutsuu", "咽頭痛", {"_current_ime_mode": "japanese", "_typed_prefix_context": "から"}) in events
 
 
 def test_segment_japanese_with_openrouter_uses_runtime_aware_logs(monkeypatch):

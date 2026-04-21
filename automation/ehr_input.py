@@ -45,6 +45,7 @@ from automation.mlx_vlm_segmentation import (
 )
 from automation.mlx_vlm_ime import (
     MlxVlmImeError,
+    assess_helper_reset_state,
     detect_ime_mode_from_typed_a,
     has_active_ime_composition,
     read_highlighted_popup_candidate,
@@ -1274,6 +1275,7 @@ def type_kanji_via_ime(
     _current_ime_mode: Optional[str] = None,
     _no_helper_fallback: bool = False,
     _strict: bool = False,
+    _typed_prefix_context: str = "",
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -1635,7 +1637,14 @@ def type_kanji_via_ime(
     # 一般的な日本語単語」を提案してもらい、変換後に余分な文字を削除して得る。
     if not _no_helper_fallback and not _strict:
         print(f"  ヘルパー単語フォールバックを試みます...")
-        if _try_helper_word_fallback(client, config, target_kanji, wait_sec, romaji=romaji):
+        if _try_helper_word_fallback(
+            client,
+            config,
+            target_kanji,
+            wait_sec,
+            romaji=romaji,
+            left_context=_typed_prefix_context,
+        ):
             return
 
     for attempt in range(1, max_attempts + 1):
@@ -2005,16 +2014,56 @@ def _clear_pending_ime_composition(
         time.sleep(0.1)
 
 
+def _trim_helper_left_context(left_context: str, *, max_chars: int = 8) -> str:
+    return left_context[-max_chars:]
+
+
 def _reset_ime_before_helper_lookup(
     client: "BLEClient",
+    config,
     *,
-    escape_count: int = 4,
+    target_kanji: str,
+    left_context: str = "",
+    max_escape_count: int = 4,
     wait: float = 0.5,
-) -> None:
-    """Cancel helper-word precomposition conservatively with repeated Escape presses."""
-    for _ in range(escape_count):
-        client.press_key("escape")
+) -> bool:
+    """Cancel helper-word precomposition with per-attempt VLM verification."""
+    if config is None:
+        ok = client.press_key("escape")
+        print(f"  [helper reset] key:escape -> {'OK' if ok else 'NG'} (configなし)")
         time.sleep(wait)
+        return True
+
+    trimmed_left_context = _trim_helper_left_context(left_context)
+    for attempt in range(1, max_escape_count + 1):
+        ok = client.press_key("escape")
+        print(f"  [helper reset] key:escape ({attempt}/{max_escape_count}) -> {'OK' if ok else 'NG'}")
+        time.sleep(wait)
+        frame = _capture_frame(config)
+        if frame is None:
+            print("  [helper reset] フレーム取得失敗 → 次の Escape を試します")
+            continue
+        try:
+            state = assess_helper_reset_state(
+                frame,
+                left_context=trimmed_left_context,
+                target_text=target_kanji,
+            )
+        except MlxVlmImeError as exc:
+            print(f"  [helper reset] VLM判定失敗 → 次の Escape を試します: {exc}")
+            continue
+        print(
+            "  [helper reset] 判定: "
+            f"left_context_preserved={state['left_context_preserved']} "
+            f"composition_cleared={state['composition_cleared']} ready={state['ready']}"
+        )
+        if state["ready"]:
+            return True
+        if not state["left_context_preserved"]:
+            print("  [helper reset] 左側の既入力文字が壊れた可能性あり → これ以上の Escape は中止")
+            return False
+    print(f"  [helper reset] {max_escape_count} 回の Escape 後も安全なキャンセル完了を確認できませんでした")
+    return False
 
 
 def _cleanup_after_helper_backspace(
@@ -2220,6 +2269,7 @@ def _try_helper_word_fallback(
     target_kanji: str,
     wait_sec: float,
     romaji: str = "",
+    left_context: str = "",
 ) -> bool:
     """ヘルパー単語フォールバック: テキストモデルにヘルパー単語を問い合わせ、
     変換後に余分な文字を削除して目標漢字を入力する。
@@ -2248,8 +2298,15 @@ def _try_helper_word_fallback(
     # エントリー状態: target_kanji に対応するIMEポップアップが開いている
     # コミットなしでキャンセルしてから問い合わせに入る。問い合わせ待ちの間に
     # 誤候補（例: 「化」）を残したままにしないため、先に IME 組成を必ずクリアする。
-    print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc×4, 500ms間隔)...")
-    _reset_ime_before_helper_lookup(client)
+    print("  [ヘルパー単語] IMEポップアップをキャンセルし、各 Esc 後に VLM で状態確認します...")
+    if not _reset_ime_before_helper_lookup(
+        client,
+        config,
+        target_kanji=target_kanji,
+        left_context=left_context,
+    ):
+        print("  [ヘルパー単語] IME キャンセル完了を安全に確認できませんでした → フォールバック失敗")
+        return False
 
     text_runtime_label = _ime_text_runtime_label()
     print(f"  [ヘルパー単語] 「{target_char}」のヘルパー単語を{text_runtime_label}に問い合わせ中...")
@@ -2863,6 +2920,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
     print(f"初期 IME モード: {current_mode!r}")
 
     segments = list(_iter_segments_for_input(text))
+    typed_prefix_context = ""
     for index, seg in enumerate(segments):
         seg_text = seg["text"]
         seg_romaji = seg["romaji"]
@@ -2906,6 +2964,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                 type_kanji_via_ime(
                     seg_romaji, seg_text,
                     _current_ime_mode=current_mode,
+                    _typed_prefix_context=typed_prefix_context,
                 )
             time.sleep(0.25)
 
@@ -2934,6 +2993,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
         elif any(ch in _JP_SYMBOL_IME_READINGS or ch in _CHAR_ASCII_FALLBACK for ch in seg_text):
             # ※ などの特殊記号、または μ などの ASCII 代替文字を含む: 文字単位で処理
             # ASCII 部分は英数字モードで直接入力、特殊記号は IME で読み変換
+            segment_prefix_context = typed_prefix_context
             for ch in seg_text:
                 if ch in _JP_SYMBOL_IME_READINGS:
                     reading = _JP_SYMBOL_IME_READINGS[ch]
@@ -2942,6 +3002,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                     type_kanji_via_ime(
                         reading, ch,
                         _current_ime_mode=current_mode,
+                        _typed_prefix_context=segment_prefix_context,
                     )
                 elif ch in _CHAR_ASCII_FALLBACK:
                     # μ など BLE 経由で直接送れない文字は ASCII 代替文字で入力
@@ -2960,6 +3021,9 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                     ok = client.type_text(ch)
                     if ok:
                         client.press_key("enter")
+                segment_prefix_context += ch
+            typed_prefix_context = segment_prefix_context
+            continue
 
         else:
             # ひらがなのみ: ローマ字直接入力後に Enter で IME 組成を明示的に確定する
@@ -2971,6 +3035,8 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             print(f"key:enter -> {'OK' if ok else 'NG'}")
             # 確定後、WindowsのIMEが処理を完了するまで待機
             time.sleep(0.15)
+
+        typed_prefix_context += seg_text
 
     print("\n文章入力完了")
 
