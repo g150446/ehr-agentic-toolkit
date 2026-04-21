@@ -393,8 +393,13 @@ def _capture_helper_reset_compare_frame(
     frame: np.ndarray,
     *,
     debug_name: str = "",
+    screen_type: Optional[str] = None,
 ) -> Optional[np.ndarray]:
-    cropped = mlx_vlm_ime.crop_to_input_region(frame, debug_name=f"{debug_name}_panel" if debug_name else "")
+    cropped, _resolved_screen_type = mlx_vlm_ime.crop_helper_reset_region(
+        frame,
+        screen_type=screen_type,
+        debug_name=debug_name,
+    )
     if cropped.size == 0:
         return None
     if debug_name:
@@ -414,15 +419,21 @@ def _capture_helper_reset_baseline(
     frame = _capture_frame(config)
     if frame is None:
         return None
+    screen_type = mlx_vlm_ime.classify_helper_reset_screen(
+        frame,
+        debug_name=f"{debug_name}_classify",
+    )
     cropped = _capture_helper_reset_compare_frame(
         frame,
         debug_name=debug_name,
+        screen_type=screen_type,
     )
     if cropped is None:
         return None
     return {
         "cropped_frame": cropped,
         "anchor_text": anchor_text,
+        "screen_type": screen_type,
     }
 
 
@@ -2093,6 +2104,7 @@ def _reset_ime_before_helper_lookup(
             "  [helper reset] baseline image ready: "
             f"shape={baseline_frame.shape} anchor={anchor_text or baseline_state.get('anchor_text', '')!r}"
         )
+    baseline_screen_type = baseline_state.get("screen_type") if isinstance(baseline_state, dict) else None
     for attempt in range(1, max_escape_count + 1):
         ok = client.press_key("escape")
         print(f"  [helper reset] key:escape ({attempt}/{max_escape_count}) -> {'OK' if ok else 'NG'}")
@@ -2105,6 +2117,7 @@ def _reset_ime_before_helper_lookup(
             current_frame = _capture_helper_reset_compare_frame(
                 frame,
                 debug_name=f"helper_reset_compare_attempt_{attempt}",
+                screen_type=baseline_screen_type if isinstance(baseline_screen_type, str) else None,
             )
             if current_frame is None:
                 print("  [helper reset] 比較用クロップ取得失敗 → 次の Escape を試します")
@@ -2116,6 +2129,7 @@ def _reset_ime_before_helper_lookup(
                     left_context=trimmed_left_context,
                     anchor_text=anchor_text,
                     target_text=target_kanji,
+                    screen_type=baseline_screen_type if isinstance(baseline_screen_type, str) else "",
                 )
             except MlxVlmImeError as exc:
                 print(f"  [helper reset] 二画像VLM比較失敗 → 次の Escape を試します: {exc}")
@@ -2124,6 +2138,11 @@ def _reset_ime_before_helper_lookup(
             if ready:
                 print("  [helper reset][compare] baseline と一致 → Escape 停止")
                 return True
+            if attempt < max_escape_count:
+                print(
+                    "  [helper reset][compare] baseline と未一致でリセット未完了 → "
+                    "次の Escape を送ります"
+                )
             continue
         try:
             state = assess_helper_reset_state(
@@ -2141,10 +2160,16 @@ def _reset_ime_before_helper_lookup(
             f"composition_cleared={state['composition_cleared']} ready={state['ready']}"
         )
         if state["ready"]:
+            print("  [helper reset] ready=true → Escape 停止")
             return True
         if not state["left_context_preserved"]:
             print("  [helper reset] 左側の既入力文字が壊れた可能性あり → これ以上の Escape は中止")
             return False
+        if attempt < max_escape_count:
+            print(
+                "  [helper reset] ready=false のためリセット未完了 → "
+                "次の Escape を送ります"
+            )
     print(f"  [helper reset] {max_escape_count} 回の Escape 後も安全なキャンセル完了を確認できませんでした")
     return False
 

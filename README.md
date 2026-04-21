@@ -246,7 +246,7 @@ python -m automation.ehr_input --help
 - 各実行のログは `logs/*.txt` に保存され、先頭に **実行ファイル名・生のコマンドライン・解析済みオプション要約** が記録されます。
 - 変換が期待どおりでない場合は、`[VLM一致]`、`[候補照合/romaji]`、`[試行N]`、`[ヘルパー単語]` の行を順に追うと、**候補番号の誤選択なのか / 候補未発見なのか / 後続フォールバックへ落ちたのか** を切り分けやすくなります。
 - pure kanji ターゲットでは、**読みだけ一致する mixed 候補を即採用しない**実装になっており、曖昧な候補はヘルパー単語 fallback やハイライト候補確認へ回します。
-- ヘルパー単語 fallback に入る直前は、各 `Escape` 後に画面を再キャプチャし、**直前の正常確定時に保存した baseline 画像**と **Esc 後の current 画像**を VLM に比較させます。患者カルテの 5 分割が検出できた場合は OpenCV で左から 3 番目エリアだけを比較対象にし、特に **最後の確定語（例: `咽頭`）の後ろに余分な文字が増えていないか** を見て、baseline と同じ状態に戻った時点で停止します。`captures/` には `debug_panel_detection_*`、`debug_helper_reset_*_compare_crop.png`、`debug_vlm_input_helper_reset_compare_*` が残り、`logs/*.txt` の `[helper reset][compare]` 行で各 `Esc` 後の yes/no 判定を確認できます。
+- ヘルパー単語 fallback に入る直前は、各 `Escape` 後に画面を再キャプチャし、**直前の正常確定時に保存した baseline 画像**と **Esc 後の current 画像**を VLM に比較させます。患者カルテ画面は従来どおり OpenCV で左から 3 番目エリアだけを比較対象にし、**Windows Notepad** と判定された場合は Notepad 本文領域だけを切り出して上メニュー帯と Windows タスクバーを除外します。特に **最後の確定語（例: `咽頭`）の後ろに余分な文字が増えていないか** を見て、baseline と同じ状態に戻った時点で停止します。`captures/` には `debug_panel_detection_*`、`debug_helper_reset_*_compare_crop.png`、`debug_vlm_input_helper_reset_compare_*` が残り、`logs/*.txt` の `[helper reset][compare]` 行で各 `Esc` 後の yes/no 判定を確認できます。
 
 > **既知の問題**: `data/patient_records/asthma_1.txt` での再検証では、空白のまま止まる問題は解消しましたが、`咽頭痛` のような語でまだ誤変換が残ります。特に長文冒頭では `[` のような記号未反映や、`昨晩` / `咳嗽` 付近の変換揺れが残っています。
 

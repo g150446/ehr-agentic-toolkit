@@ -1,7 +1,9 @@
 from contextlib import redirect_stdout
 import io
+import json
 
 import automation.mlx_vlm_ime as mlx_vlm_ime
+import numpy as np
 
 
 def test_extract_message_text_prefers_content():
@@ -60,7 +62,7 @@ def test_extract_message_text_handles_real_log_style_reasoning_only_response():
 
 def test_read_popup_candidates_numbered_vlm_parses_natural_language_reasoning(monkeypatch):
     monkeypatch.setattr(mlx_vlm_ime, "_crop_popup_region", lambda frame, debug_name="": frame)
-    monkeypatch.setattr(mlx_vlm_ime, "_encode_image_data_url", lambda frame: "data:image/png;base64,xxx")
+    monkeypatch.setattr(mlx_vlm_ime, "_encode_image_data_url", lambda frame, **kwargs: "data:image/png;base64,xxx")
     monkeypatch.setattr(
         mlx_vlm_ime,
         "_call_mlx_vlm_with_image",
@@ -75,7 +77,7 @@ def test_read_popup_candidates_numbered_vlm_parses_natural_language_reasoning(mo
 
 def test_read_popup_candidates_numbered_vlm_parses_real_log_style_item_lines(monkeypatch):
     monkeypatch.setattr(mlx_vlm_ime, "_crop_popup_region", lambda frame, debug_name="": frame)
-    monkeypatch.setattr(mlx_vlm_ime, "_encode_image_data_url", lambda frame: "data:image/png;base64,xxx")
+    monkeypatch.setattr(mlx_vlm_ime, "_encode_image_data_url", lambda frame, **kwargs: "data:image/png;base64,xxx")
     monkeypatch.setattr(
         mlx_vlm_ime,
         "_call_mlx_vlm_with_image",
@@ -115,3 +117,143 @@ def test_suggest_ime_helper_word_logs_openrouter_runtime(monkeypatch):
     output = stdout.getvalue()
     assert "OpenRouter(google/gemma-4-26b-a4b-it)応答" in output
     assert "Qwen3応答" not in output
+
+
+def test_classify_helper_reset_screen_keeps_patient_record_without_vlm(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(mlx_vlm_ime, "detect_patient_record_panel3", lambda image: (40, 160))
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_call_mlx_vlm_with_image",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("VLM should not be called")),
+    )
+
+    assert mlx_vlm_ime.classify_helper_reset_screen(frame) == "patient_record"
+
+
+def test_crop_notepad_document_region_excludes_taskbar_and_menu():
+    frame = np.full((300, 400, 3), 180, dtype=np.uint8)
+    frame[20:40, 50:350] = 210
+    frame[40:240, 50:350] = 255
+    frame[270:, :] = 20
+
+    cropped = mlx_vlm_ime.crop_notepad_document_region(frame)
+
+    assert cropped.shape == (200, 300, 3)
+    assert np.all(cropped == 255)
+
+
+def test_crop_notepad_document_region_trims_white_window_header():
+    frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+    frame[0:30, :] = 40
+    frame[30:105, :] = 230
+    frame[1005:1080, :] = 225
+    frame[1006:1013, :] = 30
+    frame[:, 1910:] = 235
+
+    cropped = mlx_vlm_ime.crop_notepad_document_region(frame)
+
+    assert cropped.shape[0] < 1000
+    assert cropped.shape[1] < 1920
+    assert cropped.shape[0] > 700
+    assert cropped.shape[1] > 1500
+
+
+def test_crop_helper_reset_region_uses_notepad_branch(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(mlx_vlm_ime, "classify_helper_reset_screen", lambda image, debug_name="": "notepad")
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_notepad_document_region",
+        lambda image, debug_name="": np.full((40, 80, 3), 255, dtype=np.uint8),
+    )
+
+    cropped, screen_type = mlx_vlm_ime.crop_helper_reset_region(frame, debug_name="helper_reset")
+
+    assert screen_type == "notepad"
+    assert cropped.shape == (40, 80, 3)
+
+
+def test_save_thinking_log_writes_reasoning_details(tmp_path, monkeypatch):
+    monkeypatch.setattr(mlx_vlm_ime, "_logs_dir", lambda: str(tmp_path))
+
+    mlx_vlm_ime._save_thinking_log(
+        prompt="compare prompt",
+        image_count=2,
+        model="test-model",
+        url="http://localhost:8000",
+        reasoning_requested=True,
+        result={
+            "choices": [
+                {
+                    "message": {
+                        "content": "yes",
+                        "reasoning": "main reasoning",
+                        "reasoning_details": [{"text": "detail one"}],
+                    }
+                }
+            ]
+        },
+    )
+
+    logs = list(tmp_path.glob("*_thinking.txt"))
+    assert len(logs) == 1
+    text = logs[0].read_text(encoding="utf-8")
+    assert "image_count: 2" in text
+    assert "reasoning_requested: True" in text
+    assert "reasoning_present: True" in text
+    assert "compare prompt" in text
+    assert "main reasoning" in text
+    assert "detail one" in text
+
+
+def test_wait_for_vlm_cooldown_sleeps_until_three_seconds(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(mlx_vlm_ime, "_last_vlm_response_monotonic", 10.0)
+    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 11.25)
+    monkeypatch.setattr(mlx_vlm_ime.time, "sleep", lambda seconds: events.append(seconds))
+
+    mlx_vlm_ime._wait_for_vlm_cooldown()
+
+    assert events == [1.75]
+
+
+def test_call_mlx_vlm_with_content_uses_openrouter_provider_for_reasoning(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"yes","reasoning":"trace"}}]}'
+
+    def _fake_urlopen(req, timeout):
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        captured["headers"] = dict(req.header_items())
+        return FakeResponse()
+
+    monkeypatch.setattr(mlx_vlm_ime, "_wait_for_vlm_cooldown", lambda: None)
+    monkeypatch.setattr(mlx_vlm_ime.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 10.0)
+
+    result = mlx_vlm_ime._call_mlx_vlm_with_content(
+        [{"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}}],
+        "compare prompt",
+        url="https://openrouter.ai/api/v1/chat/completions",
+        api_key="token",
+        enable_reasoning=True,
+    )
+
+    assert result == "yes"
+    assert captured["payload"]["include_reasoning"] is True
+    assert captured["payload"]["provider"] == {"order": ["io-net"]}
+    assert "reasoning" not in captured["payload"]
+    assert captured["headers"]["Http-referer"] == "https://github.com/g150446/ehr-agentic-toolkit"
+    assert captured["headers"]["X-title"] == "EHR Agentic Toolkit"
