@@ -41,6 +41,76 @@ def test_run_cli_uses_file_contents_for_open_test(monkeypatch, tmp_path):
     assert events == ["open", "COVID-19の感染を確認した"]
 
 
+def test_find_patient_search_tab_accepts_fuzzy_ocr_read():
+    tab_bbox = [[14, 100], [80, 100], [80, 124], [14, 124]]
+    other_bbox = [[204, 102], [296, 102], [296, 126], [204, 126]]
+
+    match = ehr_input._find_patient_search_tab(
+        [
+            (other_bbox, "受付患若一覧", 0.27),
+            (tab_bbox, "愚着検索", 0.47),
+        ]
+    )
+
+    assert match == (47, 112, "愚着検索", 0.47)
+
+
+def test_open_test_patient_chart_clicks_fuzzy_patient_search_tab(monkeypatch):
+    events = []
+    frame = _make_frame(1080, 1920)
+    config = SimpleNamespace(
+        capture_device_index=0,
+        capture_width=1920,
+        capture_height=1080,
+    )
+
+    class DummyClient:
+        def switch_to_mouse_mode(self):
+            events.append(("mode", "mouse"))
+            return True
+
+        def move_mouse_to_position(self, x, y):
+            events.append(("moveto", x, y))
+            return True
+
+        def click(self):
+            events.append(("click",))
+            return True
+
+        def switch_to_keyboard_mode(self):
+            events.append(("mode", "keyboard"))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: config)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_request_ocr_results",
+        lambda frame, config: [
+            ([[14, 100], [80, 100], [80, 124], [14, 124]], "愚着検索", 0.47),
+            ([[204, 102], [296, 102], [296, 126], [204, 126]], "受付患若一覧", 0.27),
+        ],
+    )
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(
+        ehr_input,
+        "input_text_to_field",
+        lambda **kwargs: events.append(("input", kwargs)),
+    )
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda *_: None)
+
+    ehr_input.open_test_patient_chart()
+
+    assert ("moveto", 47, 112) in events
+    assert ("click",) in events
+    assert ("input", {"input_text": "tesuto", "label": "フリガナ"}) in events
+    assert events.count(("key", "enter")) == 2
+
+
 def test_run_cli_parses_openrouter(monkeypatch):
     configured = {}
     events = []
@@ -299,8 +369,8 @@ def test_segment_japanese_with_default_vlm_falls_back_to_local(monkeypatch):
     ]
 
 
-def test_segment_japanese_with_default_vlm_uses_vlm_romaji(monkeypatch):
-    """VLM が返した romaji をそのまま使う（pykakasi で上書きしない）。"""
+def test_segment_japanese_with_default_vlm_keeps_cutlet_aligned_romaji(monkeypatch):
+    """cutlet と一致する VLM romaji はそのまま使う。"""
     monkeypatch.setattr(
         ehr_input,
         "segment_japanese_text_with_mlx_vlm",
@@ -582,7 +652,7 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
     )
 
 
-def test_try_helper_word_fallback_clears_ime_before_helper_lookup(monkeypatch):
+def test_try_helper_word_fallback_resets_ime_with_four_escapes_before_helper_lookup(monkeypatch):
     events = []
     frame = _make_frame()
 
@@ -603,13 +673,8 @@ def test_try_helper_word_fallback_clears_ime_before_helper_lookup(monkeypatch):
 
     monkeypatch.setattr(
         ehr_input,
-        "_cancel_ime_popup_safe",
-        lambda client, text, wait=0.15, config=None, romaji="": events.append(("cancel", text)),
-    )
-    monkeypatch.setattr(
-        ehr_input,
-        "_clear_pending_ime_composition",
-        lambda client, config, max_backspaces: events.append(("clear", max_backspaces)),
+        "_reset_ime_before_helper_lookup",
+        lambda client, escape_count=4, wait=0.5: events.append(("reset", escape_count, wait)),
     )
     monkeypatch.setattr(
         ehr_input,
@@ -626,7 +691,7 @@ def test_try_helper_word_fallback_clears_ime_before_helper_lookup(monkeypatch):
     )
 
     assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過", 0.0)
-    assert events[:3] == [("cancel", "過"), ("clear", 3), ("suggest", "過")]
+    assert events[:2] == [("reset", 4, 0.5), ("suggest", "過")]
 
 
 def test_fallback_remaining_after_prefix_cancels_and_reinputs(monkeypatch):
@@ -902,6 +967,22 @@ def test_clear_pending_ime_composition_sends_trailing_esc_after_clearing(monkeyp
     ehr_input._clear_pending_ime_composition(DummyClient(), config, max_backspaces=4)
 
     assert events == [("key", "backspace"), ("key", "escape")]
+
+
+def test_reset_ime_before_helper_lookup_sends_escape_four_times():
+    events = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    ehr_input._reset_ime_before_helper_lookup(DummyClient())
+
+    assert events == [("key", "escape"), ("key", "escape"), ("key", "escape"), ("key", "escape")]
+
+
+def test_type_japanese_sentence_routes_japanese_punctuation_via_ascii_keys(monkeypatch):
     events = []
 
     class DummyClient:
@@ -1014,6 +1095,13 @@ def test_validate_vlm_romaji_preserves_correct_hiragana_romaji():
     assert result[0] == {"text": "のみ", "romaji": "nomi"}
 
 
+def test_validate_vlm_romaji_fixes_hinkai_vowel_drop():
+    """頻回 hinka のような末尾母音脱落は cutlet 期待値で補正する。"""
+    segments = [{"text": "頻回", "romaji": "hinka"}]
+    result = ehr_input._validate_vlm_romaji(segments)
+    assert result[0] == {"text": "頻回", "romaji": "hinkai"}
+
+
 def test_segment_text_for_input_haiya_override_uses_no_for_ya():
     """肺野 override must split into 肺(hai)+野(no), not 野(ya).
 
@@ -1080,6 +1168,11 @@ def test_kanji_to_romaji_seishoku():
 def test_kanji_to_romaji_seichuu():
     """静注 (medical IV injection) must return 'seichuu'."""
     assert ehr_input._kanji_to_romaji("静注") == "seichuu"
+
+
+def test_kanji_to_romaji_hinkai():
+    """頻回 should use cutlet-based reading 'hinkai', not 'hinka'."""
+    assert ehr_input._kanji_to_romaji("頻回") == "hinkai"
 
 
 def test_validate_vlm_romaji_preserves_seishoku():

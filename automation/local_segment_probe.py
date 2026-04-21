@@ -1,4 +1,4 @@
-"""CLI probe for testing local (sudachipy + pykakasi) Japanese segmentation."""
+"""CLI probe for testing local (sudachipy + cutlet) Japanese segmentation."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def main(argv: list[str] | None = None) -> int:
 
     text = args[0]
     print(f"対象文: {text!r}")
-    print("エンジン: sudachipy (SplitMode.C) + pykakasi (hepburn)")
+    print("エンジン: sudachipy (SplitMode.C) + cutlet (+ pykakasi for katakana)")
 
     summary, segments = segment_japanese_text_locally(text)
 

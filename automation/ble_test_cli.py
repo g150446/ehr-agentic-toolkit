@@ -412,7 +412,7 @@ class BLETestShell(cmd.Cmd):
         if not self._check_connection():
             return
 
-        valid_keys = ['enter', 'return', 'tab', 'backspace', 'delete', 'esc']
+        valid_keys = ['enter', 'return', 'tab', 'backspace', 'delete', 'esc', 'escape']
 
         if not arg:
             print(ColoredOutput.error("No key specified"))
@@ -424,6 +424,8 @@ class BLETestShell(cmd.Cmd):
         # Allow 'return' as alias for 'enter'
         if key == 'return':
             key = 'enter'
+        elif key == 'escape':
+            key = 'esc'
 
         if key not in valid_keys:
             print(ColoredOutput.error(f"Unknown key: {key}"))
@@ -442,9 +444,20 @@ class BLETestShell(cmd.Cmd):
         """Help for press command."""
         print("\nPress a special key")
         print("Usage: press <key>")
-        print("Valid keys: enter, tab, backspace, delete, esc")
+        print("Valid keys: enter, tab, backspace, delete, esc, escape")
         print("Example: press enter")
         print("\nNote: Must be in keyboard mode first (use 'keyboard' command)")
+
+    def do_esc(self, arg):
+        """Press Escape once."""
+        del arg
+        self.do_press("esc")
+
+    def help_esc(self):
+        """Help for esc command."""
+        print("\nPress Escape once")
+        print("Usage: esc")
+        print("\nEquivalent to: press esc")
 
     # ========== Mouse Commands ==========
 

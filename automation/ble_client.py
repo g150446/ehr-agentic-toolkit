@@ -18,6 +18,13 @@ SOCKET_PATH = "/tmp/ble_server.sock"
 class BLEClient:
     """Unix ソケット経由で ble_server.py にコマンドを送るクライアント"""
 
+    @staticmethod
+    def _normalize_key_name(key: str) -> str:
+        normalized = key.strip().lower()
+        if normalized == "escape":
+            return "esc"
+        return normalized
+
     def _send(self, req: dict, timeout: float = 30.0) -> dict:
         """1コマンドを送信して結果を返す"""
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -77,7 +84,7 @@ class BLEClient:
         return self._send({"cmd": "type_text", "text": text})["ok"]
 
     def press_key(self, key: str) -> bool:
-        return self._send({"cmd": "press_key", "key": key})["ok"]
+        return self._send({"cmd": "press_key", "key": self._normalize_key_name(key)})["ok"]
 
     def press_ime_toggle(self) -> bool:
         """IME 半角/全角トグルキーを送る"""

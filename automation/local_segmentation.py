@@ -1,19 +1,18 @@
-"""Helpers for local Japanese text segmentation using sudachipy + pykakasi.
+"""Helpers for local Japanese text segmentation using sudachipy + cutlet.
 
-sudachipy (形態素解析) でテキストを分割し、pykakasi (ローマ字変換) でヘボン式
-ローマ字を生成する。LLM ベースの実装と異なり、辞書引きによる決定論的な変換なので
-長母音（ちりょう → chiryou）などを確実に正しく処理できる。
+sudachipy (形態素解析) でテキストを分割し、cutlet ベースの IME 向けローマ字化
+ヘルパーで ASCII ローマ字を生成する。純カタカナのみ pykakasi を併用し、
+長音符や中黒を JIS IME 入力に合わせて扱う。
 """
 
 from __future__ import annotations
 
 import sudachipy
 import sudachidict_core  # noqa: F401  # 辞書パッケージ（インポートで登録される）
-from pykakasi import kakasi
+from automation.romaji import katakana_to_romaji_for_ime, romanize_for_ime
 
 # モジュールレベルでシングルトンを保持（初期化コストを1回に抑える）
 _dic: sudachipy.Dictionary | None = None
-_kks: kakasi | None = None
 
 
 def _get_dic() -> sudachipy.Dictionary:
@@ -21,13 +20,6 @@ def _get_dic() -> sudachipy.Dictionary:
     if _dic is None:
         _dic = sudachipy.Dictionary(dict="core")
     return _dic
-
-
-def _get_kks() -> kakasi:
-    global _kks
-    if _kks is None:
-        _kks = kakasi()
-    return _kks
 
 
 # 直前のトークンに結合する品詞の組み合わせ
@@ -92,14 +84,13 @@ def _katakana_to_romaji(kana: str) -> str:
     （非 ASCII 文字を BLE HID で送ると予測不能なキー入力になるため。）
     """
     kana_normalized = kana.replace("ー", "-").replace("・", "/")
-    kks = _get_kks()
-    return "".join(item["hepburn"] for item in kks.convert(kana_normalized))
+    return katakana_to_romaji_for_ime(kana_normalized)
 
 
 def segment_japanese_text_locally(
     text: str,
 ) -> tuple[str, list[dict[str, str]]]:
-    """sudachipy + pykakasi で日本語テキストを IME 入力単位に分割する。
+    """sudachipy + cutlet で日本語テキストを IME 入力単位に分割する。
 
     Returns:
         (summary, segments) のタプル。
@@ -132,9 +123,9 @@ def segment_japanese_text_locally(
         else:
             segments.append({"text": surface, "reading": reading})
 
-    # 各セグメントの reading → hepburn romaji に変換
-    # 句読点セグメントはすでに romaji を持っているのでスキップ
-    # 既知の医療用語（Windows IME が一語変換できないもの）は手動分割テーブルで展開する
+    # 各セグメントの surface を IME 向け romaji に変換する。
+    # 句読点セグメントはすでに romaji を持っているのでスキップ。
+    # 既知の医療用語（Windows IME が一語変換できないもの）は手動分割テーブルで展開する。
     result: list[dict[str, str]] = []
     for seg in segments:
         if "romaji" in seg:
@@ -143,7 +134,7 @@ def segment_japanese_text_locally(
             for sub_text, sub_romaji in _MANUAL_WORD_SPLITS[seg["text"]]:
                 result.append({"text": sub_text, "romaji": sub_romaji})
         else:
-            romaji = _katakana_to_romaji(seg["reading"])
+            romaji = romanize_for_ime(seg["text"])
             result.append({"text": seg["text"], "romaji": romaji})
 
     summary = " / ".join(f"{s['text']}({s['romaji']})" for s in result)

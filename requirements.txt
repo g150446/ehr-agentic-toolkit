@@ -10,7 +10,9 @@ torchvision>=0.15.0
 ultralyticsplus>=0.0.28
 
 # OCR
-pykakasi>=2.2.0  # Japanese kanji/kana to romaji conversion
+cutlet>=0.4.0  # Japanese kanji/kana to romaji conversion
+unidic-lite>=1.0.8  # Dictionary for cutlet/fugashi
+pykakasi>=2.2.0  # Katakana-to-romaji conversion for IME-specific long-vowel handling
 sudachipy>=0.6.10
 sudachidict_core>=20241021
 easyocr>=1.7.0

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
+from difflib import SequenceMatcher
 import json
 import cv2
 import re
@@ -37,6 +38,7 @@ from automation.local_segmentation import (
     _katakana_to_romaji,
     segment_japanese_text_locally,
 )
+from automation.romaji import romanize_for_ime
 from automation.mlx_vlm_segmentation import (
     MlxVlmSegmentationError,
     segment_japanese_text_with_mlx_vlm,
@@ -385,6 +387,66 @@ def _request_ocr_results(frame, config) -> list[tuple]:
     return run_ocr(_load_ocr_engine(config), frame)
 
 
+def _normalize_ocr_ui_text(text: str) -> str:
+    return re.sub(r"\s+", "", text).translate(_TEXT_NORMALIZATION_MAP)
+
+
+def _find_patient_search_tab(ocr_results: list[tuple], *, max_y: int = 180) -> Optional[tuple[int, int, str, float]]:
+    """Return the best OCR match for the patient-search tab near the top tab row."""
+    target = "患者検索"
+    best_match: Optional[tuple[tuple[float, float, int, int], tuple[int, int, str, float]]] = None
+
+    for bbox, text, conf in ocr_results:
+        xs = [int(p[0]) for p in bbox]
+        ys = [int(p[1]) for p in bbox]
+        cx = (min(xs) + max(xs)) // 2
+        cy = (min(ys) + max(ys)) // 2
+        if cy > max_y:
+            continue
+
+        normalized = _normalize_ocr_ui_text(text)
+        if not normalized:
+            continue
+
+        if target in normalized:
+            score = 100.0
+        else:
+            if "検索" not in normalized:
+                continue
+
+            score = 0.0
+            if normalized.endswith("検索"):
+                score += 3.0
+            if len(normalized) == len(target):
+                score += 1.0
+            if normalized.endswith("一覧"):
+                score -= 2.0
+            if "患者" in normalized:
+                score += 1.5
+            elif "患" in normalized or "者" in normalized:
+                score += 0.5
+            score += SequenceMatcher(None, normalized, target).ratio()
+            if score < 4.0:
+                continue
+
+        rank = (score, float(conf), -cy, -cx)
+        match = (cx, cy, text, float(conf))
+        if best_match is None or rank > best_match[0]:
+            best_match = (rank, match)
+
+    if best_match is None:
+        return None
+    return best_match[1]
+
+
+def _is_patient_search_screen(ocr_results: list[tuple]) -> bool:
+    for _, text, _ in ocr_results:
+        normalized = _normalize_ocr_ui_text(text)
+        if "フリガナ" in normalized or "患者番号を入力" in normalized:
+            return True
+    return False
+
+
 def _resolve_text_argument(raw: str) -> str:
     """Resolve a CLI text argument, loading file contents when given a path."""
     candidate_path = Path(raw)
@@ -536,12 +598,13 @@ def _expand_segment_overrides(segments: list[dict[str, str]]) -> list[dict[str, 
 
 
 def _validate_vlm_romaji(segments: list[dict[str, str]]) -> list[dict[str, str]]:
-    """VLM が返したローマ字を pykakasi で検証し、音節重複やリーク文字を修正する。
+    """VLM が返したローマ字を cutlet ベースの期待値で検証し、典型誤読を修正する。
 
-    漢字を含むセグメントのみ対象。VLM のローマ字が pykakasi より長い場合のみ
-    修正する（音節重複 e.g. kokikisei→kokisei や隣接セグメントからの文字リーク
-    e.g. kyuukise→kyuuki を検出するヒューリスティック）。
-    pykakasi が医学用語で誤変換する場合（VLM が同等以下の長さ）は VLM を信頼する。
+    漢字を含むセグメントでは、cutlet + 明示オーバーライドで求めた期待ローマ字と
+    VLM の出力を比較する。VLM が余計な音節を含む場合に加え、期待値と高類似だが
+    一部の母音が脱落しているケース（例: 頻回 hinka → hinkai）も補正する。
+    医学用語で cutlet 側がまだ弱いケースは手動オーバーライドで吸収し、それでも
+    期待値と大きく異なる場合は VLM を維持する。
 
     純粋ひらがなセグメントも対象: 助詞 は→ha, へ→he, を→wo など発音と入力
     ローマ字が異なる文字の修正を行う。
@@ -554,7 +617,7 @@ def _validate_vlm_romaji(segments: list[dict[str, str]]) -> list[dict[str, str]]
         if _is_pure_hiragana(text):
             expected = _kanji_to_romaji(text)
             if seg["romaji"] != expected:
-                print(f"[ローマ字補正] {text!r}: VLM={seg['romaji']!r} → pykakasi={expected!r}")
+                print(f"[ローマ字補正] {text!r}: VLM={seg['romaji']!r} → cutlet={expected!r}")
                 corrected.append({"text": text, "romaji": expected})
             else:
                 corrected.append(seg)
@@ -563,8 +626,23 @@ def _validate_vlm_romaji(segments: list[dict[str, str]]) -> list[dict[str, str]]
             corrected.append(seg)
             continue
         expected = _kanji_to_romaji(text)
-        if seg["romaji"] != expected and len(seg["romaji"]) > len(expected):
-            print(f"[ローマ字補正] {text!r}: VLM={seg['romaji']!r} → pykakasi={expected!r}")
+        similarity = SequenceMatcher(None, seg["romaji"], expected).ratio()
+        should_override = (
+            seg["romaji"] != expected
+            and (
+                len(seg["romaji"]) > len(expected)
+                or (
+                    similarity >= 0.88
+                    and (
+                        seg["romaji"] in expected
+                        or expected in seg["romaji"]
+                        or abs(len(seg["romaji"]) - len(expected)) <= 1
+                    )
+                )
+            )
+        )
+        if should_override:
+            print(f"[ローマ字補正] {text!r}: VLM={seg['romaji']!r} → cutlet={expected!r}")
             corrected.append({"text": text, "romaji": expected})
         else:
             corrected.append(seg)
@@ -796,20 +874,26 @@ def open_test_patient_chart() -> None:
 
     results = _request_ocr_results(frame, config)
 
-    tab_x: Optional[int] = None
-    tab_y: Optional[int] = None
-    for bbox, text, conf in results:
-        if "患者検索" in text:
-            xs = [p[0] for p in bbox]
-            ys = [p[1] for p in bbox]
-            tab_x = int(sum(xs) / len(xs))
-            tab_y = int(sum(ys) / len(ys))
-            print(f"「患者検索」検出: {text!r} at ({tab_x}, {tab_y}), conf={conf:.2f}")
-            break
-
-    if tab_x is None or tab_y is None:
-        print("「患者検索」タブが検出できませんでした（既に選択済みと判断）。スキップします。")
+    tab_match = _find_patient_search_tab(results)
+    if tab_match is None:
+        if _is_patient_search_screen(results):
+            print("患者検索画面が既に前面にあるため、「患者検索」タブクリックをスキップします。")
+        else:
+            visible_text = ", ".join(repr(text) for _, text, _ in results[:12]) or "<none>"
+            raise RuntimeError(
+                "「患者検索」タブを OCR で検出できませんでした。"
+                f" 先頭OCR候補: {visible_text}"
+            )
     else:
+        tab_x, tab_y, matched_text, conf = tab_match
+        normalized = _normalize_ocr_ui_text(matched_text)
+        if normalized == "患者検索":
+            print(f"「患者検索」検出: {matched_text!r} at ({tab_x}, {tab_y}), conf={conf:.2f}")
+        else:
+            print(
+                f"「患者検索」タブをOCR補正で検出: {matched_text!r} -> '患者検索' "
+                f"at ({tab_x}, {tab_y}), conf={conf:.2f}"
+            )
         client = _wait_for_ble_connected()
 
         ok = client.switch_to_mouse_mode()
@@ -1921,6 +2005,18 @@ def _clear_pending_ime_composition(
         time.sleep(0.1)
 
 
+def _reset_ime_before_helper_lookup(
+    client: "BLEClient",
+    *,
+    escape_count: int = 4,
+    wait: float = 0.5,
+) -> None:
+    """Cancel helper-word precomposition conservatively with repeated Escape presses."""
+    for _ in range(escape_count):
+        client.press_key("escape")
+        time.sleep(wait)
+
+
 def _cleanup_after_helper_backspace(
     client: "BLEClient",
     config,
@@ -2152,19 +2248,8 @@ def _try_helper_word_fallback(
     # エントリー状態: target_kanji に対応するIMEポップアップが開いている
     # コミットなしでキャンセルしてから問い合わせに入る。問い合わせ待ちの間に
     # 誤候補（例: 「化」）を残したままにしないため、先に IME 組成を必ずクリアする。
-    print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc + Backspace×N)...")
-    if romaji:
-        _hira_len = _romaji_to_hiragana_len(romaji)
-    else:
-        _hira_len = _text_to_hiragana_len(target_kanji)
-    _cancel_ime_popup_safe(client, target_kanji, wait=0.3, config=config, romaji=romaji)
-    # _cancel_ime_popup_safe 内で固定 BS + VLM ガード済み。追加の安全ネットとして
-    # VLM 確認のみ実施（budget を hira_len に合わせ、残存組成を確実に除去する）。
-    _clear_pending_ime_composition(
-        client,
-        config,
-        max_backspaces=max(_hira_len, 3),
-    )
+    print("  [ヘルパー単語] IMEポップアップをキャンセル (Esc×4, 500ms間隔)...")
+    _reset_ime_before_helper_lookup(client)
 
     text_runtime_label = _ime_text_runtime_label()
     print(f"  [ヘルパー単語] 「{target_char}」のヘルパー単語を{text_runtime_label}に問い合わせ中...")
@@ -2703,34 +2788,8 @@ def ensure_ime_mode(
 
 
 def _kanji_to_romaji(text: str) -> str:
-    """漢字・かな文字列をヘボン式ローマ字に変換する。"""
-    # 医療用語など pykakasi が誤読みするケースの手動オーバーライド
-    _ROMAJI_OVERRIDES: dict[str, str] = {
-        "鼻汁": "bijuu",
-        "咳嗽": "gaisou",
-        "嘔吐": "outo",
-        "浮腫": "fushuu",
-        "倦怠": "kentai",
-        "痙攣": "keiren",
-        "蕁麻疹": "jinmashin",
-        "喀痰": "kakutan",
-        "喘鳴": "zenmei",
-        "哮喘": "kozen",
-        "喘息": "zensoku",
-        "膿胸": "noukyo",
-        "胸水": "kyousui",
-        "肺炎": "haien",
-        "動脈血": "doumyakuketsu",
-        # 生食 (せいしょく) – 医療略語: 生理食塩水。pykakasi は いけづき と誤読する。
-        "生食": "seishoku",
-        # 静注 (せいちゅう) – 医療略語: 静脈注射。pykakasi は じょうちゅう と誤読する。
-        "静注": "seichuu",
-    }
-    if text in _ROMAJI_OVERRIDES:
-        return _ROMAJI_OVERRIDES[text]
-    import pykakasi
-    kks = pykakasi.kakasi()
-    return "".join(item["hepburn"] for item in kks.convert(text))
+    """漢字・かな文字列を IME 入力向け ASCII ローマ字に変換する。"""
+    return romanize_for_ime(text)
 
 
 def _is_japanese(text: str) -> bool:
@@ -2748,7 +2807,7 @@ def _has_kanji(text: str) -> bool:
 
 def _segment_japanese_locally(text: str) -> list:
     """
-    sudachipy + pykakasi を使って日本語テキストを IME 変換単位（文節）に分割する。
+    sudachipy + cutlet ベースのローマ字化で日本語テキストを IME 変換単位（文節）に分割する。
 
     Returns:
         [{"text": "肺炎", "romaji": "haien"}, {"text": "に", "romaji": "ni"}, ...]
@@ -2762,7 +2821,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
     """
     日本語・英語混在文を文節単位で入力する。
 
-    sudachipy + pykakasi で文節分割し、各文節の種類に応じて処理する:
+    sudachipy + cutlet ベースのローマ字化で文節分割し、各文節の種類に応じて処理する:
     - ASCII のみ（英単語・数字・記号）: 英数字モードで直接入力
     - 漢字を含む: ひらがなモードで IME 変換（type_kanji_via_ime）
     - ひらがな・カタカナのみ: ひらがなモードでローマ字 + Enter

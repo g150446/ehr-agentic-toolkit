@@ -204,6 +204,13 @@ class BLEController:
         """
         return await self.send_command(f"type:{text}")
 
+    @staticmethod
+    def _normalize_key_name(key: str) -> str:
+        normalized = key.strip().lower()
+        if normalized == "escape":
+            return "esc"
+        return normalized
+
     async def press_key(self, key: str) -> bool:
         """
         Press a special key.
@@ -214,7 +221,7 @@ class BLEController:
         Returns:
             True if successful, False otherwise
         """
-        return await self.send_command(f"key:{key}")
+        return await self.send_command(f"key:{self._normalize_key_name(key)}")
 
     async def click(self) -> bool:
         """Perform left mouse click."""
