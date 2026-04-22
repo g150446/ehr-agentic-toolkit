@@ -109,6 +109,7 @@ _MULTI_CHAR_REPLACEMENTS = {
     "→": "->",
     "⇒": "=>",
     "〜": "~",
+    "℃": "度",
 }
 _ASCII_SPECIAL_KEYS = {
     "\n": "enter",
@@ -141,7 +142,7 @@ _JP_SYMBOL_IME_READINGS: dict[str, str] = {
 # /μL → /uL のように医療文書で慣例的に使われる ASCII 表記で代替する。
 _CHAR_ASCII_FALLBACK: dict[str, str] = {
     "μ": "u",   # マイクロ記号 → ASCII u (/μL → /uL)
-    "°": "",    # 度記号 → 省略（℃ は直接入力されるため通常不要）
+    "°": "",    # 度記号単体は BLE で直接送れないため、現状は省略
 }
 
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -3232,12 +3233,15 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             print(f"key:enter -> {'OK' if ok else 'NG'}")
 
         elif seg_text in ("「", "」", "『", "』"):
-            # 日本語括弧: ひらがなモードで lbracket/rbracket キーを押す
-            # JIS キーボードの日本語モードでは [ → 「、] → 」 になる
+            # 日本語括弧: JIS 日本語モードで括弧キーを押し、直後に Enter で確定する。
+            # 未確定のままだと次の IME 変換に巻き込まれることがある。
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             key_name = "lbracket" if seg_text in ("「", "『") else "rbracket"
             ok = client.press_key(key_name)
             print(f"key:{key_name} ({seg_text}) -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("enter")
+            print(f"key:enter ({seg_text}) -> {'OK' if ok else 'NG'}")
+            time.sleep(0.15)
 
         elif any(ch in _JP_SYMBOL_IME_READINGS or ch in _CHAR_ASCII_FALLBACK for ch in seg_text):
             # ※ などの特殊記号、または μ などの ASCII 代替文字を含む: 文字単位で処理
