@@ -238,6 +238,8 @@ python -m automation.ehr_input --help
 |---|---|
 | `--win10` | Windows 10 固有の動作（カンマ後 Enter、インライン変換スキップ）を有効化 |
 | `--clear` | 入力前に Backspace を 50 回送信してフィールドをクリア |
+| `--fireworks <model>` | 文節分割・IME 候補読取・ヘルパー単語提案を Fireworks AI の指定モデルへ切り替える |
+| `--google-ai-studio` | 文節分割・IME 候補読取・ヘルパー単語提案を Google AI Studio の `gemma-4-26b-a4b-it` へ切り替える |
 | `--openrouter <model>` | 文節分割・IME 候補読取・ヘルパー単語提案を OpenRouter の vision 対応モデルへ切り替える |
 | `--mactest` | HDMI/BLE の代わりに Mac ローカル画面 + `pyautogui` で動作確認する |
 

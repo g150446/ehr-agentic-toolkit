@@ -28,6 +28,7 @@ _ROMAJI_OVERRIDES: dict[str, str] = {
     "動脈血": "doumyakuketsu",
     "生食": "seishoku",
     "静注": "seichuu",
+    "日前": "nichimae",
 }
 
 _HIRAGANA_IME_OVERRIDES: dict[str, str] = {

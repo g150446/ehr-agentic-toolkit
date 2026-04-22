@@ -112,3 +112,193 @@ def test_text_only_ime_call_uses_runtime_overrides(monkeypatch):
             "max_tokens": 512,
         },
     }
+
+
+def test_segmentation_uses_google_ai_studio_runtime(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode())
+        return _FakeResponse(
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": '[{"text":"肺炎","romaji":"haien"}]'}]
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_URL", "https://generativelanguage.googleapis.com/v1beta")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_MODEL", "gemma-4-26b-a4b-it")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_API_KEY", "token-gemini")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_TIMEOUT", 7.5)
+    monkeypatch.setattr(mlx_vlm_segmentation.urllib.request, "urlopen", fake_urlopen)
+
+    _, segments = mlx_vlm_segmentation.segment_japanese_text_with_mlx_vlm("肺炎")
+
+    assert segments == [{"text": "肺炎", "romaji": "haien"}]
+    assert captured == {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent",
+        "timeout": 7.5,
+        "headers": {
+            "Content-type": "application/json",
+            "X-goog-api-key": "token-gemini",
+        },
+        "body": {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": mlx_vlm_segmentation.build_segmentation_prompt("肺炎")}],
+                }
+            ]
+        },
+    }
+
+
+def test_text_only_ime_call_uses_google_ai_studio_runtime(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode())
+        return _FakeResponse(
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": "helper response"}]
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_URL", "https://generativelanguage.googleapis.com/v1beta")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_MODEL", "gemma-4-26b-a4b-it")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_API_KEY", "token-gemini")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_IME_TIMEOUT", 5.0)
+    monkeypatch.setattr(mlx_vlm_ime.urllib.request, "urlopen", fake_urlopen)
+
+    content = mlx_vlm_ime._call_mlx_vlm_text_only("helper prompt")
+
+    assert content == "helper response"
+    assert captured == {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent",
+        "timeout": 5.0,
+        "headers": {
+            "Content-type": "application/json",
+            "X-goog-api-key": "token-gemini",
+        },
+        "body": {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": "helper prompt"}],
+                }
+            ]
+        },
+    }
+
+
+def test_segmentation_uses_fireworks_runtime(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["auth"] = req.get_header("Authorization")
+        captured["body"] = json.loads(req.data.decode())
+        return _FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '[{"text":"肺炎","romaji":"haien"}]'
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_URL", "https://api.fireworks.ai/inference/v1/chat/completions")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_MODEL", "accounts/fireworks/models/gemma-4-26b-a4b-it")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_API_KEY", "token-fireworks")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_TIMEOUT", 8.5)
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_MAX_TOKENS", 512)
+    monkeypatch.setattr(mlx_vlm_segmentation.urllib.request, "urlopen", fake_urlopen)
+
+    _, segments = mlx_vlm_segmentation.segment_japanese_text_with_mlx_vlm("肺炎")
+
+    assert segments == [{"text": "肺炎", "romaji": "haien"}]
+    assert captured == {
+        "url": "https://api.fireworks.ai/inference/v1/chat/completions",
+        "timeout": 8.5,
+        "auth": "Bearer token-fireworks",
+        "body": {
+            "model": "accounts/fireworks/models/gemma-4-26b-a4b-it",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": mlx_vlm_segmentation.build_segmentation_prompt("肺炎"),
+                }
+            ],
+            "stream": False,
+            "max_tokens": 512,
+        },
+    }
+
+
+def test_text_only_ime_call_uses_fireworks_runtime(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["auth"] = req.get_header("Authorization")
+        captured["body"] = json.loads(req.data.decode())
+        return _FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "helper response"
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_URL", "https://api.fireworks.ai/inference/v1/chat/completions")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_MODEL", "accounts/fireworks/models/gemma-4-26b-a4b-it")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_API_KEY", "token-fireworks")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_IME_TIMEOUT", 6.0)
+    monkeypatch.setattr(mlx_vlm_ime.urllib.request, "urlopen", fake_urlopen)
+
+    content = mlx_vlm_ime._call_mlx_vlm_text_only("helper prompt")
+
+    assert content == "helper response"
+    assert captured == {
+        "url": "https://api.fireworks.ai/inference/v1/chat/completions",
+        "timeout": 6.0,
+        "auth": "Bearer token-fireworks",
+        "body": {
+            "model": "accounts/fireworks/models/gemma-4-26b-a4b-it",
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "helper prompt",
+                }
+            ],
+            "stream": False,
+            "max_tokens": 512,
+        },
+    }

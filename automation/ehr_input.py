@@ -145,8 +145,13 @@ _CHAR_ASCII_FALLBACK: dict[str, str] = {
 }
 
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+_FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+_GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_GOOGLE_AI_STUDIO_MODEL = "gemma-4-26b-a4b-it"
 _RUNTIME_OPTIONS = SimpleNamespace(
     openrouter_model=None,
+    fireworks_model=None,
+    google_ai_studio=False,
 )
 _DEFAULT_SEGMENTATION_RUNTIME = {
     "url": mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
@@ -226,12 +231,21 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
     """Split raw CLI args into positional arguments and normalized option state."""
     clear_field = False
     openrouter_model: Optional[str] = None
+    fireworks_model: Optional[str] = None
+    google_ai_studio = False
     filtered_args: list[str] = []
     index = 0
     while index < len(args):
         arg = args[index]
         if arg == "--clear":
             clear_field = True
+        elif arg == "--google-ai-studio":
+            google_ai_studio = True
+        elif arg == "--fireworks":
+            if index + 1 >= len(args):
+                raise RuntimeError("--fireworks の後にモデルIDを指定してください")
+            fireworks_model = args[index + 1]
+            index += 1
         elif arg == "--openrouter":
             if index + 1 >= len(args):
                 raise RuntimeError("--openrouter の後にモデル名を指定してください")
@@ -243,8 +257,14 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
             filtered_args.append(arg)
         index += 1
 
+    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(fireworks_model))
+    if provider_count > 1:
+        raise RuntimeError("--google-ai-studio / --openrouter / --fireworks は同時に指定できません")
+
     option_summary = {
         "clear_field": clear_field,
+        "fireworks_model": fireworks_model,
+        "google_ai_studio": google_ai_studio,
         "openrouter_model": openrouter_model,
     }
     return filtered_args, option_summary
@@ -272,8 +292,19 @@ def _build_run_log_header(
 
 
 
-def _configure_runtime(*, openrouter_model: Optional[str] = None) -> None:
+def _configure_runtime(
+    *,
+    openrouter_model: Optional[str] = None,
+    fireworks_model: Optional[str] = None,
+    google_ai_studio: bool = False,
+) -> None:
+    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(fireworks_model))
+    if provider_count > 1:
+        raise RuntimeError("--google-ai-studio / --openrouter / --fireworks は同時に指定できません")
+
     _RUNTIME_OPTIONS.openrouter_model = openrouter_model
+    _RUNTIME_OPTIONS.fireworks_model = fireworks_model
+    _RUNTIME_OPTIONS.google_ai_studio = google_ai_studio
 
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _DEFAULT_SEGMENTATION_RUNTIME["url"]
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = _DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -285,7 +316,33 @@ def _configure_runtime(*, openrouter_model: Optional[str] = None) -> None:
     mlx_vlm_ime.MLX_VLM_TEXT_MODEL = _DEFAULT_IME_TEXT_RUNTIME["model"]
     mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = _DEFAULT_IME_TEXT_RUNTIME["api_key"]
 
-    if openrouter_model:
+    if google_ai_studio:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError("--google-ai-studio を使うには GEMINI_API_KEY 環境変数が必要です")
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _GOOGLE_AI_STUDIO_API_BASE
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = _GOOGLE_AI_STUDIO_MODEL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_IME_URL = _GOOGLE_AI_STUDIO_API_BASE
+        mlx_vlm_ime.MLX_VLM_IME_MODEL = _GOOGLE_AI_STUDIO_MODEL
+        mlx_vlm_ime.MLX_VLM_IME_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_TEXT_URL = _GOOGLE_AI_STUDIO_API_BASE
+        mlx_vlm_ime.MLX_VLM_TEXT_MODEL = _GOOGLE_AI_STUDIO_MODEL
+        mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
+    elif fireworks_model:
+        api_key = os.getenv("FIREWORKS_API_KEY")
+        if not api_key:
+            raise RuntimeError("--fireworks を使うには FIREWORKS_API_KEY 環境変数が必要です")
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _FIREWORKS_CHAT_URL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = fireworks_model
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_IME_URL = _FIREWORKS_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_IME_MODEL = fireworks_model
+        mlx_vlm_ime.MLX_VLM_IME_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_TEXT_URL = _FIREWORKS_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_TEXT_MODEL = fireworks_model
+        mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
+    elif openrouter_model:
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise RuntimeError("--openrouter を使うには OPENROUTER_API_KEY 環境変数が必要です")
@@ -402,6 +459,12 @@ def _capture_helper_reset_compare_frame(
     )
     if cropped.size == 0:
         return None
+    if _resolved_screen_type == "patient_record":
+        cropped = mlx_vlm_ime._crop_center_band(
+            cropped,
+            top_ratio=0.15,
+            bottom_ratio=0.80,
+        )
     if debug_name:
         _save_debug_image(cropped, f"{debug_name}_compare_crop")
     return cropped
@@ -597,6 +660,8 @@ _SEGMENT_OVERRIDES: dict[str, list[dict[str, str]]] = {
     "動脈血ガス": [{"text": "動脈血", "romaji": "doumyakuketsu"}, {"text": "ガス", "romaji": "gasu"}],
     # 動脈血 単体でもオーバーライド
     "動脈血": [{"text": "動脈血", "romaji": "doumyakuketsu"}],
+    # 日前: cutlet が文脈なしでは誤読しやすいため固定
+    "日前": [{"text": "日前", "romaji": "nichimae"}],
     # ・ (中黒/ナカテン) : JIS キーボードでは '/' キーで入力する。
     # カタカナ変換パス (F7) で処理するため romaji は '/' とする。
     "・": [{"text": "・", "romaji": "/"}],
@@ -3241,6 +3306,8 @@ def _print_usage() -> None:
     print()
     print("オプション:")
     print("  --clear              入力前に Backspace を 50 回送信してフィールドをクリアする")
+    print("  --fireworks <model>  文節分割・IME候補読取・ヘルパー単語提案を Fireworks AI のモデルで実行する")
+    print(f"  --google-ai-studio   文節分割・IME候補読取・ヘルパー単語提案を Google AI Studio の {_GOOGLE_AI_STUDIO_MODEL} で実行する")
     print("  --openrouter <model> 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
     print("  --help, -h, help     このヘルプを表示")
     print()
@@ -3260,6 +3327,8 @@ def _print_usage() -> None:
     print("例:")
     print('  python -m automation.ehr_input 肺炎')
     print('  python -m automation.ehr_input --clear 肺炎')
+    print('  python -m automation.ehr_input --fireworks accounts/fireworks/models/gemma-4-26b-a4b-it "両肺野に"')
+    print('  python -m automation.ehr_input --google-ai-studio "両肺野に"')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-9b "両肺野に"')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-35b-a3b "聴診"')
     print('  python -m automation.ehr_input "COVID-19の検査"')
@@ -3272,9 +3341,15 @@ def _print_usage() -> None:
 def _run_cli_with_parsed_args(args: list[str], option_summary: dict[str, object]) -> int:
     """Run the CLI using already-normalized option state."""
     openrouter_model = option_summary["openrouter_model"]
+    fireworks_model = option_summary["fireworks_model"]
+    google_ai_studio = bool(option_summary["google_ai_studio"])
     clear_field = bool(option_summary["clear_field"])
 
-    _configure_runtime(openrouter_model=openrouter_model)
+    _configure_runtime(
+        openrouter_model=openrouter_model,
+        fireworks_model=fireworks_model,
+        google_ai_studio=google_ai_studio,
+    )
 
     if not args:
         # 引数なし: デフォルト動作（後方互換）

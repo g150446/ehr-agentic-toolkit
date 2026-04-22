@@ -119,6 +119,29 @@ def test_suggest_ime_helper_word_logs_openrouter_runtime(monkeypatch):
     assert "Qwen3応答" not in output
 
 
+def test_suggest_ime_helper_word_logs_google_ai_studio_runtime(monkeypatch):
+    stdout = io.StringIO()
+
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_URL", "https://generativelanguage.googleapis.com/v1beta")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_MODEL", "gemma-4-26b-a4b-it")
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_call_mlx_vlm_text_only",
+        lambda prompt, model=None: '{"words":["過剰","過去","過失"]}',
+    )
+
+    with redirect_stdout(stdout):
+        assert mlx_vlm_ime.suggest_ime_helper_word("過") == [
+            {"word": "過剰", "backspace_count": 1},
+            {"word": "過去", "backspace_count": 1},
+            {"word": "過失", "backspace_count": 1},
+        ]
+
+    output = stdout.getvalue()
+    assert "Google AI Studio(gemma-4-26b-a4b-it)応答" in output
+    assert "Qwen3応答" not in output
+
+
 def test_classify_helper_reset_screen_keeps_patient_record_without_vlm(monkeypatch):
     frame = np.zeros((120, 240, 3), dtype=np.uint8)
 
@@ -209,16 +232,16 @@ def test_save_thinking_log_writes_reasoning_details(tmp_path, monkeypatch):
     assert "detail one" in text
 
 
-def test_wait_for_vlm_cooldown_sleeps_until_three_seconds(monkeypatch):
+def test_wait_for_vlm_cooldown_sleeps_until_half_second(monkeypatch):
     events = []
 
     monkeypatch.setattr(mlx_vlm_ime, "_last_vlm_response_monotonic", 10.0)
-    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 11.25)
+    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 10.25)
     monkeypatch.setattr(mlx_vlm_ime.time, "sleep", lambda seconds: events.append(seconds))
 
     mlx_vlm_ime._wait_for_vlm_cooldown()
 
-    assert events == [1.75]
+    assert events == [0.25]
 
 
 def test_call_mlx_vlm_with_content_uses_openrouter_provider_for_reasoning(monkeypatch):
@@ -257,3 +280,132 @@ def test_call_mlx_vlm_with_content_uses_openrouter_provider_for_reasoning(monkey
     assert "reasoning" not in captured["payload"]
     assert captured["headers"]["Http-referer"] == "https://github.com/g150446/ehr-agentic-toolkit"
     assert captured["headers"]["X-title"] == "EHR Agentic Toolkit"
+
+
+def test_call_mlx_vlm_with_content_uses_google_ai_studio_payload(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"candidates":[{"content":{"parts":[{"text":"yes"}]}}]}'
+
+    def _fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        captured["headers"] = dict(req.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(mlx_vlm_ime, "_wait_for_vlm_cooldown", lambda: None)
+    monkeypatch.setattr(mlx_vlm_ime.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 10.0)
+
+    result = mlx_vlm_ime._call_mlx_vlm_with_content(
+        [{"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}}],
+        "compare prompt",
+        model="gemma-4-26b-a4b-it",
+        url="https://generativelanguage.googleapis.com/v1beta",
+        api_key="token",
+        enable_reasoning=True,
+    )
+
+    assert result == "yes"
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemma-4-26b-a4b-it:generateContent"
+    assert captured["timeout"] == mlx_vlm_ime.MLX_VLM_IME_TIMEOUT
+    assert captured["headers"]["X-goog-api-key"] == "token"
+    assert captured["payload"] == {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": "compare prompt"},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": "xxx",
+                        }
+                    },
+                ],
+            }
+        ],
+        "generationConfig": {
+            "thinkingConfig": {
+                "thinkingLevel": "high",
+            }
+        },
+    }
+
+
+def test_call_mlx_vlm_with_content_uses_fireworks_openai_payload(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"yes","reasoning":"trace"}}]}'
+
+    def _fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        captured["headers"] = dict(req.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(mlx_vlm_ime, "_wait_for_vlm_cooldown", lambda: None)
+    monkeypatch.setattr(mlx_vlm_ime.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 10.0)
+
+    result = mlx_vlm_ime._call_mlx_vlm_with_content(
+        [{"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}}],
+        "compare prompt",
+        model="accounts/fireworks/models/gemma-4-26b-a4b-it",
+        url="https://api.fireworks.ai/inference/v1/chat/completions",
+        api_key="token",
+        enable_reasoning=True,
+    )
+
+    assert result == "yes"
+    assert captured["url"] == "https://api.fireworks.ai/inference/v1/chat/completions"
+    assert captured["timeout"] == mlx_vlm_ime.MLX_VLM_IME_TIMEOUT
+    assert captured["headers"] == {
+        "Authorization": "Bearer token",
+        "Content-type": "application/json",
+    }
+    assert captured["payload"]["model"] == "accounts/fireworks/models/gemma-4-26b-a4b-it"
+    assert captured["payload"]["include_reasoning"] is True
+    assert captured["payload"]["reasoning"] == {"enabled": True}
+    assert "provider" not in captured["payload"]
+
+
+def test_suggest_ime_helper_word_logs_fireworks_runtime(monkeypatch):
+    stdout = io.StringIO()
+
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_URL", "https://api.fireworks.ai/inference/v1/chat/completions")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_MODEL", "accounts/fireworks/models/gemma-4-26b-a4b-it")
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_call_mlx_vlm_text_only",
+        lambda prompt, model=None: '{"words":["過剰","過去","過失"]}',
+    )
+
+    with redirect_stdout(stdout):
+        assert mlx_vlm_ime.suggest_ime_helper_word("過") == [
+            {"word": "過剰", "backspace_count": 1},
+            {"word": "過去", "backspace_count": 1},
+            {"word": "過失", "backspace_count": 1},
+        ]
+
+    output = stdout.getvalue()
+    assert "Fireworks(accounts/fireworks/models/gemma-4-26b-a4b-it)応答" in output
+    assert "Qwen3応答" not in output

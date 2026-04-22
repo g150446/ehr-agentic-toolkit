@@ -32,6 +32,50 @@ def test_build_ehr_input_command_adds_openrouter_and_clear():
     ]
 
 
+def test_resolve_python_executable_prefers_repo_venv(monkeypatch, tmp_path):
+    monkeypatch.setattr(asthma_input, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(asthma_input.sys, "executable", "/usr/bin/python3")
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    assert asthma_input._resolve_python_executable() == str(venv_python)
+
+
+def test_resolve_python_executable_falls_back_to_current_python(monkeypatch, tmp_path):
+    monkeypatch.setattr(asthma_input, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(asthma_input.sys, "executable", "/usr/bin/python3")
+
+    assert asthma_input._resolve_python_executable() == "/usr/bin/python3"
+
+
+def test_build_ehr_input_command_adds_google_ai_studio():
+    assert asthma_input._build_ehr_input_command(
+        "咳嗽あり。",
+        google_ai_studio=True,
+    ) == [
+        asthma_input._PYTHON,
+        "-m",
+        "automation.ehr_input",
+        "--google-ai-studio",
+        "咳嗽あり。",
+    ]
+
+
+def test_build_ehr_input_command_adds_fireworks():
+    assert asthma_input._build_ehr_input_command(
+        "咳嗽あり。",
+        fireworks_model="accounts/fireworks/models/gemma-4-26b-a4b-it",
+    ) == [
+        asthma_input._PYTHON,
+        "-m",
+        "automation.ehr_input",
+        "--fireworks",
+        "accounts/fireworks/models/gemma-4-26b-a4b-it",
+        "咳嗽あり。",
+    ]
+
+
 def test_select_target_fragments_returns_single_fragment():
     start, end, target = asthma_input._select_target_fragments(
         ["一つ目。", "二つ目。", "三つ目。"],
@@ -63,6 +107,8 @@ def test_main_runs_only_selected_fragment(monkeypatch):
             3,
             {
                 "clear": False,
+                "fireworks_model": None,
+                "google_ai_studio": False,
                 "openrouter_model": "google/gemma-4-26b-a4b-it",
             },
         )
@@ -121,3 +167,25 @@ def test_run_fragment_passes_command_to_subprocess(monkeypatch):
         "cwd": asthma_input._PROJECT_ROOT,
         "timeout": 900,
     }
+
+
+def test_main_rejects_google_ai_studio_with_openrouter(monkeypatch):
+    monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。", "二つ目。"])
+    stderr = io.StringIO()
+
+    with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
+        asthma_input.main(["--google-ai-studio", "--openrouter", "google/gemma-4-26b-a4b-it"])
+
+    assert excinfo.value.code == 2
+    assert "--google-ai-studio / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()
+
+
+def test_main_rejects_fireworks_with_openrouter(monkeypatch):
+    monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。", "二つ目。"])
+    stderr = io.StringIO()
+
+    with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
+        asthma_input.main(["--fireworks", "accounts/fireworks/models/gemma-4-26b-a4b-it", "--openrouter", "google/gemma-4-26b-a4b-it"])
+
+    assert excinfo.value.code == 2
+    assert "--google-ai-studio / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()

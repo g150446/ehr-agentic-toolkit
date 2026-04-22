@@ -9,7 +9,9 @@
   python scripts/test_asthma_input.py
   python scripts/test_asthma_input.py --start 3        # 3番目から再開
   python scripts/test_asthma_input.py --fragment 3     # 3番目だけ実行
+  python scripts/test_asthma_input.py --fireworks accounts/fireworks/models/gemma-4-26b-a4b-it
   python scripts/test_asthma_input.py --openrouter google/gemma-4-26b-a4b-it
+  python scripts/test_asthma_input.py --google-ai-studio
   python scripts/test_asthma_input.py --dry-run        # フラグメント一覧のみ表示
 """
 
@@ -24,7 +26,20 @@ from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 _ASTHMA_FILE = _PROJECT_ROOT / "data" / "patient_records" / "asthma_1.txt"
-_PYTHON = sys.executable
+
+
+def _resolve_python_executable() -> str:
+    venv_candidates = [
+        _PROJECT_ROOT / "venv" / "bin" / "python",
+        _PROJECT_ROOT / "venv" / "Scripts" / "python.exe",
+    ]
+    for candidate in venv_candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
+_PYTHON = _resolve_python_executable()
 
 
 def _build_fragments(path: Path) -> list[str]:
@@ -72,7 +87,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--end", type=int, default=None, metavar="N", help="N番目のフラグメントで終了（1始まり、含む）")
     parser.add_argument("--fragment", type=int, default=None, metavar="N", help="N番目のフラグメントだけを実行（1始まり）")
     parser.add_argument("--dry-run", action="store_true", help="フラグメント一覧のみ表示して終了")
+    parser.add_argument("--fireworks", metavar="MODEL", help="ehr_input に --fireworks MODEL を渡す")
     parser.add_argument("--openrouter", metavar="MODEL", help="ehr_input に --openrouter MODEL を渡す")
+    parser.add_argument("--google-ai-studio", action="store_true", help="ehr_input に --google-ai-studio を渡す")
     parser.add_argument("--delay", type=float, default=2.0, metavar="SEC", help="フラグメント間の待機秒数（デフォルト: 2.0）")
     parser.add_argument("--clear", action="store_true", help="各フラグメント前にフィールドをクリアする（--clear を ehr_input に渡す）")
     return parser
@@ -82,9 +99,18 @@ def _build_ehr_input_command(
     fragment: str,
     *,
     clear: bool = False,
+    fireworks_model: str | None = None,
     openrouter_model: str | None = None,
+    google_ai_studio: bool = False,
 ) -> list[str]:
+    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(fireworks_model))
+    if provider_count > 1:
+        raise ValueError("--google-ai-studio / --openrouter / --fireworks は同時に指定できません")
     cmd = [_PYTHON, "-m", "automation.ehr_input"]
+    if fireworks_model:
+        cmd.extend(["--fireworks", fireworks_model])
+    if google_ai_studio:
+        cmd.append("--google-ai-studio")
     if openrouter_model:
         cmd.extend(["--openrouter", openrouter_model])
     if clear:
@@ -119,7 +145,9 @@ def _run_fragment(
     total: int,
     *,
     clear: bool = False,
+    fireworks_model: str | None = None,
     openrouter_model: str | None = None,
+    google_ai_studio: bool = False,
 ) -> bool:
     """1フラグメントを ehr_input で実行する。成功時は True を返す。
 
@@ -133,7 +161,9 @@ def _run_fragment(
     cmd = _build_ehr_input_command(
         fragment,
         clear=clear,
+        fireworks_model=fireworks_model,
         openrouter_model=openrouter_model,
+        google_ai_studio=google_ai_studio,
     )
     result = subprocess.run(
         cmd,
@@ -164,6 +194,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fragment is not None and (args.start is not None or args.end is not None):
         parser.error("--fragment は --start/--end と同時に使えません")
+    provider_count = int(bool(args.google_ai_studio)) + int(bool(args.openrouter)) + int(bool(args.fireworks))
+    if provider_count > 1:
+        parser.error("--google-ai-studio / --openrouter / --fireworks は同時に使えません")
 
     try:
         start, end, target = _select_target_fragments(
@@ -189,7 +222,9 @@ def main(argv: list[str] | None = None) -> int:
                 abs_i,
                 total,
                 clear=args.clear,
+                fireworks_model=args.fireworks,
                 openrouter_model=args.openrouter,
+                google_ai_studio=args.google_ai_studio,
             )
         except subprocess.TimeoutExpired:
             print(f"[{abs_i}/{total}] ⏰ TIMEOUT (900s)")

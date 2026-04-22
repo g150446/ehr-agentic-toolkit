@@ -39,6 +39,8 @@ MLX_VLM_TEXT_MODEL = os.getenv("MLX_VLM_TEXT_MODEL", MLX_VLM_IME_MODEL)
 MLX_VLM_TEXT_URL = os.getenv("MLX_VLM_TEXT_URL", MLX_VLM_IME_URL)
 MLX_VLM_TEXT_API_KEY = os.getenv("MLX_VLM_TEXT_API_KEY", MLX_VLM_IME_API_KEY)
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
+_FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+_GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _OPENROUTER_HTTP_REFERER = os.getenv(
     "OPENROUTER_HTTP_REFERER",
     "https://github.com/g150446/ehr-agentic-toolkit",
@@ -49,7 +51,7 @@ _OPENROUTER_PROVIDER_ORDER = [
     for item in os.getenv("OPENROUTER_PROVIDER_ORDER", "io-net").split(",")
     if item.strip()
 ]
-_VLM_REQUEST_COOLDOWN_SEC = 3.0
+_VLM_REQUEST_COOLDOWN_SEC = 0.5
 _last_vlm_response_monotonic: Optional[float] = None
 
 
@@ -62,7 +64,86 @@ def describe_runtime(*, url: Optional[str], model: Optional[str], default_kind: 
     model_name = model or "unknown"
     if url and _OPENROUTER_CHAT_URL in url:
         return f"OpenRouter({model_name})"
+    if url and _FIREWORKS_CHAT_URL in url:
+        return f"Fireworks({model_name})"
+    if url and url.startswith(_GOOGLE_AI_STUDIO_API_BASE):
+        return f"Google AI Studio({model_name})"
     return f"{default_kind}({model_name})"
+
+
+def _is_openrouter_url(url: Optional[str]) -> bool:
+    return bool(url and _OPENROUTER_CHAT_URL in url)
+
+
+def _is_fireworks_url(url: Optional[str]) -> bool:
+    return bool(url and _FIREWORKS_CHAT_URL in url)
+
+
+def _is_google_ai_studio_url(url: Optional[str]) -> bool:
+    return bool(url and url.startswith(_GOOGLE_AI_STUDIO_API_BASE))
+
+
+def _image_url_to_google_part(image_url: str) -> dict[str, object]:
+    match = re.fullmatch(r"data:(image/[^;]+);base64,(.+)", image_url, flags=re.DOTALL)
+    if not match:
+        raise MlxVlmImeError("Google AI Studio 用の画像 data URL を解析できませんでした")
+    return {
+        "inline_data": {
+            "mime_type": match.group(1),
+            "data": match.group(2),
+        }
+    }
+
+
+def _build_google_ai_studio_parts(
+    content: list[dict[str, object]],
+    prompt: str,
+) -> list[dict[str, object]]:
+    parts: list[dict[str, object]] = [{"text": prompt}]
+    for item in content:
+        if item.get("type") != "image_url":
+            raise MlxVlmImeError(
+                f"Google AI Studio では未対応の content type です: {item!r}"
+            )
+        image_payload = item.get("image_url")
+        if not isinstance(image_payload, dict):
+            raise MlxVlmImeError(
+                f"Google AI Studio 用画像 payload が不正です: {item!r}"
+            )
+        image_url = image_payload.get("url")
+        if not isinstance(image_url, str):
+            raise MlxVlmImeError(
+                f"Google AI Studio 用画像 URL が不正です: {item!r}"
+            )
+        parts.append(_image_url_to_google_part(image_url))
+    return parts
+
+
+def _build_google_ai_studio_request(
+    *,
+    prompt: str,
+    model: str,
+    url: str,
+    content: list[dict[str, object]],
+    enable_reasoning: bool,
+) -> tuple[str, dict[str, object], dict[str, str]]:
+    payload: dict[str, object] = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": _build_google_ai_studio_parts(content, prompt),
+            }
+        ]
+    }
+    if enable_reasoning:
+        payload["generationConfig"] = {
+            "thinkingConfig": {
+                "thinkingLevel": "high",
+            }
+        }
+    request_url = f"{url.rstrip('/')}/models/{model}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    return request_url, payload, headers
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +177,7 @@ def _save_debug_frame(frame: np.ndarray, *, name: str, prefix: str) -> None:
 
 
 def _wait_for_vlm_cooldown() -> None:
-    """Wait long enough so each VLM request starts 3s after the previous response."""
+    """Wait long enough so each VLM request starts 0.5s after the previous response."""
     global _last_vlm_response_monotonic
     if _last_vlm_response_monotonic is None:
         return
@@ -650,25 +731,34 @@ def _call_mlx_vlm_with_content(
     reasoning_requested = False
     if enable_reasoning:
         payload["include_reasoning"] = True
-        if url and _OPENROUTER_CHAT_URL in url:
+        if _is_openrouter_url(url):
             if _OPENROUTER_PROVIDER_ORDER:
                 payload["provider"] = {"order": _OPENROUTER_PROVIDER_ORDER}
-        else:
+        elif not _is_google_ai_studio_url(url):
             payload["reasoning"] = {"enabled": True}
         reasoning_requested = True
 
     def _send_request(request_payload: dict) -> dict:
         global _last_vlm_response_monotonic
         _wait_for_vlm_cooldown()
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-        if url and _OPENROUTER_CHAT_URL in url:
+        request_url = url
+        headers = {"Content-Type": "application/json"}
+        if _is_google_ai_studio_url(url):
+            request_url, request_payload, headers = _build_google_ai_studio_request(
+                prompt=prompt,
+                model=model,
+                url=url,
+                content=content,
+                enable_reasoning=enable_reasoning,
+            )
+            headers["x-goog-api-key"] = api_key
+        else:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if _is_openrouter_url(url):
             headers["HTTP-Referer"] = _OPENROUTER_HTTP_REFERER
             headers["X-Title"] = _OPENROUTER_X_TITLE
         req = urllib.request.Request(
-            url,
+            request_url,
             data=json.dumps(request_payload).encode(),
             headers=headers,
         )
@@ -683,7 +773,7 @@ def _call_mlx_vlm_with_content(
         global _last_vlm_response_monotonic
         reason = exc.read().decode("utf-8", errors="replace")
         _last_vlm_response_monotonic = time.monotonic()
-        if enable_reasoning:
+        if enable_reasoning and not _is_google_ai_studio_url(url):
             print("  [mlx_vlm thinking] reasoning指定が拒否されたため、reasoningなしで再試行します")
             payload.pop("reasoning", None)
             payload.pop("include_reasoning", None)
@@ -780,7 +870,24 @@ def _call_mlx_vlm_with_images(
 # ---------------------------------------------------------------------------
 
 def _extract_message_text(result: dict, *, error_prefix: str) -> str:
-    """OpenAI互換応答から content、なければ reasoning を取り出す。"""
+    """OpenAI互換または Google AI Studio 応答から本文を取り出す。"""
+    candidates = result.get("candidates")
+    if isinstance(candidates, list):
+        google_texts: list[str] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content", {})
+            if not isinstance(content, dict):
+                continue
+            for part in content.get("parts", []):
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str) and text.strip():
+                        google_texts.append(text.strip())
+        if google_texts:
+            return "\n".join(google_texts).strip()
+
     try:
         message = result["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -1360,13 +1467,25 @@ def _call_mlx_vlm_text_only(
         "stream": False,
         "max_tokens": 512,
     }
+    request_url = url
+    headers = {"Content-Type": "application/json"}
+    if _is_google_ai_studio_url(url):
+        request_url = f"{url.rstrip('/')}/models/{model}:generateContent"
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ]
+        }
+        headers["x-goog-api-key"] = api_key
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
-        url,
+        request_url,
         data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

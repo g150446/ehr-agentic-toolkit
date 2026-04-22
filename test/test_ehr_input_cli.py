@@ -133,7 +133,59 @@ def test_run_cli_parses_openrouter(monkeypatch):
         )
         == 0
     )
-    assert configured == {"openrouter_model": "qwen/qwen3.5-9b"}
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "openrouter_model": "qwen/qwen3.5-9b",
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
+def test_run_cli_parses_fireworks(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--fireworks", "accounts/fireworks/models/gemma-4-26b-a4b-it", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": "accounts/fireworks/models/gemma-4-26b-a4b-it",
+        "google_ai_studio": False,
+        "openrouter_model": None,
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
+def test_run_cli_parses_google_ai_studio(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--google-ai-studio", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": True,
+        "openrouter_model": None,
+    }
     assert events == [("肺炎", {"clear_field": False})]
 
 
@@ -153,11 +205,43 @@ def test_configure_runtime_openrouter_updates_segmentation_and_ime(monkeypatch):
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-xyz"
 
 
-def test_configure_runtime_without_openrouter_restores_defaults(monkeypatch):
+def test_configure_runtime_google_ai_studio_updates_segmentation_and_ime(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "token-gemini")
+
+    ehr_input._configure_runtime(google_ai_studio=True)
+
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == "https://generativelanguage.googleapis.com/v1beta"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "gemma-4-26b-a4b-it"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY == "token-gemini"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_URL == "https://generativelanguage.googleapis.com/v1beta"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_MODEL == "gemma-4-26b-a4b-it"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_API_KEY == "token-gemini"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "https://generativelanguage.googleapis.com/v1beta"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "gemma-4-26b-a4b-it"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-gemini"
+
+
+def test_configure_runtime_fireworks_updates_segmentation_and_ime(monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "token-fireworks")
+
+    ehr_input._configure_runtime(fireworks_model="accounts/fireworks/models/gemma-4-26b-a4b-it")
+
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == "https://api.fireworks.ai/inference/v1/chat/completions"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "accounts/fireworks/models/gemma-4-26b-a4b-it"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY == "token-fireworks"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_URL == "https://api.fireworks.ai/inference/v1/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_MODEL == "accounts/fireworks/models/gemma-4-26b-a4b-it"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_API_KEY == "token-fireworks"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "https://api.fireworks.ai/inference/v1/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "accounts/fireworks/models/gemma-4-26b-a4b-it"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-fireworks"
+
+
+def test_configure_runtime_without_external_provider_restores_defaults(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "token-xyz")
     ehr_input._configure_runtime(openrouter_model="qwen/vision-model")
 
-    ehr_input._configure_runtime(openrouter_model=None)
+    ehr_input._configure_runtime(openrouter_model=None, google_ai_studio=False)
 
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["url"]
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -281,7 +365,7 @@ def test_build_run_log_header_records_executable_and_options():
     assert "=== ehr_input invocation ===" in header
     assert "executable: ehr_input.py" in header
     assert 'argv: ["/tmp/automation/ehr_input.py", "--openrouter", "qwen/qwen3.5-9b", "--clear", "open test", "肺炎"]' in header
-    assert 'parsed_options: {"clear_field": true, "openrouter_model": "qwen/qwen3.5-9b"}' in header
+    assert 'parsed_options: {"clear_field": true, "fireworks_model": null, "google_ai_studio": false, "openrouter_model": "qwen/qwen3.5-9b"}' in header
     assert 'positional_args: ["open test", "肺炎"]' in header
 
 
@@ -297,7 +381,7 @@ def test_main_prepends_run_header_to_log(monkeypatch, tmp_path):
 
     log_text = log_files[0].read_text(encoding="utf-8")
     assert log_text.startswith("=== ehr_input invocation ===\nexecutable: ehr_input.py\n")
-    assert 'parsed_options: {"clear_field": false, "openrouter_model": null}' in log_text
+    assert 'parsed_options: {"clear_field": false, "fireworks_model": null, "google_ai_studio": false, "openrouter_model": null}' in log_text
     assert 'positional_args: ["help"]' in log_text
     assert "usage called\n" in log_text
 
@@ -383,6 +467,21 @@ def test_segment_japanese_with_default_vlm_keeps_cutlet_aligned_romaji(monkeypat
 
     assert ehr_input._segment_japanese_with_default_vlm("上気道炎") == [
         {"text": "上気道炎", "romaji": "joukidouen"}
+    ]
+
+
+def test_segment_japanese_with_default_vlm_ignores_vlm_romaji(monkeypatch):
+    monkeypatch.setattr(
+        ehr_input,
+        "segment_japanese_text_with_mlx_vlm",
+        lambda text: (
+            '[{"text":"日前","romaji":"zenjitsu"}]',
+            [{"text": "日前", "romaji": "zenjitsu"}],
+        ),
+    )
+
+    assert ehr_input._segment_japanese_with_default_vlm("日前") == [
+        {"text": "日前", "romaji": "nichimae"}
     ]
 
 
@@ -1384,6 +1483,31 @@ def test_capture_helper_reset_baseline_stores_screen_type(monkeypatch):
     assert state["cropped_frame"].shape == (20, 40, 3)
 
 
+def test_capture_helper_reset_compare_frame_focuses_patient_record_center_band(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+    panel_crop = np.ones((100, 80, 3), dtype=np.uint8)
+    center_band = np.full((50, 80, 3), 7, dtype=np.uint8)
+
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_helper_reset_region",
+        lambda image, **kwargs: (panel_crop, "patient_record"),
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_crop_center_band",
+        lambda image, **kwargs: center_band,
+    )
+
+    cropped = ehr_input._capture_helper_reset_compare_frame(
+        frame,
+        debug_name="helper_reset",
+        screen_type="patient_record",
+    )
+
+    assert cropped is center_band
+
+
 def test_compare_helper_reset_images_prompt_uses_anchor_and_two_images(monkeypatch):
     baseline = _make_frame()
     current = _make_frame()
@@ -1571,6 +1695,64 @@ def test_segment_japanese_with_openrouter_uses_runtime_aware_logs(monkeypatch):
     assert "Qwen分割結果" not in output
 
 
+def test_segment_japanese_with_google_ai_studio_uses_runtime_aware_logs(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "token-gemini")
+    monkeypatch.setattr(
+        ehr_input,
+        "segment_japanese_text_with_mlx_vlm",
+        lambda text: ('[{"text":"肺炎","romaji":"haien"}]', [{"text": "肺炎", "romaji": "haien"}]),
+    )
+    monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: "haien")
+    stdout = io.StringIO()
+
+    ehr_input._configure_runtime(google_ai_studio=True)
+    try:
+        with redirect_stdout(stdout):
+            assert ehr_input._segment_japanese_with_default_vlm("肺炎") == [
+                {"text": "肺炎", "romaji": "haien"}
+            ]
+    finally:
+        ehr_input._configure_runtime(openrouter_model=None, google_ai_studio=False)
+
+    output = stdout.getvalue()
+    assert "Google AI Studio(gemma-4-26b-a4b-it)分割結果" in output
+    assert "Qwen分割結果" not in output
+
+
+def test_segment_japanese_with_fireworks_uses_runtime_aware_logs(monkeypatch):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "token-fireworks")
+    monkeypatch.setattr(
+        ehr_input,
+        "segment_japanese_text_with_mlx_vlm",
+        lambda text: ('[{"text":"肺炎","romaji":"haien"}]', [{"text": "肺炎", "romaji": "haien"}]),
+    )
+    monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: "haien")
+    stdout = io.StringIO()
+
+    ehr_input._configure_runtime(fireworks_model="accounts/fireworks/models/gemma-4-26b-a4b-it")
+    try:
+        with redirect_stdout(stdout):
+            assert ehr_input._segment_japanese_with_default_vlm("肺炎") == [
+                {"text": "肺炎", "romaji": "haien"}
+            ]
+    finally:
+        ehr_input._configure_runtime(openrouter_model=None, fireworks_model=None, google_ai_studio=False)
+
+    output = stdout.getvalue()
+    assert "Fireworks(accounts/fireworks/models/gemma-4-26b-a4b-it)分割結果" in output
+    assert "Qwen分割結果" not in output
+
+
+def test_parse_cli_options_rejects_google_ai_studio_with_openrouter():
+    with pytest.raises(RuntimeError, match="同時に指定できません"):
+        ehr_input._parse_cli_options(["--google-ai-studio", "--openrouter", "qwen/qwen3.5-9b", "肺炎"])
+
+
+def test_parse_cli_options_rejects_fireworks_with_openrouter():
+    with pytest.raises(RuntimeError, match="同時に指定できません"):
+        ehr_input._parse_cli_options(["--fireworks", "accounts/fireworks/models/gemma-4-26b-a4b-it", "--openrouter", "qwen/qwen3.5-9b", "肺炎"])
+
+
 def test_parse_cli_options_rejects_mactest():
     """--mactest は廃止済み。不明オプションとしてエラーになることを確認。"""
     with pytest.raises(RuntimeError, match="不明なオプション: --mactest"):
@@ -1651,6 +1833,19 @@ def test_segment_text_for_input_haiya_override_uses_no_for_ya():
     assert result == [
         {"text": "肺", "romaji": "hai"},
         {"text": "野", "romaji": "no"},
+    ]
+
+
+def test_segment_text_for_input_uses_nichimae_override(monkeypatch):
+    monkeypatch.setattr(
+        ehr_input,
+        "_segment_japanese_with_default_vlm",
+        lambda text: [{"text": text, "romaji": "kara"}],
+    )
+    result = ehr_input._segment_text_for_input("日前から")
+    assert result == [
+        {"text": "日前", "romaji": "nichimae"},
+        {"text": "から", "romaji": "kara"},
     ]
 
 

@@ -8,7 +8,12 @@ configuration management for the automation system.
 import os
 from pathlib import Path
 from typing import Optional
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv(*_args, **_kwargs) -> bool:
+        return False
 
 
 class AutomationConfig:
