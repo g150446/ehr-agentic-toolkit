@@ -712,6 +712,41 @@ def _expand_segment_overrides(segments: list[dict[str, str]]) -> list[dict[str, 
     return result
 
 
+def _split_katakana_runs(text: str) -> list[str]:
+    if not text:
+        return []
+    chunks: list[str] = []
+    buffer = [text[0]]
+    current_is_katakana = _is_katakana_only(text[0])
+    for ch in text[1:]:
+        is_katakana = _is_katakana_only(ch)
+        if is_katakana != current_is_katakana:
+            chunks.append("".join(buffer))
+            buffer = [ch]
+            current_is_katakana = is_katakana
+        else:
+            buffer.append(ch)
+    chunks.append("".join(buffer))
+    return chunks
+
+
+def _split_mixed_katakana_segments(segments: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Split katakana runs out of mixed Japanese segments so they always use F7 input."""
+    result: list[dict[str, str]] = []
+    for seg in segments:
+        chunks = _split_katakana_runs(seg["text"])
+        if len(chunks) <= 1:
+            result.append(seg)
+            continue
+        print(f"[カタカナ分割] {seg['text']!r} -> {chunks}")
+        for chunk in chunks:
+            if _is_katakana_only(chunk):
+                result.append({"text": chunk, "romaji": _katakana_to_romaji(chunk)})
+            else:
+                result.append({"text": chunk, "romaji": _kanji_to_romaji(chunk)})
+    return result
+
+
 def _validate_vlm_romaji(segments: list[dict[str, str]]) -> list[dict[str, str]]:
     """VLM が返したローマ字を cutlet ベースの期待値で検証し、典型誤読を修正する。
 
@@ -782,6 +817,7 @@ def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
         ]
         normalized_segments = _expand_segment_overrides(normalized_segments)
         normalized_segments = _validate_vlm_romaji(normalized_segments)
+        normalized_segments = _split_mixed_katakana_segments(normalized_segments)
         print(f"{runtime_label}分割結果: {raw_content}")
         print(f"{runtime_label}分割補正後: {normalized_segments}")
         return normalized_segments
@@ -789,7 +825,7 @@ def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
         print(f"{runtime_label}分割失敗 → ローカル分割へフォールバック: {exc}")
         summary, segments = segment_japanese_text_locally(text)
         print(f"ローカル分割サマリ: {summary}")
-        return _expand_segment_overrides(segments)
+        return _split_mixed_katakana_segments(_expand_segment_overrides(segments))
 
 
 def _is_single_kanji(text: str) -> bool:
@@ -2987,24 +3023,30 @@ def detect_ime_mode(
     else:
         print("  [IME検出] キャプチャ失敗")
 
+    def _cleanup_probe_after_escape(wait: float) -> None:
+        client.press_key("escape")
+        time.sleep(wait)
+        cleanup_frame = _capture_frame(config)
+        if cleanup_frame is None:
+            print("  [IME検出/cleanup] キャプチャ失敗")
+            return
+        composition_active = _has_ime_composition(cleanup_frame)
+        print(f"  [IME検出/cleanup] 組成残存: {composition_active}")
+        if composition_active:
+            client.press_key("backspace")
+            time.sleep(0.2)
+
     # 入力した 'a' または 'あ' を削除する
     if result == "japanese":
         # 日本語モード: IME の未確定「あ」を Escape でキャンセル（確実）
-        client.press_key("escape")
-        time.sleep(0.25)
-        # 念のため Backspace も送る（Escape が効かない場合への保険）
-        client.press_key("backspace")
-        time.sleep(0.2)
+        _cleanup_probe_after_escape(0.25)
     elif result == "english":
         # 英語モード: 'a' を Backspace で削除
         client.press_key("backspace")
         time.sleep(0.2)
     else:
-        # 判定不能: Escape と Backspace 両方送る
-        client.press_key("escape")
-        time.sleep(0.15)
-        client.press_key("backspace")
-        time.sleep(0.2)
+        # 判定不能: Escape で未確定組成を消し、残っている場合のみ Backspace を送る
+        _cleanup_probe_after_escape(0.15)
 
     return result
 

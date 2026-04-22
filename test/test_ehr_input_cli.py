@@ -302,6 +302,19 @@ def test_segment_text_for_input_uses_correct_abg_override():
     ]
 
 
+def test_segment_japanese_with_default_vlm_splits_mixed_katakana_and_kanji(monkeypatch):
+    monkeypatch.setattr(
+        ehr_input,
+        "segment_japanese_text_with_mlx_vlm",
+        lambda text: ('[{"text":"アレルギー性","romaji":"arerugi-sei"}]', [{"text": "アレルギー性", "romaji": "arerugi-sei"}]),
+    )
+
+    assert ehr_input._segment_japanese_with_default_vlm("アレルギー性") == [
+        {"text": "アレルギー", "romaji": "arerugi-"},
+        {"text": "性", "romaji": "sei"},
+    ]
+
+
 def test_katakana_to_romaji_replaces_nakaguro_with_slash():
     """・(nakaguro) must be replaced with / for JIS IME; non-ASCII chars sent
     to the ESP32 produce unpredictable HID events (0xE3 = Win key)."""
@@ -542,8 +555,8 @@ def _make_patient_record_frame() -> np.ndarray:
 
 
 
-def test_detect_ime_mode_returns_japanese_via_vlm(monkeypatch):
-    """detect_ime_mode は VLM が 'あ' を返せば 'japanese' を返す。"""
+def test_detect_ime_mode_returns_japanese_via_vlm_without_backspace_when_escape_clears_composition(monkeypatch):
+    """detect_ime_mode は Escape 後に組成が消えていれば Backspace を送らない。"""
     client = MagicMock()
     config = MagicMock()
     config.capture_device_index = 0
@@ -551,16 +564,41 @@ def test_detect_ime_mode_returns_japanese_via_vlm(monkeypatch):
     config.capture_height = 1080
 
     frame = _make_frame()
-    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: frame)
+    frames = iter([frame, frame, frame])
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: next(frames))
     monkeypatch.setattr(
         ehr_input,
         "detect_ime_mode_from_typed_a",
         lambda f, pre_frame=None: "japanese",
     )
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda _: False)
 
     assert ehr_input.detect_ime_mode(client, config) == "japanese"
     client.type_text.assert_called_once_with("a")
-    client.press_key.assert_any_call("escape")
+    assert [call.args[0] for call in client.press_key.call_args_list] == ["escape"]
+
+
+def test_detect_ime_mode_returns_japanese_via_vlm_with_backspace_when_composition_remains(monkeypatch):
+    client = MagicMock()
+    config = MagicMock()
+    config.capture_device_index = 0
+    config.capture_width = 1920
+    config.capture_height = 1080
+
+    frame = _make_frame()
+    frames = iter([frame, frame, frame])
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: next(frames))
+    monkeypatch.setattr(
+        ehr_input,
+        "detect_ime_mode_from_typed_a",
+        lambda f, pre_frame=None: "japanese",
+    )
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda _: True)
+
+    assert ehr_input.detect_ime_mode(client, config) == "japanese"
+    assert [call.args[0] for call in client.press_key.call_args_list] == ["escape", "backspace"]
 
 
 def test_detect_ime_mode_returns_english_via_vlm(monkeypatch):
@@ -572,7 +610,9 @@ def test_detect_ime_mode_returns_english_via_vlm(monkeypatch):
     config.capture_height = 1080
 
     frame = _make_frame()
-    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: frame)
+    frames = iter([frame, frame])
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: next(frames))
     monkeypatch.setattr(
         ehr_input,
         "detect_ime_mode_from_typed_a",
@@ -580,7 +620,7 @@ def test_detect_ime_mode_returns_english_via_vlm(monkeypatch):
     )
 
     assert ehr_input.detect_ime_mode(client, config) == "english"
-    client.press_key.assert_called_with("backspace")
+    assert [call.args[0] for call in client.press_key.call_args_list] == ["backspace"]
 
 
 def test_detect_ime_mode_returns_none_when_capture_fails(monkeypatch):
@@ -591,9 +631,33 @@ def test_detect_ime_mode_returns_none_when_capture_fails(monkeypatch):
     config.capture_width = 1920
     config.capture_height = 1080
 
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: None)
 
     assert ehr_input.detect_ime_mode(client, config) is None
+    assert [call.args[0] for call in client.press_key.call_args_list] == ["escape"]
+
+
+def test_detect_ime_mode_returns_none_without_backspace_when_cleanup_finds_no_composition(monkeypatch):
+    client = MagicMock()
+    config = MagicMock()
+    config.capture_device_index = 0
+    config.capture_width = 1920
+    config.capture_height = 1080
+
+    frame = _make_frame()
+    frames = iter([frame, frame, frame])
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: next(frames))
+    monkeypatch.setattr(
+        ehr_input,
+        "detect_ime_mode_from_typed_a",
+        lambda f, pre_frame=None: None,
+    )
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda _: False)
+
+    assert ehr_input.detect_ime_mode(client, config) is None
+    assert [call.args[0] for call in client.press_key.call_args_list] == ["escape"]
 
 
 def test_read_popup_candidates_with_fallback_uses_vlm_when_ocr_is_sparse(monkeypatch):
@@ -1668,6 +1732,48 @@ def test_type_japanese_sentence_uses_previous_confirmed_segment_as_helper_anchor
     assert events == [
         ("ime", "intou", "咽頭", {"_current_ime_mode": "japanese", "_typed_prefix_context": "", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
         ("ime", "ita", "痛", {"_current_ime_mode": "japanese", "_typed_prefix_context": "咽頭", "_helper_anchor_text": "咽頭", "_helper_reset_baseline": {"final_line": "咽頭", "char_count": 2, "anchor_present": True}}),
+    ]
+
+
+def test_type_japanese_sentence_routes_katakana_segment_via_f7_before_kanji(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "アレルギー", "romaji": "arerugi-"},
+            {"text": "性", "romaji": "sei"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
+
+    ehr_input.type_japanese_sentence("アレルギー性")
+
+    assert events == [
+        ("type", "arerugi-"),
+        ("key", "f7"),
+        ("key", "enter"),
+        ("ime", "sei", "性", {"_current_ime_mode": "japanese", "_typed_prefix_context": "アレルギー", "_helper_anchor_text": "アレルギー", "_helper_reset_baseline": None}),
     ]
 
 
