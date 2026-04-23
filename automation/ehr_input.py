@@ -125,6 +125,13 @@ _ASCII_SPECIAL_KEYS = {
 _JP_PUNCTUATION = {
     "、": ",",
     "。": ".",
+    "・": "/",
+}
+_JP_BRACKET_KEYS = {
+    "「": "lbracket",
+    "」": "rbracket",
+    "『": "lbracket",
+    "』": "rbracket",
 }
 
 # 特殊日本語記号 → IME で入力するときの読み（ローマ字）
@@ -610,6 +617,8 @@ def _classify_input_char(ch: str) -> str:
         return "newline"
     if ch in _JP_PUNCTUATION:
         return "jp_punct"
+    if ch in _JP_BRACKET_KEYS:
+        return "jp_bracket"
     if ord(ch) < 128:
         return "ascii"
     if _is_japanese(ch):
@@ -632,7 +641,7 @@ def _tokenize_text_for_input(text: str) -> list[dict[str, str]]:
 
     for ch in normalized:
         kind = _classify_input_char(ch)
-        if kind in {"newline", "jp_punct"}:
+        if kind in {"newline", "jp_punct", "jp_bracket"}:
             flush_buffer()
             tokens.append({"kind": kind, "text": ch})
             continue
@@ -901,6 +910,8 @@ def _iter_segments_for_input(text: str):
                         yield segment
         elif kind == "jp_punct":
             yield {"text": value, "romaji": _JP_PUNCTUATION[value]}
+        elif kind == "jp_bracket":
+            yield {"text": value, "romaji": "[" if value in ("「", "『") else "]"}
         elif kind == "newline":
             yield {"text": "\n", "romaji": "<enter>"}
         else:
@@ -3180,17 +3191,16 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
 
-        elif seg_text in ("、", "。"):
-            # 句読点: ひらがなモードで IME が自動変換するキー（,/.）を送る。
-            # Windows 10 では「、」「。」ともに変換候補ポップアップが表示されるため
-            # Enter で確定が必要。Windows 7 では「。」のみ必要。
+        elif seg_text in _JP_PUNCTUATION:
+            # 日本語全角で表示したい記号は 1 文字ずつ分離し、
+            # ひらがなモードで対応キー（, . / など）を送ってから
+            # 直後に Enter で明示確定する。
             current_mode = ensure_ime_mode("japanese", client, current_mode)
             print(f"  句読点入力: {seg_romaji!r}")
             ok = client.type_text(seg_romaji)
             print(f"type:{seg_romaji} -> {'OK' if ok else 'NG'}")
-            if seg_text == "。" or is_last_segment:
-                ok = client.press_key("enter")
-                print(f"key:enter -> {'OK' if ok else 'NG'}")
+            ok = client.press_key("enter")
+            print(f"key:enter -> {'OK' if ok else 'NG'}")
 
         elif _is_ascii_only(seg_text):
             # ASCII のみ（英単語・数字・記号）: 英数字モードで直接入力（IME 変換不要）
@@ -3232,11 +3242,11 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             ok = client.press_key("enter")
             print(f"key:enter -> {'OK' if ok else 'NG'}")
 
-        elif seg_text in ("「", "」", "『", "』"):
+        elif seg_text in _JP_BRACKET_KEYS:
             # 日本語括弧: JIS 日本語モードで括弧キーを押し、直後に Enter で確定する。
             # 未確定のままだと次の IME 変換に巻き込まれることがある。
             current_mode = ensure_ime_mode("japanese", client, current_mode)
-            key_name = "lbracket" if seg_text in ("「", "『") else "rbracket"
+            key_name = _JP_BRACKET_KEYS[seg_text]
             ok = client.press_key(key_name)
             print(f"key:{key_name} ({seg_text}) -> {'OK' if ok else 'NG'}")
             ok = client.press_key("enter")

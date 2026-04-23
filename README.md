@@ -218,6 +218,8 @@ curl -s -H "Authorization: Bearer omlxkey" http://localhost:8000/v1/models
 
 現在の `ehr_input` は、長文入力時に **Qwen 3.5 4B MLX を優先して日本語セグメントを切り出し**、ローマ字化はローカル辞書で補正しながら逐次入力します。IME 候補確認も Qwen 優先で行い、一致未確認の候補を盲目的に Enter で確定しないようにしています。**カタカナ部分は mixed セグメント中でも切り出して、常に F7 による全角カタカナ変換で確定**するため、`アレルギー性` のような語でもカタカナ部分を漢字変換候補に流しません。BLE で扱いにくい記号は入力前に可読な代替へ正規化しており、たとえば `℃` は `度` として送信します。
 
+日本語全角でそのまま表示したい記号は、現在 **`、` `。` `・` `「` `」` `『` `』`** を特別扱いしています。これらは前後の単語から**単独トークンとして分離**し、日本語モードで対応キーを送った直後に **Enter で明示確定**します。その他の全角記号（例: `（` `）` `％` `：` `［` `］` `【` `】`）は、今のところ **半角 ASCII に正規化して送信**します。
+
 ```bash
 python -m automation.ehr_input data/patient_records/asthma_1.txt
 python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
@@ -236,7 +238,7 @@ python -m automation.ehr_input --help
 
 | オプション | 説明 |
 |---|---|
-| `--win10` | Windows 10 固有の動作（カンマ後 Enter、インライン変換スキップ）を有効化 |
+| `--win10` | Windows 10 固有の動作（インライン変換スキップなど）を有効化 |
 | `--clear` | 入力前に Backspace を 50 回送信してフィールドをクリア |
 | `--fireworks <model>` | 文節分割・IME 候補読取・ヘルパー単語提案を Fireworks AI の指定モデルへ切り替える |
 | `--google-ai-studio` | 文節分割・IME 候補読取・ヘルパー単語提案を Google AI Studio の `gemma-4-26b-a4b-it` へ切り替える |

@@ -306,6 +306,10 @@ def test_normalize_text_for_typing_replaces_celsius_symbol_with_degree_kanji():
     assert ehr_input._normalize_text_for_typing("BT 36.6℃") == "BT 36.6度"
 
 
+def test_normalize_text_for_typing_converts_other_fullwidth_symbols_to_ascii():
+    assert ehr_input._normalize_text_for_typing("（％）：［A］【B】") == "(%):[A][B]"
+
+
 def test_tokenize_text_for_input_splits_normalized_celsius_out_of_ascii_vitals():
     assert ehr_input._tokenize_text_for_input("BT 36.6℃, BP 122/78 mmHg") == [
         {"kind": "ascii", "text": "BT 36.6"},
@@ -459,6 +463,47 @@ def test_tokenize_text_for_input_preserves_newlines_and_symbols():
         {"kind": "newline", "text": "\n"},
         {"kind": "japanese", "text": "発熱"},
         {"kind": "ascii", "text": "(37%)"},
+    ]
+
+
+def test_tokenize_text_for_input_separates_japanese_brackets_from_ascii_brackets():
+    tokens = ehr_input._tokenize_text_for_input("[S]「過」")
+
+    assert tokens == [
+        {"kind": "ascii", "text": "[S]"},
+        {"kind": "jp_bracket", "text": "「"},
+        {"kind": "japanese", "text": "過"},
+        {"kind": "jp_bracket", "text": "」"},
+    ]
+
+
+def test_tokenize_text_for_input_isolates_japanese_comma_between_words():
+    tokens = ehr_input._tokenize_text_for_input("にて、強制")
+
+    assert tokens == [
+        {"kind": "japanese", "text": "にて"},
+        {"kind": "jp_punct", "text": "、"},
+        {"kind": "japanese", "text": "強制"},
+    ]
+
+
+def test_tokenize_text_for_input_isolates_japanese_period_between_words():
+    tokens = ehr_input._tokenize_text_for_input("にて。強制")
+
+    assert tokens == [
+        {"kind": "japanese", "text": "にて"},
+        {"kind": "jp_punct", "text": "。"},
+        {"kind": "japanese", "text": "強制"},
+    ]
+
+
+def test_tokenize_text_for_input_isolates_japanese_middle_dot_between_words():
+    tokens = ehr_input._tokenize_text_for_input("ソル・コーテフ")
+
+    assert tokens == [
+        {"kind": "japanese", "text": "ソル"},
+        {"kind": "jp_punct", "text": "・"},
+        {"kind": "japanese", "text": "コーテフ"},
     ]
 
 
@@ -1652,6 +1697,131 @@ def test_type_japanese_sentence_routes_japanese_punctuation_via_ascii_keys(monke
     ehr_input.type_japanese_sentence("、")
 
     assert events == [("type", ","), ("key", "enter")]
+
+
+def test_type_japanese_sentence_always_confirms_japanese_comma_before_next_segment(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "、", "romaji": ","},
+            {"text": "強制", "romaji": "kyousei"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
+
+    ehr_input.type_japanese_sentence("、強制")
+
+    assert events == [
+        ("type", ","),
+        ("key", "enter"),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "、", "_helper_anchor_text": "、", "_helper_reset_baseline": None}),
+    ]
+
+
+def test_type_japanese_sentence_always_confirms_japanese_period_before_next_segment(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "。", "romaji": "."},
+            {"text": "強制", "romaji": "kyousei"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
+
+    ehr_input.type_japanese_sentence("。強制")
+
+    assert events == [
+        ("type", "."),
+        ("key", "enter"),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "。", "_helper_anchor_text": "。", "_helper_reset_baseline": None}),
+    ]
+
+
+def test_type_japanese_sentence_always_confirms_japanese_middle_dot_before_next_segment(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "・", "romaji": "/"},
+            {"text": "コーテフ", "romaji": "ko-tefu"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_katakana_to_romaji",
+        lambda text: {"コーテフ": "ko-tefu"}[text],
+    )
+    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
+
+    ehr_input.type_japanese_sentence("・コーテフ")
+
+    assert events == [
+        ("type", "/"),
+        ("key", "enter"),
+        ("type", "ko-tefu"),
+        ("key", "f7"),
+        ("key", "enter"),
+    ]
 
 
 def test_type_japanese_sentence_confirms_japanese_bracket_before_next_conversion(monkeypatch):

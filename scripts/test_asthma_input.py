@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""asthma_1.txt の句読点分割フラグメントを ehr_input でテストする。
+"""asthma_*.txt の原文を行単位で保持しながら ehr_input でテストする。
 
 前提条件:
   - BLE サーバーが起動・接続済み
@@ -7,25 +7,28 @@
 
 実行方法:
   python scripts/test_asthma_input.py
+  python scripts/test_asthma_input.py --record asthma_2
+  python scripts/test_asthma_input.py --record 3
   python scripts/test_asthma_input.py --start 3        # 3番目から再開
   python scripts/test_asthma_input.py --fragment 3     # 3番目だけ実行
   python scripts/test_asthma_input.py --fireworks accounts/fireworks/models/gemma-4-26b-a4b-it
   python scripts/test_asthma_input.py --openrouter google/gemma-4-26b-a4b-it
   python scripts/test_asthma_input.py --google-ai-studio
-  python scripts/test_asthma_input.py --dry-run        # フラグメント一覧のみ表示
+  python scripts/test_asthma_input.py --dry-run        # 行と Enter の並びを表示
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).parent.parent
-_ASTHMA_FILE = _PROJECT_ROOT / "data" / "patient_records" / "asthma_1.txt"
+_PATIENT_RECORDS_DIR = _PROJECT_ROOT / "data" / "patient_records"
+_DEFAULT_RECORD = "asthma_1"
+_SUPPORTED_RECORDS = ("asthma_1", "asthma_2", "asthma_3")
 
 
 def _resolve_python_executable() -> str:
@@ -42,47 +45,45 @@ def _resolve_python_executable() -> str:
 _PYTHON = _resolve_python_executable()
 
 
-def _build_fragments(path: Path) -> list[str]:
-    """asthma_1.txt を句読点（。・、）で分割してフラグメントリストを返す。
+def _resolve_record_path(record: str) -> Path:
+    normalized = record.strip()
+    if normalized in {"1", "2", "3"}:
+        normalized = f"asthma_{normalized}"
+    if normalized.endswith(".txt"):
+        normalized = normalized[:-4]
+    if normalized not in _SUPPORTED_RECORDS:
+        supported = ", ".join(_SUPPORTED_RECORDS)
+        raise ValueError(f"--record は {supported} のいずれかを指定してください")
+    return _PATIENT_RECORDS_DIR / f"{normalized}.txt"
 
-    元テキストの改行（空行による段落区切り）は ``"\\n"`` マーカーとして保持し、
-    実行時に Enter キーとして送信する。
+
+def _build_fragments(path: Path) -> list[str]:
+    """指定テキストを行構造ごとに保持したフラグメントリストを返す。
+
+    各行の本文は元テキストどおり保持し、行末改行は ``"\\n"`` マーカーとして
+    別フラグメントにする。これにより、``[S]`` / ``#`` 見出しや句読点を含めて、
+    原文の並びを可能な限りそのまま ``ehr_input`` へ渡せるようにする。
     """
     text = path.read_text(encoding="utf-8")
-    # セクションヘッダ [S][O][A][P] と # プレフィックスを除去（改行は消さない）
-    text = re.sub(r'^[^\S\n]*\[[SOAP]\][^\S\n]*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^[^\S\n]*#[^\S\n]*', '', text, flags=re.MULTILINE)
-
-    # 段落単位に分割（空行を段落区切りとする）
-    paragraphs = re.split(r'\n\s*\n', text)
-
     fragments: list[str] = []
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-
-        # 段落区切りマーカー（先頭段落を除く）
-        if fragments and fragments[-1] != "\n":
+    for raw_line in text.splitlines(keepends=True):
+        has_newline = raw_line.endswith(("\n", "\r"))
+        line = raw_line.removesuffix("\n").removesuffix("\r")
+        if line:
+            fragments.append(line)
+        if has_newline:
             fragments.append("\n")
-
-        # 句読点の直後で分割（句読点は各フラグメントの末尾に残す）
-        raw = re.split(r'(?<=[。、])', para)
-        for f in raw:
-            # 段落内の改行はスペースに変換
-            f = re.sub(r'\s+', ' ', f).strip()
-            # 4文字以上 かつ 日本語文字を含むもののみ
-            if len(f) >= 4 and re.search(r'[\u3040-\u9FFF]', f):
-                fragments.append(f)
-
-    # 末尾の改行マーカーを除去
-    while fragments and fragments[-1] == "\n":
-        fragments.pop()
     return fragments
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--record",
+        default=_DEFAULT_RECORD,
+        metavar="NAME",
+        help="対象カルテ名（asthma_1 / asthma_2 / asthma_3、または 1 / 2 / 3）",
+    )
     parser.add_argument("--start", type=int, default=None, metavar="N", help="N番目のフラグメントから開始（1始まり）")
     parser.add_argument("--end", type=int, default=None, metavar="N", help="N番目のフラグメントで終了（1始まり、含む）")
     parser.add_argument("--fragment", type=int, default=None, metavar="N", help="N番目のフラグメントだけを実行（1始まり）")
@@ -180,8 +181,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    fragments = _build_fragments(_ASTHMA_FILE)
+    try:
+        record_path = _resolve_record_path(args.record)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    record_label = record_path.stem
+    fragments = _build_fragments(record_path)
     total = len(fragments)
+    print(f"対象カルテ: {record_label}")
     print(f"フラグメント総数: {total}")
 
     if args.dry_run:
@@ -189,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
             if f == "\n":
                 print(f"{i:3d}: [Enter]")
             else:
-                print(f"{i:3d}: {f[:80]}")
+                print(f"{i:3d}: {f}")
         return 0
 
     if args.fragment is not None and (args.start is not None or args.end is not None):
@@ -209,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
 
     print(f"実行範囲: {start}〜{end} ({len(target)} フラグメント)")
+    print(f"入力対象ファイル: {record_path.relative_to(_PROJECT_ROOT)}")
     print("BLE サーバーと EHR 患者記録画面が起動していることを確認してください。")
     print("3秒後に開始します...")
     time.sleep(3)

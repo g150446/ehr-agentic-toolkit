@@ -49,6 +49,53 @@ def test_resolve_python_executable_falls_back_to_current_python(monkeypatch, tmp
     assert asthma_input._resolve_python_executable() == "/usr/bin/python3"
 
 
+def test_resolve_record_path_defaults_to_known_patient_records_dir(monkeypatch, tmp_path):
+    patient_records_dir = tmp_path / "data" / "patient_records"
+    monkeypatch.setattr(asthma_input, "_PATIENT_RECORDS_DIR", patient_records_dir)
+
+    assert asthma_input._resolve_record_path("asthma_2") == patient_records_dir / "asthma_2.txt"
+
+
+def test_resolve_record_path_accepts_numeric_shortcut(monkeypatch, tmp_path):
+    patient_records_dir = tmp_path / "data" / "patient_records"
+    monkeypatch.setattr(asthma_input, "_PATIENT_RECORDS_DIR", patient_records_dir)
+
+    assert asthma_input._resolve_record_path("3") == patient_records_dir / "asthma_3.txt"
+
+
+def test_resolve_record_path_rejects_unknown_record():
+    with pytest.raises(ValueError, match="--record は asthma_1, asthma_2, asthma_3 のいずれかを指定してください"):
+        asthma_input._resolve_record_path("asthma_9")
+
+
+def test_build_fragments_preserves_headers_punctuation_and_blank_lines(tmp_path):
+    record = tmp_path / "asthma.txt"
+    record.write_text("[S]\n咳嗽あり。\n\n[A]\n# 気管支喘息\n", encoding="utf-8")
+
+    assert asthma_input._build_fragments(record) == [
+        "[S]",
+        "\n",
+        "咳嗽あり。",
+        "\n",
+        "\n",
+        "[A]",
+        "\n",
+        "# 気管支喘息",
+        "\n",
+    ]
+
+
+def test_build_fragments_preserves_last_line_without_trailing_newline(tmp_path):
+    record = tmp_path / "asthma.txt"
+    record.write_text("[O]\nVitals: BT 36.5℃", encoding="utf-8")
+
+    assert asthma_input._build_fragments(record) == [
+        "[O]",
+        "\n",
+        "Vitals: BT 36.5℃",
+    ]
+
+
 def test_build_ehr_input_command_adds_google_ai_studio():
     assert asthma_input._build_ehr_input_command(
         "咳嗽あり。",
@@ -87,10 +134,11 @@ def test_select_target_fragments_returns_single_fragment():
 
 def test_main_runs_only_selected_fragment(monkeypatch):
     calls = []
+    paths = []
     monkeypatch.setattr(
         asthma_input,
         "_build_fragments",
-        lambda path: ["一つ目。", "二つ目。", "三つ目。"],
+        lambda path: paths.append(path) or ["一つ目。", "二つ目。", "三つ目。"],
     )
     monkeypatch.setattr(asthma_input.time, "sleep", lambda _: None)
     monkeypatch.setattr(
@@ -99,7 +147,8 @@ def test_main_runs_only_selected_fragment(monkeypatch):
         lambda fragment, index, total, **kwargs: calls.append((fragment, index, total, kwargs)) or True,
     )
 
-    assert asthma_input.main(["--fragment", "2", "--openrouter", "google/gemma-4-26b-a4b-it"]) == 0
+    assert asthma_input.main(["--record", "asthma_2", "--fragment", "2", "--openrouter", "google/gemma-4-26b-a4b-it"]) == 0
+    assert paths == [asthma_input._PATIENT_RECORDS_DIR / "asthma_2.txt"]
     assert calls == [
         (
             "二つ目。",
@@ -113,6 +162,31 @@ def test_main_runs_only_selected_fragment(monkeypatch):
             },
         )
     ]
+
+
+def test_main_uses_default_record_when_not_specified(monkeypatch):
+    paths = []
+    monkeypatch.setattr(
+        asthma_input,
+        "_build_fragments",
+        lambda path: paths.append(path) or ["一つ目。"],
+    )
+    monkeypatch.setattr(asthma_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(asthma_input, "_run_fragment", lambda *args, **kwargs: True)
+
+    assert asthma_input.main([]) == 0
+    assert paths == [asthma_input._PATIENT_RECORDS_DIR / "asthma_1.txt"]
+
+
+def test_main_dry_run_shows_preserved_headers_and_enters(monkeypatch, capsys):
+    monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["[S]", "\n", "咳嗽あり。"])
+
+    assert asthma_input.main(["--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    assert "  1: [S]" in output
+    assert "  2: [Enter]" in output
+    assert "  3: 咳嗽あり。" in output
 
 
 def test_main_rejects_fragment_with_start(monkeypatch):
@@ -134,6 +208,17 @@ def test_main_no_longer_accepts_win10_option():
 
     assert excinfo.value.code == 2
     assert "unrecognized arguments: --win10" in stderr.getvalue()
+
+
+def test_main_rejects_unknown_record(monkeypatch):
+    monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。"])
+    stderr = io.StringIO()
+
+    with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
+        asthma_input.main(["--record", "asthma_9"])
+
+    assert excinfo.value.code == 2
+    assert "--record は asthma_1, asthma_2, asthma_3 のいずれかを指定してください" in stderr.getvalue()
 
 
 def test_run_fragment_passes_command_to_subprocess(monkeypatch):
