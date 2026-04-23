@@ -108,7 +108,6 @@ _TEXT_NORMALIZATION_MAP = str.maketrans({
 _MULTI_CHAR_REPLACEMENTS = {
     "→": "->",
     "⇒": "=>",
-    "〜": "~",
     "℃": "度",
 }
 _ASCII_SPECIAL_KEYS = {
@@ -126,6 +125,8 @@ _JP_PUNCTUATION = {
     "、": ",",
     "。": ".",
     "・": "/",
+    "ー": "-",
+    "〜": "~",
 }
 _JP_BRACKET_KEYS = {
     "「": "lbracket",

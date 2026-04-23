@@ -503,7 +503,29 @@ def test_tokenize_text_for_input_isolates_japanese_middle_dot_between_words():
     assert tokens == [
         {"kind": "japanese", "text": "ソル"},
         {"kind": "jp_punct", "text": "・"},
-        {"kind": "japanese", "text": "コーテフ"},
+        {"kind": "japanese", "text": "コ"},
+        {"kind": "jp_punct", "text": "ー"},
+        {"kind": "japanese", "text": "テフ"},
+    ]
+
+
+def test_tokenize_text_for_input_isolates_long_vowel_mark_between_katakana_runs():
+    tokens = ehr_input._tokenize_text_for_input("コーテフ")
+
+    assert tokens == [
+        {"kind": "japanese", "text": "コ"},
+        {"kind": "jp_punct", "text": "ー"},
+        {"kind": "japanese", "text": "テフ"},
+    ]
+
+
+def test_tokenize_text_for_input_isolates_wave_dash_between_words():
+    tokens = ehr_input._tokenize_text_for_input("発熱〜咳嗽")
+
+    assert tokens == [
+        {"kind": "japanese", "text": "発熱"},
+        {"kind": "jp_punct", "text": "〜"},
+        {"kind": "japanese", "text": "咳嗽"},
     ]
 
 
@@ -1821,6 +1843,88 @@ def test_type_japanese_sentence_always_confirms_japanese_middle_dot_before_next_
         ("type", "ko-tefu"),
         ("key", "f7"),
         ("key", "enter"),
+    ]
+
+
+def test_type_japanese_sentence_always_confirms_long_vowel_mark_before_next_segment(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "ー", "romaji": "-"},
+            {"text": "強制", "romaji": "kyousei"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
+
+    ehr_input.type_japanese_sentence("ー強制")
+
+    assert events == [
+        ("type", "-"),
+        ("key", "enter"),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "ー", "_helper_anchor_text": "ー", "_helper_reset_baseline": None}),
+    ]
+
+
+def test_type_japanese_sentence_always_confirms_wave_dash_before_next_segment(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "〜", "romaji": "~"},
+            {"text": "強制", "romaji": "kyousei"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
+
+    ehr_input.type_japanese_sentence("〜強制")
+
+    assert events == [
+        ("type", "~"),
+        ("key", "enter"),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "〜", "_helper_anchor_text": "〜", "_helper_reset_baseline": None}),
     ]
 
 
