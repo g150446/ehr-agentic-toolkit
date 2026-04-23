@@ -1617,8 +1617,8 @@ def assess_helper_reset_state(
     expected_anchor = anchor_text.strip()[-8:]
     if expected_anchor:
         left_rule = (
-            f"入力カーソル直前の確定済みアンカー語として {expected_anchor!r} がそのまま見えており、"
-            "その語が欠けたり別の文字に変わったり、全選択/反転されたりしていないこと。"
+            f"入力カーソル直前の確定済みアンカー文字列として {expected_anchor!r} がそのまま見えており、"
+            "その文字列が欠けたり別の文字に変わったり、全選択/反転されたりしていないこと。"
         )
         composition_rule = (
             f"{expected_anchor!r} の直後に、{target_text!r} に対応する未確定組成、下線、反転候補、"
@@ -1669,8 +1669,8 @@ def compare_helper_reset_images(
     expected_left = left_context.strip()[-8:]
     if expected_anchor:
         comparison_rule = (
-            f"1枚目の最後の単語は {expected_anchor!r} です。"
-            f"2枚目でも最後の単語が同様に {expected_anchor!r} で終わっていれば yes、"
+            f"1枚目の最後の確定済み文字列は {expected_anchor!r} です。"
+            f"2枚目でも最後が同様に {expected_anchor!r} で終わっていれば yes、"
             f"{expected_anchor!r} の後ろに別の文字、未確定文字、下線、反転、候補表示が"
             "1つでも見えれば no と答えてください。"
         )

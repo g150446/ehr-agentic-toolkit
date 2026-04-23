@@ -2191,6 +2191,16 @@ def _trim_helper_left_context(left_context: str, *, max_chars: int = 8) -> str:
     return left_context[-max_chars:]
 
 
+def _update_helper_anchor_text(current_anchor: str, seg_text: str) -> str:
+    if not seg_text or seg_text == "\n":
+        return current_anchor
+    if seg_text in _JP_PUNCTUATION or seg_text in _JP_BRACKET_KEYS or _is_ascii_only(seg_text):
+        return f"{current_anchor}{seg_text}" if current_anchor else current_anchor
+    if _is_japanese(seg_text):
+        return seg_text
+    return current_anchor
+
+
 def _reset_ime_before_helper_lookup(
     client: "BLEClient",
     config,
@@ -3184,7 +3194,6 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
     for index, seg in enumerate(segments):
         seg_text = seg["text"]
         seg_romaji = seg["romaji"]
-        is_last_segment = index == len(segments) - 1
         print(f"\n--- 文節: {seg_text!r} ({seg_romaji}) ---")
 
         if seg_text == "\n":
@@ -3290,8 +3299,8 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                     if ok:
                         client.press_key("enter")
                 segment_prefix_context += ch
-                if _is_japanese(ch):
-                    segment_anchor_text = ch
+                segment_anchor_text = _update_helper_anchor_text(segment_anchor_text, ch)
+                if segment_anchor_text:
                     segment_baseline_state = _capture_helper_reset_baseline(
                         config,
                         anchor_text=segment_anchor_text,
@@ -3314,8 +3323,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             time.sleep(0.15)
 
         typed_prefix_context += seg_text
-        if _is_japanese(seg_text):
-            helper_anchor_text = seg_text
+        helper_anchor_text = _update_helper_anchor_text(helper_anchor_text, seg_text)
         helper_reset_baseline = _capture_helper_reset_baseline(
             config,
             anchor_text=helper_anchor_text,

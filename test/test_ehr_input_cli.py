@@ -529,6 +529,15 @@ def test_tokenize_text_for_input_isolates_wave_dash_between_words():
     ]
 
 
+def test_update_helper_anchor_text_appends_adjacent_ascii_suffix():
+    assert ehr_input._update_helper_anchor_text("症状", "(") == "症状("
+    assert ehr_input._update_helper_anchor_text("症状(", "A1") == "症状(A1"
+
+
+def test_update_helper_anchor_text_resets_on_new_japanese_segment():
+    assert ehr_input._update_helper_anchor_text("症状(", "咽頭痛") == "咽頭痛"
+
+
 def test_segment_japanese_with_default_vlm_falls_back_to_local(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
@@ -1364,14 +1373,14 @@ def test_reset_ime_before_helper_lookup_stops_when_compare_matches_baseline(monk
         config,
         target_kanji="痛",
         left_context="昨日から感冒症状(",
-        anchor_text="咽頭",
-        baseline_state={"cropped_frame": baseline_crop, "anchor_text": "咽頭", "screen_type": "notepad"},
+        anchor_text="咽頭(",
+        baseline_state={"cropped_frame": baseline_crop, "anchor_text": "咽頭(", "screen_type": "notepad"},
     )
     assert events == [("key", "escape"), ("key", "escape")]
     trimmed_left_context = ehr_input._trim_helper_left_context("昨日から感冒症状(")
     assert captured == [
-        (baseline_crop, current_crop, trimmed_left_context, "咽頭", "痛", "notepad"),
-        (baseline_crop, current_crop, trimmed_left_context, "咽頭", "痛", "notepad"),
+        (baseline_crop, current_crop, trimmed_left_context, "咽頭(", "痛", "notepad"),
+        (baseline_crop, current_crop, trimmed_left_context, "咽頭(", "痛", "notepad"),
     ]
 
 
@@ -1546,7 +1555,7 @@ def test_assess_helper_reset_state_prompt_uses_anchor_text(monkeypatch):
         "composition_cleared": False,
         "ready": False,
     }
-    assert "確定済みアンカー語として '咽頭'" in captured["prompt"]
+    assert "確定済みアンカー文字列として '咽頭'" in captured["prompt"]
     assert "'咽頭' の直後に、'痛'" in captured["prompt"]
 
 
@@ -1689,9 +1698,37 @@ def test_compare_helper_reset_images_prompt_uses_anchor_and_two_images(monkeypat
     assert captured["thinking_log"] is True
     assert "ここでは2枚の別画像が送られます" in captured["prompt"]
     assert "1枚目を縦に分割した1枚画像だと思わないでください" in captured["prompt"]
-    assert "1枚目の最後の単語は '咽頭'" in captured["prompt"]
+    assert "1枚目の最後の確定済み文字列は '咽頭'" in captured["prompt"]
     assert "Windows Notepad の本文領域です" in captured["prompt"]
     assert "yes または no のみで答えてください" in captured["prompt"]
+
+
+def test_compare_helper_reset_images_prompt_accepts_anchor_with_ascii_suffix(monkeypatch):
+    baseline = _make_frame()
+    current = _make_frame()
+    captured = {}
+
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_encode_image_data_url",
+        lambda image, **kwargs: "data:image/mock",
+    )
+    def _fake_call(data_urls, prompt, timeout, enable_reasoning=False, thinking_log=False):
+        captured["prompt"] = prompt
+        return "yes"
+
+    monkeypatch.setattr(mlx_vlm_ime, "_call_mlx_vlm_with_images", _fake_call)
+
+    assert mlx_vlm_ime.compare_helper_reset_images(
+        baseline,
+        current,
+        anchor_text="症状(",
+        target_text="咽頭痛",
+        left_context="感冒症状(",
+        screen_type="notepad",
+    ) is True
+    assert "1枚目の最後の確定済み文字列は '症状('" in captured["prompt"]
+    assert "'症状(' の後ろに別の文字" in captured["prompt"]
 
 
 def test_type_japanese_sentence_routes_japanese_punctuation_via_ascii_keys(monkeypatch):
@@ -1758,7 +1795,7 @@ def test_type_japanese_sentence_always_confirms_japanese_comma_before_next_segme
     assert events == [
         ("type", ","),
         ("key", "enter"),
-        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "、", "_helper_anchor_text": "、", "_helper_reset_baseline": None}),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "、", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
     ]
 
 
@@ -1799,7 +1836,7 @@ def test_type_japanese_sentence_always_confirms_japanese_period_before_next_segm
     assert events == [
         ("type", "."),
         ("key", "enter"),
-        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "。", "_helper_anchor_text": "。", "_helper_reset_baseline": None}),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "。", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
     ]
 
 
@@ -1883,7 +1920,7 @@ def test_type_japanese_sentence_always_confirms_long_vowel_mark_before_next_segm
     assert events == [
         ("type", "-"),
         ("key", "enter"),
-        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "ー", "_helper_anchor_text": "ー", "_helper_reset_baseline": None}),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "ー", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
     ]
 
 
@@ -1924,7 +1961,7 @@ def test_type_japanese_sentence_always_confirms_wave_dash_before_next_segment(mo
     assert events == [
         ("type", "~"),
         ("key", "enter"),
-        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "〜", "_helper_anchor_text": "〜", "_helper_reset_baseline": None}),
+        ("ime", "kyousei", "強制", {"_current_ime_mode": "japanese", "_typed_prefix_context": "〜", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
     ]
 
 
@@ -1965,7 +2002,7 @@ def test_type_japanese_sentence_confirms_japanese_bracket_before_next_conversion
     assert events == [
         ("key", "lbracket"),
         ("key", "enter"),
-        ("ime", "ka", "過", {"_current_ime_mode": "japanese", "_typed_prefix_context": "「", "_helper_anchor_text": "「", "_helper_reset_baseline": None}),
+        ("ime", "ka", "過", {"_current_ime_mode": "japanese", "_typed_prefix_context": "「", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
     ]
 
 
@@ -2059,6 +2096,51 @@ def test_type_japanese_sentence_uses_previous_confirmed_segment_as_helper_anchor
     assert events == [
         ("ime", "intou", "咽頭", {"_current_ime_mode": "japanese", "_typed_prefix_context": "", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
         ("ime", "ita", "痛", {"_current_ime_mode": "japanese", "_typed_prefix_context": "咽頭", "_helper_anchor_text": "咽頭", "_helper_reset_baseline": {"final_line": "咽頭", "char_count": 2, "anchor_present": True}}),
+    ]
+
+
+def test_type_japanese_sentence_carries_ascii_suffix_into_helper_anchor(monkeypatch):
+    events = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "症状", "romaji": "shoujou"},
+            {"text": "(", "romaji": "("},
+            {"text": "咽頭痛", "romaji": "intoutsuu"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_baseline",
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": {"anchor_text": anchor_text} if anchor_text else None,
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+
+    ehr_input.type_japanese_sentence("症状(咽頭痛")
+
+    assert events == [
+        ("ime", "shoujou", "症状", {"_current_ime_mode": "japanese", "_typed_prefix_context": "", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
+        ("key", "lparen"),
+        ("ime", "intoutsuu", "咽頭痛", {"_current_ime_mode": "japanese", "_typed_prefix_context": "症状(", "_helper_anchor_text": "症状(", "_helper_reset_baseline": {"anchor_text": "症状("}}),
     ]
 
 
