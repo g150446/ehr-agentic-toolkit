@@ -503,19 +503,32 @@ def test_tokenize_text_for_input_isolates_japanese_middle_dot_between_words():
     assert tokens == [
         {"kind": "japanese", "text": "ソル"},
         {"kind": "jp_punct", "text": "・"},
-        {"kind": "japanese", "text": "コ"},
-        {"kind": "jp_punct", "text": "ー"},
-        {"kind": "japanese", "text": "テフ"},
+        {"kind": "japanese", "text": "コーテフ"},
     ]
 
 
-def test_tokenize_text_for_input_isolates_long_vowel_mark_between_katakana_runs():
+def test_tokenize_text_for_input_keeps_long_vowel_mark_inside_katakana_run():
     tokens = ehr_input._tokenize_text_for_input("コーテフ")
 
     assert tokens == [
-        {"kind": "japanese", "text": "コ"},
+        {"kind": "japanese", "text": "コーテフ"},
+    ]
+
+
+def test_tokenize_text_for_input_keeps_long_vowel_mark_inside_hiragana_run():
+    tokens = ehr_input._tokenize_text_for_input("えーと")
+
+    assert tokens == [
+        {"kind": "japanese", "text": "えーと"},
+    ]
+
+
+def test_tokenize_text_for_input_still_isolates_standalone_long_vowel_mark():
+    tokens = ehr_input._tokenize_text_for_input("ー強制")
+
+    assert tokens == [
         {"kind": "jp_punct", "text": "ー"},
-        {"kind": "japanese", "text": "テフ"},
+        {"kind": "japanese", "text": "強制"},
     ]
 
 
@@ -1633,6 +1646,27 @@ def test_capture_helper_reset_baseline_stores_screen_type(monkeypatch):
     assert state["anchor_text"] == "咽頭"
     assert state["screen_type"] == "notepad"
     assert state["cropped_frame"].shape == (20, 40, 3)
+
+
+def test_prime_helper_reset_panel_cache_captures_once(monkeypatch):
+    frame = _make_frame()
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    calls = []
+
+    monkeypatch.setattr(mlx_vlm_ime, "reset_helper_reset_panel_cache", lambda: calls.append(("reset",)))
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "prime_helper_reset_panel_cache",
+        lambda image, debug_name="": calls.append(("prime", image.shape, debug_name)),
+    )
+
+    ehr_input._prime_helper_reset_panel_cache(config)
+
+    assert calls == [
+        ("reset",),
+        ("prime", frame.shape, "helper_reset_initial_panel"),
+    ]
 
 
 def test_capture_helper_reset_compare_frame_focuses_patient_record_center_band(monkeypatch):

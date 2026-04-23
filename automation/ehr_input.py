@@ -509,6 +509,20 @@ def _capture_helper_reset_baseline(
     }
 
 
+def _prime_helper_reset_panel_cache(config) -> None:
+    mlx_vlm_ime.reset_helper_reset_panel_cache()
+    required_attrs = ("capture_device_index", "capture_width", "capture_height")
+    if any(not hasattr(config, attr) for attr in required_attrs):
+        return
+    frame = _capture_frame(config)
+    if frame is None:
+        return
+    mlx_vlm_ime.prime_helper_reset_panel_cache(
+        frame,
+        debug_name="helper_reset_initial_panel",
+    )
+
+
 def _normalize_ocr_ui_text(text: str) -> str:
     return re.sub(r"\s+", "", text).translate(_TEXT_NORMALIZATION_MAP)
 
@@ -641,6 +655,18 @@ def _tokenize_text_for_input(text: str) -> list[dict[str, str]]:
             current_kind = None
 
     for ch in normalized:
+        if (
+            ch == "ー"
+            and current_kind == "japanese"
+            and buffer
+            and (
+                _is_hiragana_only(buffer[-1])
+                or _is_katakana_only(buffer[-1])
+                or buffer[-1] == "ー"
+            )
+        ):
+            buffer.append(ch)
+            continue
         kind = _classify_input_char(ch)
         if kind in {"newline", "jp_punct", "jp_bracket"}:
             flush_buffer()
@@ -3186,6 +3212,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
         current_mode = detect_ime_mode(client, config)
         print(f"  [IME回復] 再検出結果: {current_mode!r}")
     print(f"初期 IME モード: {current_mode!r}")
+    _prime_helper_reset_panel_cache(config)
 
     segments = list(_iter_segments_for_input(text))
     typed_prefix_context = ""

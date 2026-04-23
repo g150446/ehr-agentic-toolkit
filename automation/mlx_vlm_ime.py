@@ -53,6 +53,7 @@ _OPENROUTER_PROVIDER_ORDER = [
 ]
 _VLM_REQUEST_COOLDOWN_SEC = 0.5
 _last_vlm_response_monotonic: Optional[float] = None
+_helper_reset_panel_bounds: Optional[tuple[int, int]] = None
 
 
 class MlxVlmImeError(RuntimeError):
@@ -331,6 +332,52 @@ def _save_divider_debug_overlay(
     _save_debug_frame(overlay, name=name, prefix="debug_panel_detection")
 
 
+def _save_panel_bounds_debug_overlay(
+    frame: np.ndarray,
+    *,
+    name: str,
+    panel_bounds: tuple[int, int],
+) -> None:
+    overlay = frame.copy()
+    h, w = overlay.shape[:2]
+    x1 = max(0, min(w - 1, int(panel_bounds[0])))
+    x2 = max(x1 + 1, min(w, int(panel_bounds[1])))
+    cv2.line(overlay, (x1, 0), (x1, h - 1), (0, 255, 0), 2)
+    cv2.line(overlay, (x2 - 1, 0), (x2 - 1, h - 1), (0, 255, 0), 2)
+    cv2.rectangle(overlay, (x1, 0), (x2 - 1, h - 1), (255, 0, 0), 2)
+    _save_debug_frame(overlay, name=name, prefix="debug_panel_detection")
+
+
+def reset_helper_reset_panel_cache() -> None:
+    global _helper_reset_panel_bounds
+    _helper_reset_panel_bounds = None
+
+
+def get_helper_reset_panel_cache() -> Optional[tuple[int, int]]:
+    return _helper_reset_panel_bounds
+
+
+def _crop_frame_to_panel(frame: np.ndarray, panel_bounds: tuple[int, int]) -> np.ndarray:
+    _, w = frame.shape[:2]
+    x1 = max(0, min(w - 1, int(panel_bounds[0])))
+    x2 = max(x1 + 1, min(w, int(panel_bounds[1])))
+    return frame[:, x1:x2]
+
+
+def _parse_yes_no_response(content: str) -> Optional[bool]:
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip().lower()
+    if not content:
+        return None
+    match = re.search(r"\b(yes|no)\b", content)
+    if match:
+        return match.group(1) == "yes"
+    if '"valid": true' in content or '"ok": true' in content:
+        return True
+    if '"valid": false' in content or '"ok": false' in content:
+        return False
+    return None
+
+
 def detect_patient_record_panel3(
     frame: np.ndarray,
     *,
@@ -354,12 +401,85 @@ def detect_patient_record_panel3(
     return (accepted[1], accepted[2])
 
 
-def crop_to_input_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
+def _validate_helper_reset_panel_bounds(
+    frame: np.ndarray,
+    panel_bounds: tuple[int, int],
+    *,
+    debug_name: str = "",
+) -> bool:
+    cropped = _crop_frame_to_panel(frame, panel_bounds)
+    if cropped.size == 0:
+        return False
+
+    full_data_url = _encode_image_data_url(
+        _resize_for_screen_classification(frame),
+        debug_name=f"{debug_name}_full" if debug_name else "helper_reset_panel_full",
+    )
+    crop_data_url = _encode_image_data_url(
+        cropped,
+        debug_name=f"{debug_name}_candidate" if debug_name else "helper_reset_panel_candidate",
+    )
+    prompt = (
+        "ここでは2枚の別画像が送られます。1枚目は患者カルテ画面の全体、2枚目はそこから切り出した候補領域です。"
+        "2枚目が、患者カルテ画面の本文入力に使う第3ペインだけを適切に切り出しているなら yes、"
+        "左右の別ペインを含みすぎる、狭すぎる、または第3ペインではないなら no と答えてください。"
+        "yes または no のみで答えてください。"
+    )
+    content = _call_mlx_vlm_with_images(
+        [full_data_url, crop_data_url],
+        prompt,
+        timeout=MLX_VLM_INLINE_TIMEOUT,
+    )
+    verdict = _parse_yes_no_response(content)
+    if verdict is None:
+        raise MlxVlmImeError(f"helper reset panel validation を yes/no で解釈できませんでした: {content!r}")
+    return verdict
+
+
+def prime_helper_reset_panel_cache(
+    frame: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> Optional[tuple[int, int]]:
+    global _helper_reset_panel_bounds
+
+    panel_bounds = detect_patient_record_panel3(frame, debug_name=debug_name)
+    if panel_bounds is None:
+        return None
+
+    try:
+        valid = _validate_helper_reset_panel_bounds(
+            frame,
+            panel_bounds,
+            debug_name=f"{debug_name}_validate" if debug_name else "helper_reset_panel_validate",
+        )
+    except MlxVlmImeError as exc:
+        print(f"  [helper reset] 初期パネル検証失敗: {exc}")
+        return None
+    print(f"  [helper reset] 初期パネル検証: {'yes' if valid else 'no'}")
+    if not valid:
+        return None
+
+    _helper_reset_panel_bounds = panel_bounds
+    return panel_bounds
+
+
+def crop_to_input_region(
+    frame: np.ndarray,
+    *,
+    debug_name: str = "",
+    panel_bounds: Optional[tuple[int, int]] = None,
+) -> np.ndarray:
     """フレームをテキスト入力領域にクロップする（第3ペイン検出 → フォールバック全画面）。"""
+    panel = panel_bounds or _helper_reset_panel_bounds
+    if panel is not None:
+        if debug_name:
+            _save_panel_bounds_debug_overlay(frame, name=debug_name, panel_bounds=panel)
+        return _crop_frame_to_panel(frame, panel)
+
     panel = detect_patient_record_panel3(frame, debug_name=debug_name)
     if panel is not None:
-        x1, x2 = panel
-        return frame[:, x1:x2]
+        return _crop_frame_to_panel(frame, panel)
     return frame
 
 
@@ -559,6 +679,8 @@ def _parse_screen_type_response(content: str) -> str:
 
 def classify_helper_reset_screen(frame: np.ndarray, *, debug_name: str = "") -> str:
     """Return patient_record / notepad / other for helper-reset cropping."""
+    if _helper_reset_panel_bounds is not None:
+        return "patient_record"
     if detect_patient_record_panel3(frame) is not None:
         return "patient_record"
 

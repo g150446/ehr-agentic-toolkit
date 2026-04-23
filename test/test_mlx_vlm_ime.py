@@ -155,6 +155,34 @@ def test_classify_helper_reset_screen_keeps_patient_record_without_vlm(monkeypat
     assert mlx_vlm_ime.classify_helper_reset_screen(frame) == "patient_record"
 
 
+def test_prime_helper_reset_panel_cache_validates_and_reuses_bounds(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+
+    mlx_vlm_ime.reset_helper_reset_panel_cache()
+    monkeypatch.setattr(mlx_vlm_ime, "detect_patient_record_panel3", lambda image, debug_name="": (40, 160))
+    monkeypatch.setattr(mlx_vlm_ime, "_encode_image_data_url", lambda image, **kwargs: "data:image/mock")
+    monkeypatch.setattr(mlx_vlm_ime, "_call_mlx_vlm_with_images", lambda *args, **kwargs: "yes")
+
+    assert mlx_vlm_ime.prime_helper_reset_panel_cache(frame, debug_name="helper_reset_initial") == (40, 160)
+    assert mlx_vlm_ime.get_helper_reset_panel_cache() == (40, 160)
+
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "detect_patient_record_panel3",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("panel detection should not rerun")),
+    )
+
+    cropped, screen_type = mlx_vlm_ime.crop_helper_reset_region(
+        frame,
+        screen_type="patient_record",
+        debug_name="helper_reset",
+    )
+
+    assert screen_type == "patient_record"
+    assert cropped.shape == (120, 120, 3)
+    mlx_vlm_ime.reset_helper_reset_panel_cache()
+
+
 def test_crop_notepad_document_region_excludes_taskbar_and_menu():
     frame = np.full((300, 400, 3), 180, dtype=np.uint8)
     frame[20:40, 50:350] = 210
