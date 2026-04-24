@@ -192,6 +192,31 @@ def test_run_cli_parses_novita_custom_model(monkeypatch):
     assert events == [("肺炎", {"clear_field": False})]
 
 
+def test_run_cli_parses_dual_openrouter_and_novita_default_model(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--openrouter", "--novita", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "google/gemma-4-31b-it",
+        "openrouter_model": "google/gemma-4-31b-it",
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
 def test_run_cli_parses_fireworks(monkeypatch):
     configured = {}
     events = []
@@ -272,6 +297,25 @@ def test_configure_runtime_novita_updates_segmentation_and_ime(monkeypatch):
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "https://api.novita.ai/openai/chat/completions"
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "google/gemma-4-31b-it"
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-novita"
+
+
+def test_configure_runtime_dual_provider_starts_with_openrouter(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token-openrouter")
+    monkeypatch.setenv("NOVITA_API_KEY", "token-novita")
+
+    ehr_input._configure_runtime(
+        openrouter_model="google/gemma-4-31b-it",
+        novita_model="google/gemma-4-31b-it",
+    )
+
+    assert ehr_input._RUNTIME_OPTIONS.dual_provider_model == "google/gemma-4-31b-it"
+    assert ehr_input._RUNTIME_OPTIONS.dual_provider_turn == 0
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == "https://openrouter.ai/api/v1/chat/completions"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "google/gemma-4-31b-it"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY == "token-openrouter"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "https://openrouter.ai/api/v1/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "google/gemma-4-31b-it"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-openrouter"
 
 
 def test_configure_runtime_google_ai_studio_updates_segmentation_and_ime(monkeypatch):
@@ -449,6 +493,36 @@ def test_build_run_log_path_adds_numeric_suffix_when_name_exists(monkeypatch, tm
     assert path == tmp_path / "logs" / "0417_1350_3.txt"
 
 
+def test_build_repo_venv_reexec_command_for_ehr_input(monkeypatch, tmp_path):
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(ehr_input, "_repo_venv_python", lambda: venv_python)
+    monkeypatch.setattr(ehr_input.sys, "argv", ["/tmp/automation/ehr_input.py", "--novita", "test"])
+    monkeypatch.setattr(ehr_input.sys, "executable", "/usr/bin/python3")
+
+    assert ehr_input._build_repo_venv_reexec_command("cv2") == [
+        str(venv_python),
+        "-m",
+        "automation.ehr_input",
+        "--novita",
+        "test",
+    ]
+
+
+def test_build_repo_venv_reexec_command_skips_non_ehr_input_invocation(monkeypatch, tmp_path):
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(ehr_input, "_repo_venv_python", lambda: venv_python)
+    monkeypatch.setattr(ehr_input.sys, "argv", ["/tmp/pytest", "-q"])
+    monkeypatch.setattr(ehr_input.sys, "executable", "/usr/bin/python3")
+
+    assert ehr_input._build_repo_venv_reexec_command("cv2") is None
+
+
 def test_build_run_log_header_records_executable_and_options():
     raw_args = ["--openrouter", "qwen/qwen3.5-9b", "--clear", "open test", "肺炎"]
     positional_args, option_summary = ehr_input._parse_cli_options(raw_args)
@@ -463,7 +537,7 @@ def test_build_run_log_header_records_executable_and_options():
     assert "=== ehr_input invocation ===" in header
     assert "executable: ehr_input.py" in header
     assert 'argv: ["/tmp/automation/ehr_input.py", "--openrouter", "qwen/qwen3.5-9b", "--clear", "open test", "肺炎"]' in header
-    assert 'parsed_options: {"clear_field": true, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": "qwen/qwen3.5-9b"}' in header
+    assert 'parsed_options: {"clear_field": true, "dual_provider_mode": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": "qwen/qwen3.5-9b"}' in header
     assert 'positional_args: ["open test", "肺炎"]' in header
 
 
@@ -479,7 +553,7 @@ def test_main_prepends_run_header_to_log(monkeypatch, tmp_path):
 
     log_text = log_files[0].read_text(encoding="utf-8")
     assert log_text.startswith("=== ehr_input invocation ===\nexecutable: ehr_input.py\n")
-    assert 'parsed_options: {"clear_field": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": null}' in log_text
+    assert 'parsed_options: {"clear_field": false, "dual_provider_mode": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": null}' in log_text
     assert 'positional_args: ["help"]' in log_text
     assert "usage called\n" in log_text
 
@@ -824,10 +898,33 @@ def test_detect_ime_mode_returns_none_without_backspace_when_cleanup_finds_no_co
         "detect_ime_mode_from_typed_a",
         lambda f, pre_frame=None: None,
     )
-    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda _: False)
 
     assert ehr_input.detect_ime_mode(client, config) is None
     assert [call.args[0] for call in client.press_key.call_args_list] == ["escape"]
+
+
+def test_detect_ime_mode_returns_none_with_backspace_when_probe_text_still_differs(monkeypatch):
+    client = MagicMock()
+    config = MagicMock()
+    config.capture_device_index = 0
+    config.capture_width = 1920
+    config.capture_height = 1080
+
+    pre_frame = _make_frame()
+    post_frame = pre_frame.copy()
+    cleanup_frame = pre_frame.copy()
+    cleanup_frame[20:26, 20:26] = 255
+    frames = iter([pre_frame, post_frame, cleanup_frame])
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(ehr_input, "capture_screen", lambda **kw: next(frames))
+    monkeypatch.setattr(
+        ehr_input,
+        "detect_ime_mode_from_typed_a",
+        lambda f, pre_frame=None: None,
+    )
+
+    assert ehr_input.detect_ime_mode(client, config) is None
+    assert [call.args[0] for call in client.press_key.call_args_list] == ["escape", "backspace"]
 
 
 def test_read_popup_candidates_with_fallback_uses_vlm_when_ocr_is_sparse(monkeypatch):
@@ -2204,6 +2301,7 @@ def test_type_japanese_sentence_uses_previous_confirmed_segment_as_helper_anchor
 
 def test_type_japanese_sentence_carries_ascii_suffix_into_helper_anchor(monkeypatch):
     events = []
+    baseline_calls = []
 
     class DummyClient:
         def press_key(self, key):
@@ -2230,7 +2328,9 @@ def test_type_japanese_sentence_carries_ascii_suffix_into_helper_anchor(monkeypa
     monkeypatch.setattr(
         ehr_input,
         "_capture_helper_reset_baseline",
-        lambda config, anchor_text="", debug_name="helper_reset_baseline": {"anchor_text": anchor_text} if anchor_text else None,
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": (
+            baseline_calls.append(anchor_text) or {"anchor_text": anchor_text}
+        ) if anchor_text else None,
     )
     monkeypatch.setattr(
         ehr_input,
@@ -2245,10 +2345,12 @@ def test_type_japanese_sentence_carries_ascii_suffix_into_helper_anchor(monkeypa
         ("key", "lparen"),
         ("ime", "intoutsuu", "咽頭痛", {"_current_ime_mode": "japanese", "_typed_prefix_context": "症状(", "_helper_anchor_text": "症状(", "_helper_reset_baseline": {"anchor_text": "症状("}}),
     ]
+    assert baseline_calls == ["症状("]
 
 
 def test_type_japanese_sentence_routes_katakana_segment_via_f7_before_kanji(monkeypatch):
     events = []
+    baseline_calls = []
 
     class DummyClient:
         def press_key(self, key):
@@ -2277,7 +2379,13 @@ def test_type_japanese_sentence_routes_katakana_segment_via_f7_before_kanji(monk
         "type_kanji_via_ime",
         lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
     )
-    monkeypatch.setattr(ehr_input, "_capture_helper_reset_baseline", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_baseline",
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": (
+            baseline_calls.append(anchor_text) or {"anchor_text": anchor_text}
+        ) if anchor_text else None,
+    )
 
     ehr_input.type_japanese_sentence("アレルギー性")
 
@@ -2285,8 +2393,59 @@ def test_type_japanese_sentence_routes_katakana_segment_via_f7_before_kanji(monk
         ("type", "arerugi-"),
         ("key", "f7"),
         ("key", "enter"),
-        ("ime", "sei", "性", {"_current_ime_mode": "japanese", "_typed_prefix_context": "アレルギー", "_helper_anchor_text": "アレルギー", "_helper_reset_baseline": None}),
+        ("ime", "sei", "性", {"_current_ime_mode": "japanese", "_typed_prefix_context": "アレルギー", "_helper_anchor_text": "アレルギー", "_helper_reset_baseline": {"anchor_text": "アレルギー"}}),
     ]
+    assert baseline_calls == ["アレルギー"]
+
+
+def test_type_japanese_sentence_skips_baseline_when_upcoming_segments_do_not_use_ime(monkeypatch):
+    events = []
+    baseline_calls = []
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+    monkeypatch.setattr(ehr_input, "load_config", lambda skip_password=True: SimpleNamespace())
+    monkeypatch.setattr(ehr_input, "_wait_for_ble_connected", lambda: DummyClient())
+    monkeypatch.setattr(ehr_input, "detect_ime_mode", lambda *args, **kwargs: "japanese")
+    monkeypatch.setattr(ehr_input, "ensure_ime_mode", lambda target, client, current: target)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ehr_input,
+        "_iter_segments_for_input",
+        lambda text: iter([
+            {"text": "症状", "romaji": "shoujou"},
+            {"text": "(", "romaji": "("},
+            {"text": "CRP", "romaji": "CRP"},
+        ]),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_baseline",
+        lambda config, anchor_text="", debug_name="helper_reset_baseline": (
+            baseline_calls.append(anchor_text) or {"anchor_text": anchor_text}
+        ) if anchor_text else None,
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "type_kanji_via_ime",
+        lambda romaji, target, **kwargs: events.append(("ime", romaji, target, kwargs)),
+    )
+
+    ehr_input.type_japanese_sentence("症状(CRP")
+
+    assert events == [
+        ("ime", "shoujou", "症状", {"_current_ime_mode": "japanese", "_typed_prefix_context": "", "_helper_anchor_text": "", "_helper_reset_baseline": None}),
+        ("key", "lparen"),
+        ("type", "CRP"),
+    ]
+    assert baseline_calls == []
 
 
 def test_segment_japanese_with_openrouter_uses_runtime_aware_logs(monkeypatch):
@@ -2361,6 +2520,69 @@ def test_segment_japanese_with_novita_uses_runtime_aware_logs(monkeypatch):
     assert "Qwen分割結果" not in output
 
 
+def test_dual_provider_wrappers_alternate_between_openrouter_and_novita(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "token-openrouter")
+    monkeypatch.setenv("NOVITA_API_KEY", "token-novita")
+    calls = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_segment_japanese_text_with_mlx_vlm_impl",
+        lambda text: calls.append(
+            (
+                "segmentation",
+                ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
+                ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL,
+                ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY,
+            )
+        ) or ("[]", []),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_suggest_ime_helper_word_impl",
+        lambda text: calls.append(
+            (
+                "text",
+                ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL,
+                ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL,
+                ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY,
+            )
+        ) or [],
+    )
+
+    ehr_input._configure_runtime(
+        openrouter_model="google/gemma-4-31b-it",
+        novita_model="google/gemma-4-31b-it",
+    )
+    try:
+        ehr_input.segment_japanese_text_with_mlx_vlm("肺炎")
+        ehr_input.suggest_ime_helper_word("肺")
+        ehr_input.segment_japanese_text_with_mlx_vlm("炎")
+    finally:
+        ehr_input._configure_runtime(openrouter_model=None, novita_model=None, google_ai_studio=False)
+
+    assert calls == [
+        (
+            "segmentation",
+            "https://openrouter.ai/api/v1/chat/completions",
+            "google/gemma-4-31b-it",
+            "token-openrouter",
+        ),
+        (
+            "text",
+            "https://api.novita.ai/openai/chat/completions",
+            "google/gemma-4-31b-it",
+            "token-novita",
+        ),
+        (
+            "segmentation",
+            "https://openrouter.ai/api/v1/chat/completions",
+            "google/gemma-4-31b-it",
+            "token-openrouter",
+        ),
+    ]
+
+
 def test_segment_japanese_with_fireworks_uses_runtime_aware_logs(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "token-fireworks")
     monkeypatch.setattr(
@@ -2396,6 +2618,7 @@ def test_parse_cli_options_parses_novita_default_model():
     assert args == ["肺炎"]
     assert option_summary == {
         "clear_field": False,
+        "dual_provider_mode": False,
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "google/gemma-4-31b-it",
@@ -2409,6 +2632,7 @@ def test_parse_cli_options_parses_novita_custom_model():
     assert args == ["肺炎"]
     assert option_summary == {
         "clear_field": False,
+        "dual_provider_mode": False,
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "deepseek/deepseek-vl2",
@@ -2422,6 +2646,7 @@ def test_parse_cli_options_parses_novita_inline_model():
     assert args == ["肺炎"]
     assert option_summary == {
         "clear_field": False,
+        "dual_provider_mode": False,
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "google/gemma-4-31b-it",
@@ -2429,9 +2654,37 @@ def test_parse_cli_options_parses_novita_inline_model():
     }
 
 
-def test_parse_cli_options_rejects_openrouter_with_novita():
-    with pytest.raises(RuntimeError, match="同時に指定できません"):
-        ehr_input._parse_cli_options(["--novita", "--openrouter", "qwen/qwen3.5-9b", "肺炎"])
+def test_parse_cli_options_parses_dual_provider_default_model():
+    args, option_summary = ehr_input._parse_cli_options(["--openrouter", "--novita", "肺炎"])
+
+    assert args == ["肺炎"]
+    assert option_summary == {
+        "clear_field": False,
+        "dual_provider_mode": True,
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "google/gemma-4-31b-it",
+        "openrouter_model": "google/gemma-4-31b-it",
+    }
+
+
+def test_parse_cli_options_parses_dual_provider_custom_model():
+    args, option_summary = ehr_input._parse_cli_options(["--openrouter", "--novita", "deepseek/deepseek-vl2", "肺炎"])
+
+    assert args == ["肺炎"]
+    assert option_summary == {
+        "clear_field": False,
+        "dual_provider_mode": True,
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "deepseek/deepseek-vl2",
+        "openrouter_model": "deepseek/deepseek-vl2",
+    }
+
+
+def test_parse_cli_options_rejects_dual_provider_mismatched_models():
+    with pytest.raises(RuntimeError, match="同じモデルID"):
+        ehr_input._parse_cli_options(["--openrouter", "qwen/qwen3.5-9b", "--novita", "deepseek/deepseek-vl2", "肺炎"])
 
 
 def test_parse_cli_options_rejects_fireworks_with_openrouter():

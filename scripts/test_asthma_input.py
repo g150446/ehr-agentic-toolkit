@@ -15,6 +15,8 @@
   python scripts/test_asthma_input.py --novita
   python scripts/test_asthma_input.py --novita google/gemma-4-31b-it
   python scripts/test_asthma_input.py --openrouter google/gemma-4-26b-a4b-it
+  python scripts/test_asthma_input.py --openrouter --novita
+  python scripts/test_asthma_input.py --openrouter --novita deepseek/deepseek-vl2
   python scripts/test_asthma_input.py --google-ai-studio
   python scripts/test_asthma_input.py --dry-run        # 行と Enter の並びを表示
 """
@@ -99,7 +101,13 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="MODEL",
         help=f"ehr_input に --novita [MODEL] を渡す（省略時: {_DEFAULT_NOVITA_MODEL}）",
     )
-    parser.add_argument("--openrouter", metavar="MODEL", help="ehr_input に --openrouter MODEL を渡す")
+    parser.add_argument(
+        "--openrouter",
+        nargs="?",
+        const="__shared__",
+        metavar="MODEL",
+        help="ehr_input に --openrouter [MODEL] を渡す（--novita 併用時は省略可）",
+    )
     parser.add_argument("--google-ai-studio", action="store_true", help="ehr_input に --google-ai-studio を渡す")
     parser.add_argument("--delay", type=float, default=2.0, metavar="SEC", help="フラグメント間の待機秒数（デフォルト: 2.0）")
     parser.add_argument("--clear", action="store_true", help="各フラグメント前にフィールドをクリアする（--clear を ehr_input に渡す）")
@@ -115,18 +123,29 @@ def _build_ehr_input_command(
     openrouter_model: str | None = None,
     google_ai_studio: bool = False,
 ) -> list[str]:
-    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(novita_model)) + int(bool(fireworks_model))
-    if provider_count > 1:
+    if openrouter_model == "__shared__":
+        if novita_model:
+            openrouter_model = novita_model
+        else:
+            raise ValueError("--openrouter 単独時はモデルIDが必要です")
+    dual_provider = bool(openrouter_model and novita_model)
+    external_count = int(bool(google_ai_studio)) + int(bool(fireworks_model)) + int(bool(openrouter_model or novita_model))
+    if dual_provider and openrouter_model != novita_model:
+        raise ValueError("--openrouter と --novita を併用する場合は同じモデルIDを指定してください")
+    if external_count > 1:
         raise ValueError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
     cmd = [_PYTHON, "-m", "automation.ehr_input"]
     if fireworks_model:
         cmd.extend(["--fireworks", fireworks_model])
     if google_ai_studio:
         cmd.append("--google-ai-studio")
-    if novita_model:
-        cmd.extend(["--novita", novita_model])
     if openrouter_model:
-        cmd.extend(["--openrouter", openrouter_model])
+        cmd.append("--openrouter")
+        if not dual_provider:
+            cmd.append(openrouter_model)
+    if novita_model:
+        cmd.append("--novita")
+        cmd.append(novita_model)
     if clear:
         cmd.append("--clear")
     cmd.append(fragment)
@@ -217,9 +236,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fragment is not None and (args.start is not None or args.end is not None):
         parser.error("--fragment は --start/--end と同時に使えません")
-    provider_count = int(bool(args.google_ai_studio)) + int(bool(args.openrouter)) + int(bool(args.novita)) + int(bool(args.fireworks))
-    if provider_count > 1:
+    external_count = int(bool(args.google_ai_studio)) + int(bool(args.fireworks)) + int(bool(args.openrouter or args.novita))
+    if external_count > 1:
         parser.error("--google-ai-studio / --novita / --openrouter / --fireworks は同時に使えません")
+    if args.openrouter and args.novita and args.openrouter not in {"__shared__", args.novita}:
+        parser.error("--openrouter と --novita を併用する場合は同じモデルIDを使ってください")
+    if args.openrouter == "__shared__":
+        if args.novita:
+            args.openrouter = args.novita
+        else:
+            parser.error("--openrouter 単独時はモデルIDが必要です")
 
     try:
         start, end, target = _select_target_fragments(

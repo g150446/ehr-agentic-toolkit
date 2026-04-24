@@ -19,6 +19,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 MLX_VLM_IME_URL = os.getenv(
     "MLX_VLM_IME_URL",
@@ -89,6 +90,13 @@ def _is_novita_url(url: Optional[str]) -> bool:
 
 def _is_google_ai_studio_url(url: Optional[str]) -> bool:
     return bool(url and url.startswith(_GOOGLE_AI_STUDIO_API_BASE))
+
+
+def _novita_base_url(url: str) -> str:
+    suffix = "/chat/completions"
+    if url.endswith(suffix):
+        return url[: -len(suffix)]
+    return "https://api.novita.ai/openai"
 
 
 def _image_url_to_google_part(image_url: str) -> dict[str, object]:
@@ -863,13 +871,29 @@ def _call_mlx_vlm_with_content(
         if _is_openrouter_url(url):
             if _OPENROUTER_PROVIDER_ORDER:
                 payload["provider"] = {"order": _OPENROUTER_PROVIDER_ORDER}
-        elif not _is_google_ai_studio_url(url):
+        elif not _is_google_ai_studio_url(url) and not _is_novita_url(url):
             payload["reasoning"] = {"enabled": True}
         reasoning_requested = True
 
     def _send_request(request_payload: dict) -> dict:
         global _last_vlm_response_monotonic
         _wait_for_vlm_cooldown()
+        if _is_novita_url(url):
+            client = OpenAI(
+                api_key=api_key,
+                base_url=_novita_base_url(url),
+                timeout=timeout,
+                max_retries=0,
+            )
+            response = client.chat.completions.create(
+                model=model,
+                messages=request_payload["messages"],
+                stream=False,
+                max_tokens=request_payload["max_tokens"],
+                temperature=request_payload["temperature"],
+            )
+            _last_vlm_response_monotonic = time.monotonic()
+            return response.model_dump()
         request_url = url
         headers = {"Content-Type": "application/json"}
         if _is_google_ai_studio_url(url):
@@ -919,9 +943,17 @@ def _call_mlx_vlm_with_content(
             raise MlxVlmImeError(
                 f"mlx_vlm IME リクエストが HTTP {exc.code} で失敗しました: {reason}. endpoint={url}"
             ) from exc
-    except (TimeoutError, socket.timeout) as exc:
+    except (TimeoutError, socket.timeout, APITimeoutError) as exc:
         raise MlxVlmImeError(
             f"mlx_vlm IME リクエストが {timeout:g} 秒でタイムアウトしました"
+        ) from exc
+    except APIConnectionError as exc:
+        raise MlxVlmImeError(
+            f"mlx_vlm IME への接続に失敗しました: {exc}. endpoint={url}"
+        ) from exc
+    except APIStatusError as exc:
+        raise MlxVlmImeError(
+            f"mlx_vlm IME リクエストが HTTP {exc.status_code} で失敗しました: {exc}. endpoint={url}"
         ) from exc
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
@@ -1609,19 +1641,48 @@ def _call_mlx_vlm_text_only(
             ]
         }
         headers["x-goog-api-key"] = api_key
+    elif _is_novita_url(url):
+        request_url = ""
     else:
         headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(
-        request_url,
-        data=json.dumps(payload).encode(),
-        headers=headers,
-    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read())
-    except (TimeoutError, socket.timeout) as exc:
+        if _is_novita_url(url):
+            _wait_for_vlm_cooldown()
+            client = OpenAI(
+                api_key=api_key,
+                base_url=_novita_base_url(url),
+                timeout=timeout,
+                max_retries=0,
+            )
+            response = client.chat.completions.create(
+                model=model,
+                messages=payload["messages"],
+                stream=False,
+                max_tokens=payload["max_tokens"],
+                temperature=payload["temperature"],
+            )
+            global _last_vlm_response_monotonic
+            _last_vlm_response_monotonic = time.monotonic()
+            result = response.model_dump()
+        else:
+            req = urllib.request.Request(
+                request_url,
+                data=json.dumps(payload).encode(),
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read())
+    except (TimeoutError, socket.timeout, APITimeoutError) as exc:
         raise MlxVlmImeError(
             f"mlx_vlm テキストリクエストが {timeout:g} 秒でタイムアウトしました"
+        ) from exc
+    except APIConnectionError as exc:
+        raise MlxVlmImeError(
+            f"mlx_vlm への接続に失敗しました: {exc}. endpoint={url}"
+        ) from exc
+    except APIStatusError as exc:
+        raise MlxVlmImeError(
+            f"mlx_vlm テキストリクエストが HTTP {exc.status_code} で失敗しました: {exc}. endpoint={url}"
         ) from exc
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)

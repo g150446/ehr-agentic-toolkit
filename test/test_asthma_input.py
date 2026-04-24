@@ -123,6 +123,22 @@ def test_build_ehr_input_command_adds_novita():
     ]
 
 
+def test_build_ehr_input_command_adds_dual_provider_mode():
+    assert asthma_input._build_ehr_input_command(
+        "咳嗽あり。",
+        novita_model="google/gemma-4-31b-it",
+        openrouter_model="google/gemma-4-31b-it",
+    ) == [
+        asthma_input._PYTHON,
+        "-m",
+        "automation.ehr_input",
+        "--openrouter",
+        "--novita",
+        "google/gemma-4-31b-it",
+        "咳嗽あり。",
+    ]
+
+
 def test_build_ehr_input_command_adds_fireworks():
     assert asthma_input._build_ehr_input_command(
         "咳嗽あり。",
@@ -351,10 +367,37 @@ def test_main_rejects_fireworks_with_openrouter(monkeypatch):
 
 def test_main_rejects_novita_with_openrouter(monkeypatch):
     monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。", "二つ目。"])
+    calls = []
+    monkeypatch.setattr(asthma_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        asthma_input,
+        "_run_fragment",
+        lambda fragment, index, total, **kwargs: calls.append((fragment, index, total, kwargs)) or True,
+    )
+
+    assert asthma_input.main(["--fragment", "2", "--novita", "--openrouter"]) == 0
+    assert calls == [
+        (
+            "二つ目。",
+            2,
+            2,
+            {
+                "clear": False,
+                "fireworks_model": None,
+                "google_ai_studio": False,
+                "novita_model": "google/gemma-4-31b-it",
+                "openrouter_model": "google/gemma-4-31b-it",
+            },
+        )
+    ]
+
+
+def test_main_rejects_dual_provider_mismatched_models(monkeypatch):
+    monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。", "二つ目。"])
     stderr = io.StringIO()
 
     with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
-        asthma_input.main(["--novita", "--openrouter", "google/gemma-4-26b-a4b-it"])
+        asthma_input.main(["--novita", "google/gemma-4-31b-it", "--openrouter", "qwen/qwen3.5-9b"])
 
     assert excinfo.value.code == 2
-    assert "--google-ai-studio / --novita / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()
+    assert "--openrouter と --novita を併用する場合は同じモデルIDを使ってください" in stderr.getvalue()

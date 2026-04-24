@@ -11,6 +11,8 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+
 from automation.romaji import romanize_for_ime
 
 MLX_VLM_SEGMENTATION_URL = os.getenv(
@@ -25,6 +27,7 @@ MLX_VLM_SEGMENTATION_API_KEY = os.getenv("MLX_VLM_SEGMENTATION_API_KEY", "omlxke
 MLX_VLM_SEGMENTATION_TIMEOUT = float(os.getenv("MLX_VLM_SEGMENTATION_TIMEOUT", "120"))
 MLX_VLM_SEGMENTATION_MAX_TOKENS = int(os.getenv("MLX_VLM_SEGMENTATION_MAX_TOKENS", "512"))
 _GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+_NOVITA_CHAT_URL = "https://api.novita.ai/openai/chat/completions"
 
 _SEGMENT_PUNCTUATION_ROMAJI = {
     "、": ",",
@@ -51,6 +54,17 @@ class MlxVlmSegmentationError(RuntimeError):
 
 def _is_google_ai_studio_url(url: Optional[str]) -> bool:
     return bool(url and url.startswith(_GOOGLE_AI_STUDIO_API_BASE))
+
+
+def _is_novita_url(url: Optional[str]) -> bool:
+    return bool(url and _NOVITA_CHAT_URL in url)
+
+
+def _novita_base_url(url: str) -> str:
+    suffix = "/chat/completions"
+    if url.endswith(suffix):
+        return url[: -len(suffix)]
+    return "https://api.novita.ai/openai"
 
 
 def _build_google_ai_studio_request(model: str, prompt: str, url: str) -> tuple[str, dict, dict[str, str]]:
@@ -214,6 +228,13 @@ def segment_japanese_text_with_mlx_vlm(
     if _is_google_ai_studio_url(url):
         request_url, payload, headers = _build_google_ai_studio_request(model, prompt, url)
         headers["x-goog-api-key"] = api_key
+    elif _is_novita_url(url):
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "max_tokens": MLX_VLM_SEGMENTATION_MAX_TOKENS,
+        }
     else:
         payload = {
             "model": model,
@@ -223,19 +244,42 @@ def segment_japanese_text_with_mlx_vlm(
         }
         headers["Authorization"] = f"Bearer {api_key}"
 
-    req = urllib.request.Request(
-        request_url,
-        data=json.dumps(payload).encode(),
-        headers=headers,
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            response_body = resp.read()
-    except (TimeoutError, socket.timeout) as exc:
+        if _is_novita_url(url):
+            client = OpenAI(
+                api_key=api_key,
+                base_url=_novita_base_url(url),
+                timeout=timeout,
+                max_retries=0,
+            )
+            response = client.chat.completions.create(
+                model=model,
+                messages=payload["messages"],
+                stream=False,
+                max_tokens=payload["max_tokens"],
+            )
+            result = response.model_dump()
+        else:
+            req = urllib.request.Request(
+                request_url,
+                data=json.dumps(payload).encode(),
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                response_body = resp.read()
+            result = json.loads(response_body)
+    except (TimeoutError, socket.timeout, APITimeoutError) as exc:
         raise MlxVlmSegmentationError(
             f"mlx_vlmへのリクエストが {timeout:g} 秒でタイムアウトしました。"
             f" endpoint={url} model={model}"
+        ) from exc
+    except APIConnectionError as exc:
+        raise MlxVlmSegmentationError(
+            f"mlx_vlmへの接続に失敗しました: {exc}. endpoint={url} model={model}"
+        ) from exc
+    except APIStatusError as exc:
+        raise MlxVlmSegmentationError(
+            f"mlx_vlm リクエストが HTTP {exc.status_code} で失敗しました: {exc}. endpoint={url} model={model}"
         ) from exc
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
@@ -246,13 +290,6 @@ def segment_japanese_text_with_mlx_vlm(
             ) from exc
         raise MlxVlmSegmentationError(
             f"mlx_vlmへの接続に失敗しました: {reason}. endpoint={url} model={model}"
-        ) from exc
-
-    try:
-        result = json.loads(response_body)
-    except json.JSONDecodeError as exc:
-        raise MlxVlmSegmentationError(
-            f"mlx_vlm応答のJSONを解析できませんでした: {response_body!r}"
         ) from exc
 
     try:

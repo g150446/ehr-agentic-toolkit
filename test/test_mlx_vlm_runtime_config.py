@@ -302,3 +302,107 @@ def test_text_only_ime_call_uses_fireworks_runtime(monkeypatch):
             "max_tokens": 512,
         },
     }
+
+
+def test_segmentation_uses_novita_runtime(monkeypatch):
+    captured = {}
+
+    class FakeChatCompletions:
+        def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+
+            class FakeResponse:
+                def model_dump(self_inner):
+                    return {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": '[{"text":"肺炎","romaji":"haien"}]'
+                                }
+                            }
+                        ]
+                    }
+
+            return FakeResponse()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = type("ChatNamespace", (), {"completions": FakeChatCompletions()})()
+
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_URL", "https://api.novita.ai/openai/chat/completions")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_MODEL", "google/gemma-4-31b-it")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_API_KEY", "token-novita")
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_TIMEOUT", 8.0)
+    monkeypatch.setattr(mlx_vlm_segmentation, "MLX_VLM_SEGMENTATION_MAX_TOKENS", 512)
+    monkeypatch.setattr(mlx_vlm_segmentation, "OpenAI", FakeOpenAI)
+
+    _, segments = mlx_vlm_segmentation.segment_japanese_text_with_mlx_vlm("肺炎")
+
+    assert segments == [{"text": "肺炎", "romaji": "haien"}]
+    assert captured["client_kwargs"] == {
+        "api_key": "token-novita",
+        "base_url": "https://api.novita.ai/openai",
+        "timeout": 8.0,
+        "max_retries": 0,
+    }
+    assert captured["kwargs"] == {
+        "model": "google/gemma-4-31b-it",
+        "messages": [
+            {
+                "role": "user",
+                "content": mlx_vlm_segmentation.build_segmentation_prompt("肺炎"),
+            }
+        ],
+        "stream": False,
+        "max_tokens": 512,
+    }
+
+
+def test_text_only_ime_call_uses_novita_runtime(monkeypatch):
+    captured = {}
+
+    class FakeChatCompletions:
+        def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+
+            class FakeResponse:
+                def model_dump(self_inner):
+                    return {"choices": [{"message": {"content": "helper response"}}]}
+
+            return FakeResponse()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = type("ChatNamespace", (), {"completions": FakeChatCompletions()})()
+
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_URL", "https://api.novita.ai/openai/chat/completions")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_MODEL", "google/gemma-4-31b-it")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_API_KEY", "token-novita")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_IME_TIMEOUT", 6.0)
+    monkeypatch.setattr(mlx_vlm_ime, "_wait_for_vlm_cooldown", lambda: None)
+    monkeypatch.setattr(mlx_vlm_ime, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 10.0)
+
+    content = mlx_vlm_ime._call_mlx_vlm_text_only("helper prompt")
+
+    assert content == "helper response"
+    assert captured["client_kwargs"] == {
+        "api_key": "token-novita",
+        "base_url": "https://api.novita.ai/openai",
+        "timeout": 6.0,
+        "max_retries": 0,
+    }
+    assert captured["kwargs"] == {
+        "model": "google/gemma-4-31b-it",
+        "messages": [
+            {
+                "role": "user",
+                "content": "helper prompt",
+            }
+        ],
+        "stream": False,
+        "max_tokens": 512,
+        "temperature": 0,
+    }

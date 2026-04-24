@@ -439,28 +439,26 @@ def test_call_mlx_vlm_with_content_uses_fireworks_openai_payload(monkeypatch):
     assert "provider" not in captured["payload"]
 
 
-def test_call_mlx_vlm_with_content_uses_novita_openai_payload(monkeypatch):
+def test_call_mlx_vlm_with_content_uses_novita_openai_client(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
+    class FakeChatCompletions:
+        def create(self, **kwargs):
+            captured["kwargs"] = kwargs
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+            class FakeResponse:
+                def model_dump(self_inner):
+                    return {"choices": [{"message": {"content": "yes"}}]}
 
-        def read(self):
-            return b'{"choices":[{"message":{"content":"yes","reasoning":"trace"}}]}'
+            return FakeResponse()
 
-    def _fake_urlopen(req, timeout):
-        captured["url"] = req.full_url
-        captured["payload"] = json.loads(req.data.decode("utf-8"))
-        captured["headers"] = dict(req.header_items())
-        captured["timeout"] = timeout
-        return FakeResponse()
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = type("ChatNamespace", (), {"completions": FakeChatCompletions()})()
 
     monkeypatch.setattr(mlx_vlm_ime, "_wait_for_vlm_cooldown", lambda: None)
-    monkeypatch.setattr(mlx_vlm_ime.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(mlx_vlm_ime, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 10.0)
 
     result = mlx_vlm_ime._call_mlx_vlm_with_content(
@@ -473,16 +471,27 @@ def test_call_mlx_vlm_with_content_uses_novita_openai_payload(monkeypatch):
     )
 
     assert result == "yes"
-    assert captured["url"] == "https://api.novita.ai/openai/chat/completions"
-    assert captured["timeout"] == mlx_vlm_ime.MLX_VLM_IME_TIMEOUT
-    assert captured["headers"] == {
-        "Authorization": "Bearer token",
-        "Content-type": "application/json",
+    assert captured["client_kwargs"] == {
+        "api_key": "token",
+        "base_url": "https://api.novita.ai/openai",
+        "timeout": mlx_vlm_ime.MLX_VLM_IME_TIMEOUT,
+        "max_retries": 0,
     }
-    assert captured["payload"]["model"] == "google/gemma-4-31b-it"
-    assert captured["payload"]["include_reasoning"] is True
-    assert captured["payload"]["reasoning"] == {"enabled": True}
-    assert "provider" not in captured["payload"]
+    assert captured["kwargs"] == {
+        "model": "google/gemma-4-31b-it",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "compare prompt"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}},
+                ],
+            }
+        ],
+        "stream": False,
+        "max_tokens": 256,
+        "temperature": 0,
+    }
 
 
 def test_suggest_ime_helper_word_logs_fireworks_runtime(monkeypatch):

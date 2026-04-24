@@ -13,17 +13,66 @@ from __future__ import annotations
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime
 from difflib import SequenceMatcher
+import importlib
 import json
-import cv2
 import re
 import shlex
 import tempfile
 import os
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+def _repo_venv_python() -> Optional[Path]:
+    repo_root = Path(__file__).resolve().parent.parent
+    candidates = [
+        repo_root / "venv" / "bin" / "python",
+        repo_root / "venv" / "Scripts" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _build_repo_venv_reexec_command(required_module: str) -> Optional[list[str]]:
+    current_entrypoint = Path(sys.argv[0]).stem
+    if current_entrypoint != "ehr_input":
+        return None
+
+    venv_python = _repo_venv_python()
+    if venv_python is None:
+        return None
+
+    try:
+        if Path(sys.executable).resolve() == venv_python.resolve():
+            return None
+    except OSError:
+        return None
+
+    return [str(venv_python), "-m", "automation.ehr_input", *sys.argv[1:]]
+
+
+def _load_optional_runtime_module(module_name: str):
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name:
+            raise
+
+        reexec_cmd = _build_repo_venv_reexec_command(module_name)
+        if reexec_cmd is not None:
+            os.execv(reexec_cmd[0], reexec_cmd)
+
+        raise ModuleNotFoundError(
+            f"No module named '{module_name}'. Activate the repo venv or run "
+            f"'./venv/bin/python -m automation.ehr_input ...' instead."
+        ) from exc
+
+
+cv2 = _load_optional_runtime_module("cv2")
 import numpy as np
 
 from automation.config import load_config
@@ -41,19 +90,19 @@ from automation.local_segmentation import (
 from automation.romaji import romanize_for_ime
 from automation.mlx_vlm_segmentation import (
     MlxVlmSegmentationError,
-    segment_japanese_text_with_mlx_vlm,
+    segment_japanese_text_with_mlx_vlm as _segment_japanese_text_with_mlx_vlm_impl,
 )
 from automation.mlx_vlm_ime import (
     MlxVlmImeError,
-    assess_helper_reset_state,
-    compare_helper_reset_images,
-    detect_ime_mode_from_typed_a,
-    has_active_ime_composition,
-    read_highlighted_popup_candidate,
-    read_inline_candidate_context,
-    read_inline_candidate_roi,
-    read_popup_candidates_numbered,
-    suggest_ime_helper_word,
+    assess_helper_reset_state as _assess_helper_reset_state_impl,
+    compare_helper_reset_images as _compare_helper_reset_images_impl,
+    detect_ime_mode_from_typed_a as _detect_ime_mode_from_typed_a_impl,
+    has_active_ime_composition as _has_active_ime_composition_impl,
+    read_highlighted_popup_candidate as _read_highlighted_popup_candidate_impl,
+    read_inline_candidate_context as _read_inline_candidate_context_impl,
+    read_inline_candidate_roi as _read_inline_candidate_roi_impl,
+    read_popup_candidates_numbered as _read_popup_candidates_numbered_impl,
+    suggest_ime_helper_word as _suggest_ime_helper_word_impl,
 )
 from automation import mlx_vlm_ime, mlx_vlm_segmentation
 
@@ -160,6 +209,8 @@ _NOVITA_DEFAULT_MODEL = "google/gemma-4-31b-it"
 _GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _GOOGLE_AI_STUDIO_MODEL = "gemma-4-26b-a4b-it"
 _RUNTIME_OPTIONS = SimpleNamespace(
+    dual_provider_model=None,
+    dual_provider_turn=0,
     openrouter_model=None,
     novita_model=None,
     fireworks_model=None,
@@ -243,6 +294,7 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
     """Split raw CLI args into positional arguments and normalized option state."""
     clear_field = False
     openrouter_model: Optional[str] = None
+    openrouter_requested = False
     novita_model: Optional[str] = None
     fireworks_model: Optional[str] = None
     google_ai_studio = False
@@ -269,27 +321,42 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         elif arg.startswith("--novita="):
             novita_model = _parse_inline_provider_model(arg, option_name="--novita")
         elif arg == "--openrouter":
-            if index + 1 >= len(args):
-                raise RuntimeError("--openrouter の後にモデル名を指定してください")
-            openrouter_model = args[index + 1]
-            index += 1
+            openrouter_requested = True
+            openrouter_model, index = _parse_optional_provider_model(
+                args,
+                index,
+                option_name="--openrouter",
+                default_model=None,
+            )
+        elif arg.startswith("--openrouter="):
+            openrouter_requested = True
+            openrouter_model = _parse_inline_provider_model(arg, option_name="--openrouter")
         elif arg.startswith("--"):
             raise RuntimeError(f"不明なオプション: {arg}")
         else:
             filtered_args.append(arg)
         index += 1
 
-    provider_count = (
+    if openrouter_requested and novita_model:
+        if openrouter_model and openrouter_model != novita_model:
+            raise RuntimeError("--openrouter と --novita を併用する場合は同じモデルIDを指定してください")
+        shared_model = openrouter_model or novita_model or _NOVITA_DEFAULT_MODEL
+        openrouter_model = shared_model
+        novita_model = shared_model
+    elif openrouter_requested and not openrouter_model:
+        raise RuntimeError("--openrouter の後にモデル名を指定してください")
+
+    conflicting_provider_count = (
         int(bool(google_ai_studio))
-        + int(bool(openrouter_model))
-        + int(bool(novita_model))
         + int(bool(fireworks_model))
+        + int(bool(openrouter_model or novita_model))
     )
-    if provider_count > 1:
+    if conflicting_provider_count > 1:
         raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
 
     option_summary = {
         "clear_field": clear_field,
+        "dual_provider_mode": bool(openrouter_model and novita_model),
         "fireworks_model": fireworks_model,
         "google_ai_studio": google_ai_studio,
         "novita_model": novita_model,
@@ -310,8 +377,8 @@ def _parse_optional_provider_model(
     index: int,
     *,
     option_name: str,
-    default_model: str,
-) -> tuple[str, int]:
+    default_model: Optional[str],
+) -> tuple[Optional[str], int]:
     next_index = index + 1
     if next_index >= len(args):
         return default_model, index
@@ -332,6 +399,64 @@ def _looks_like_model_id(candidate: str) -> bool:
     if "/" not in candidate:
         return False
     return not Path(candidate).exists()
+
+
+def _build_provider_profile(provider_name: str, model: str) -> dict[str, str]:
+    if provider_name == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("--openrouter を使うには OPENROUTER_API_KEY 環境変数が必要です")
+        return {
+            "api_key": api_key,
+            "model": model,
+            "name": "openrouter",
+            "url": _OPENROUTER_CHAT_URL,
+        }
+    if provider_name == "novita":
+        api_key = os.getenv("NOVITA_API_KEY")
+        if not api_key:
+            raise RuntimeError("--novita を使うには NOVITA_API_KEY 環境変数が必要です")
+        return {
+            "api_key": api_key,
+            "model": model,
+            "name": "novita",
+            "url": _NOVITA_CHAT_URL,
+        }
+    raise RuntimeError(f"未対応のプロバイダです: {provider_name}")
+
+
+def _apply_runtime_profile(profile: dict[str, str]) -> None:
+    mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = profile["url"]
+    mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = profile["model"]
+    mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = profile["api_key"]
+    mlx_vlm_ime.MLX_VLM_IME_URL = profile["url"]
+    mlx_vlm_ime.MLX_VLM_IME_MODEL = profile["model"]
+    mlx_vlm_ime.MLX_VLM_IME_API_KEY = profile["api_key"]
+    mlx_vlm_ime.MLX_VLM_TEXT_URL = profile["url"]
+    mlx_vlm_ime.MLX_VLM_TEXT_MODEL = profile["model"]
+    mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = profile["api_key"]
+
+
+def _peek_dual_provider_profile() -> Optional[dict[str, str]]:
+    if not _RUNTIME_OPTIONS.dual_provider_model:
+        return None
+    provider_order = ("openrouter", "novita")
+    provider_name = provider_order[_RUNTIME_OPTIONS.dual_provider_turn % len(provider_order)]
+    return _build_provider_profile(provider_name, _RUNTIME_OPTIONS.dual_provider_model)
+
+
+def _prepare_runtime_for_request(request_kind: str) -> str:
+    dual_profile = _peek_dual_provider_profile()
+    if dual_profile is not None:
+        _RUNTIME_OPTIONS.dual_provider_turn += 1
+        _apply_runtime_profile(dual_profile)
+        default_kind = "Text" if request_kind == "text" else "VLM"
+        return _runtime_label(
+            url=dual_profile["url"],
+            model=dual_profile["model"],
+            default_kind=default_kind,
+        )
+    return ""
 
 
 def _build_run_log_header(
@@ -363,15 +488,26 @@ def _configure_runtime(
     fireworks_model: Optional[str] = None,
     google_ai_studio: bool = False,
 ) -> None:
-    provider_count = (
+    conflicting_provider_count = (
         int(bool(google_ai_studio))
-        + int(bool(openrouter_model))
-        + int(bool(novita_model))
         + int(bool(fireworks_model))
+        + int(bool(openrouter_model or novita_model))
     )
-    if provider_count > 1:
+    if conflicting_provider_count > 1:
         raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
 
+    if openrouter_model and novita_model and openrouter_model != novita_model:
+        raise RuntimeError("--openrouter と --novita を併用する場合は同じモデルIDを指定してください")
+
+    dual_provider_model = openrouter_model or novita_model if (openrouter_model and novita_model) else None
+    if dual_provider_model:
+        _build_provider_profile("openrouter", dual_provider_model)
+        dual_profile = _build_provider_profile("novita", dual_provider_model)
+    else:
+        dual_profile = None
+
+    _RUNTIME_OPTIONS.dual_provider_model = dual_provider_model
+    _RUNTIME_OPTIONS.dual_provider_turn = 0
     _RUNTIME_OPTIONS.openrouter_model = openrouter_model
     _RUNTIME_OPTIONS.novita_model = novita_model
     _RUNTIME_OPTIONS.fireworks_model = fireworks_model
@@ -387,7 +523,9 @@ def _configure_runtime(
     mlx_vlm_ime.MLX_VLM_TEXT_MODEL = _DEFAULT_IME_TEXT_RUNTIME["model"]
     mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = _DEFAULT_IME_TEXT_RUNTIME["api_key"]
 
-    if google_ai_studio:
+    if dual_profile is not None:
+        _apply_runtime_profile(_build_provider_profile("openrouter", dual_provider_model))
+    elif google_ai_studio:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("--google-ai-studio を使うには GEMINI_API_KEY 環境変数が必要です")
@@ -446,6 +584,13 @@ def _runtime_label(*, url: str, model: str, default_kind: str = "VLM") -> str:
 
 
 def _segmentation_runtime_label() -> str:
+    dual_profile = _peek_dual_provider_profile()
+    if dual_profile is not None:
+        return _runtime_label(
+            url=dual_profile["url"],
+            model=dual_profile["model"],
+            default_kind="VLM",
+        )
     return _runtime_label(
         url=mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
         model=mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL,
@@ -454,6 +599,13 @@ def _segmentation_runtime_label() -> str:
 
 
 def _ime_vision_runtime_label() -> str:
+    dual_profile = _peek_dual_provider_profile()
+    if dual_profile is not None:
+        return _runtime_label(
+            url=dual_profile["url"],
+            model=dual_profile["model"],
+            default_kind="VLM",
+        )
     return _runtime_label(
         url=mlx_vlm_ime.MLX_VLM_IME_URL,
         model=mlx_vlm_ime.MLX_VLM_IME_MODEL,
@@ -462,11 +614,73 @@ def _ime_vision_runtime_label() -> str:
 
 
 def _ime_text_runtime_label() -> str:
+    dual_profile = _peek_dual_provider_profile()
+    if dual_profile is not None:
+        return _runtime_label(
+            url=dual_profile["url"],
+            model=dual_profile["model"],
+            default_kind="Text",
+        )
     return _runtime_label(
         url=mlx_vlm_ime.MLX_VLM_TEXT_URL,
         model=mlx_vlm_ime.MLX_VLM_TEXT_MODEL,
         default_kind="Text",
     )
+
+
+def segment_japanese_text_with_mlx_vlm(*args, **kwargs):
+    _prepare_runtime_for_request("segmentation")
+    return _segment_japanese_text_with_mlx_vlm_impl(*args, **kwargs)
+
+
+def read_inline_candidate_roi(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _read_inline_candidate_roi_impl(*args, **kwargs)
+
+
+def read_inline_candidate_context(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _read_inline_candidate_context_impl(*args, **kwargs)
+
+
+def read_popup_candidates_numbered(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _read_popup_candidates_numbered_impl(*args, **kwargs)
+
+
+def _read_popup_candidates_numbered_vlm(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return mlx_vlm_ime.read_popup_candidates_numbered_vlm(*args, **kwargs)
+
+
+def read_highlighted_popup_candidate(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _read_highlighted_popup_candidate_impl(*args, **kwargs)
+
+
+def suggest_ime_helper_word(*args, **kwargs):
+    _prepare_runtime_for_request("text")
+    return _suggest_ime_helper_word_impl(*args, **kwargs)
+
+
+def detect_ime_mode_from_typed_a(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _detect_ime_mode_from_typed_a_impl(*args, **kwargs)
+
+
+def has_active_ime_composition(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _has_active_ime_composition_impl(*args, **kwargs)
+
+
+def compare_helper_reset_images(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _compare_helper_reset_images_impl(*args, **kwargs)
+
+
+def assess_helper_reset_state(*args, **kwargs):
+    _prepare_runtime_for_request("vision")
+    return _assess_helper_reset_state_impl(*args, **kwargs)
 
 
 def capture_screen(*, device_index: int, width: int, height: int, **kwargs):
@@ -2302,6 +2516,39 @@ def _update_helper_anchor_text(current_anchor: str, seg_text: str) -> str:
     return current_anchor
 
 
+def _segment_uses_ime_conversion(seg_text: str) -> bool:
+    if not seg_text or seg_text == "\n":
+        return False
+    if _has_kanji(seg_text):
+        return True
+    return any(ch in _JP_SYMBOL_IME_READINGS for ch in seg_text)
+
+
+def _next_segment_uses_ime_conversion(
+    segments: list[dict[str, str]],
+    index: int,
+) -> bool:
+    if index + 1 >= len(segments):
+        return False
+    return _segment_uses_ime_conversion(segments[index + 1]["text"])
+
+
+def _capture_helper_reset_baseline_if_needed(
+    config,
+    *,
+    anchor_text: str,
+    should_capture: bool,
+    debug_name: str,
+) -> Optional[dict[str, object]]:
+    if not should_capture or not anchor_text:
+        return None
+    return _capture_helper_reset_baseline(
+        config,
+        anchor_text=anchor_text,
+        debug_name=debug_name,
+    )
+
+
 def _reset_ime_before_helper_lookup(
     client: "BLEClient",
     config,
@@ -2530,7 +2777,7 @@ def _read_popup_candidates_with_fallback(
         return numbered
 
     try:
-        vlm_only = mlx_vlm_ime.read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
+        vlm_only = _read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
     except Exception as exc:
         print(f"  [VLM補完] 候補再読取失敗: {exc}")
         return numbered
@@ -2559,7 +2806,7 @@ def _read_helper_popup_candidates(
     """Helper fallback is accuracy-first: read VLM first, then supplement with OCR."""
     vlm_numbered: list[tuple[int, str]] = []
     try:
-        vlm_numbered = mlx_vlm_ime.read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
+        vlm_numbered = _read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
         if vlm_numbered:
             print(f"  [ヘルパー単語] VLM優先候補: {vlm_numbered}")
     except Exception as exc:
@@ -3100,6 +3347,24 @@ def _is_katakana_only(text: str) -> bool:
     )
 
 
+def _frame_has_meaningful_diff(
+    reference_frame: Optional[np.ndarray],
+    candidate_frame: Optional[np.ndarray],
+    *,
+    threshold: int = 15,
+    min_changed_pixels: int = 20,
+) -> bool:
+    """Return True when two frames differ enough to indicate probe text remains."""
+    if reference_frame is None or candidate_frame is None:
+        return False
+    if reference_frame.shape != candidate_frame.shape:
+        return True
+    diff = cv2.absdiff(reference_frame, candidate_frame)
+    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    changed_pixels = int(np.count_nonzero(gray > threshold))
+    return changed_pixels >= min_changed_pixels
+
+
 def detect_ime_mode(
     client: "BLEClient",
     config=None,
@@ -3154,6 +3419,14 @@ def detect_ime_mode(
         if cleanup_frame is None:
             print("  [IME検出/cleanup] キャプチャ失敗")
             return
+        if result is None:
+            committed_probe_remains = _frame_has_meaningful_diff(pre_frame, cleanup_frame)
+            print(f"  [IME検出/cleanup] probe残存: {committed_probe_remains}")
+            if committed_probe_remains:
+                client.press_key("backspace")
+                time.sleep(0.2)
+            return
+
         composition_active = _has_ime_composition(cleanup_frame)
         print(f"  [IME検出/cleanup] 組成残存: {composition_active}")
         if composition_active:
@@ -3371,7 +3644,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             segment_prefix_context = typed_prefix_context
             segment_anchor_text = helper_anchor_text
             segment_baseline_state = helper_reset_baseline
-            for ch in seg_text:
+            for char_index, ch in enumerate(seg_text):
                 if ch in _JP_SYMBOL_IME_READINGS:
                     reading = _JP_SYMBOL_IME_READINGS[ch]
                     current_mode = ensure_ime_mode("japanese", client, current_mode)
@@ -3402,12 +3675,19 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                         client.press_key("enter")
                 segment_prefix_context += ch
                 segment_anchor_text = _update_helper_anchor_text(segment_anchor_text, ch)
-                if segment_anchor_text:
-                    segment_baseline_state = _capture_helper_reset_baseline(
-                        config,
-                        anchor_text=segment_anchor_text,
-                        debug_name=f"helper_reset_baseline_{segment_anchor_text}",
-                    )
+                is_last_char = char_index + 1 == len(seg_text)
+                next_char_uses_ime = (
+                    not is_last_char
+                    and seg_text[char_index + 1] in _JP_SYMBOL_IME_READINGS
+                )
+                segment_baseline_state = _capture_helper_reset_baseline_if_needed(
+                    config,
+                    anchor_text=segment_anchor_text,
+                    should_capture=next_char_uses_ime or (
+                        is_last_char and _next_segment_uses_ime_conversion(segments, index)
+                    ),
+                    debug_name=f"helper_reset_baseline_{segment_anchor_text or 'segment'}",
+                )
             typed_prefix_context = segment_prefix_context
             helper_anchor_text = segment_anchor_text
             helper_reset_baseline = segment_baseline_state
@@ -3426,9 +3706,10 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
 
         typed_prefix_context += seg_text
         helper_anchor_text = _update_helper_anchor_text(helper_anchor_text, seg_text)
-        helper_reset_baseline = _capture_helper_reset_baseline(
+        helper_reset_baseline = _capture_helper_reset_baseline_if_needed(
             config,
             anchor_text=helper_anchor_text,
+            should_capture=_next_segment_uses_ime_conversion(segments, index),
             debug_name=f"helper_reset_baseline_{helper_anchor_text or 'segment'}",
         )
 
@@ -3476,7 +3757,8 @@ def _print_usage() -> None:
     print("  --fireworks <model>  文節分割・IME候補読取・ヘルパー単語提案を Fireworks AI のモデルで実行する")
     print(f"  --google-ai-studio   文節分割・IME候補読取・ヘルパー単語提案を Google AI Studio の {_GOOGLE_AI_STUDIO_MODEL} で実行する")
     print(f"  --novita [model]     文節分割・IME候補読取・ヘルパー単語提案を Novita AI のモデルで実行する（省略時: {_NOVITA_DEFAULT_MODEL}）")
-    print("  --openrouter <model> 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
+    print("  --openrouter [model] 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
+    print(f"                      --novita と併用した場合は OpenRouter / Novita を交互に使う（共有モデル省略時: {_NOVITA_DEFAULT_MODEL}）")
     print("  --help, -h, help     このヘルプを表示")
     print()
     print("コマンド:")
@@ -3501,6 +3783,8 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input --novita deepseek/deepseek-vl2 "聴診"')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-9b "両肺野に"')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-35b-a3b "聴診"')
+    print('  python -m automation.ehr_input --openrouter --novita "両肺野に"')
+    print('  python -m automation.ehr_input --openrouter --novita deepseek/deepseek-vl2 "聴診"')
     print('  python -m automation.ehr_input "COVID-19の検査"')
     print('  python -m automation.ehr_input note.txt')
     print('  python -m automation.ehr_input "open test" 肺炎')
