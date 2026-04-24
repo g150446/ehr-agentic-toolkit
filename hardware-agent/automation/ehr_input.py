@@ -749,6 +749,7 @@ def _capture_helper_reset_compare_frame(
     *,
     debug_name: str = "",
     screen_type: Optional[str] = None,
+    line_hint: Optional[dict[str, float]] = None,
 ) -> Optional[np.ndarray]:
     cropped, _resolved_screen_type = mlx_vlm_ime.crop_helper_reset_region(
         frame,
@@ -757,7 +758,11 @@ def _capture_helper_reset_compare_frame(
     )
     if cropped.size == 0:
         return None
-    if _resolved_screen_type == "patient_record":
+    active_line_hint = line_hint or mlx_vlm_ime.get_active_typing_line_hint()
+    line_cropped = mlx_vlm_ime.crop_to_active_typing_line(cropped, active_line_hint)
+    if line_cropped is not None:
+        cropped = line_cropped
+    elif _resolved_screen_type == "patient_record":
         cropped = mlx_vlm_ime._crop_center_band(
             cropped,
             top_ratio=0.15,
@@ -788,6 +793,7 @@ def _capture_helper_reset_baseline(
         frame,
         debug_name=debug_name,
         screen_type=screen_type,
+        line_hint=mlx_vlm_ime.get_active_typing_line_hint(),
     )
     if cropped is None:
         return None
@@ -795,6 +801,7 @@ def _capture_helper_reset_baseline(
         "cropped_frame": cropped,
         "anchor_text": anchor_text,
         "screen_type": screen_type,
+        "line_hint": mlx_vlm_ime.get_active_typing_line_hint(),
     }
 
 
@@ -1254,6 +1261,25 @@ def _type_ascii_text_precisely(client: BLEClient, text: str) -> None:
         ok = client.press_key(key_name)
         print(f"key:{key_name} -> {'OK' if ok else 'NG'}")
     flush_buffer()
+
+
+_HELPER_ROMAJI_INTER_KEY_DELAY_SEC = 0.1
+
+
+def _type_helper_romaji_safely(
+    client: BLEClient,
+    text: str,
+    *,
+    inter_key_delay: float = _HELPER_ROMAJI_INTER_KEY_DELAY_SEC,
+) -> bool:
+    all_ok = True
+    for index, ch in enumerate(text):
+        ok = client.type_text(ch)
+        print(f"type:{ch} -> {'OK' if ok else 'NG'}")
+        all_ok = all_ok and ok
+        if index + 1 < len(text):
+            time.sleep(inter_key_delay)
+    return all_ok
 
 
 def input_text_to_field(
@@ -2577,6 +2603,7 @@ def _reset_ime_before_helper_lookup(
             f"shape={baseline_frame.shape} anchor={anchor_text or baseline_state.get('anchor_text', '')!r}"
         )
     baseline_screen_type = baseline_state.get("screen_type") if isinstance(baseline_state, dict) else None
+    baseline_line_hint = baseline_state.get("line_hint") if isinstance(baseline_state, dict) else None
     for attempt in range(1, max_escape_count + 1):
         ok = client.press_key("escape")
         print(f"  [helper reset] key:escape ({attempt}/{max_escape_count}) -> {'OK' if ok else 'NG'}")
@@ -2590,6 +2617,7 @@ def _reset_ime_before_helper_lookup(
                 frame,
                 debug_name=f"helper_reset_compare_attempt_{attempt}",
                 screen_type=baseline_screen_type if isinstance(baseline_screen_type, str) else None,
+                line_hint=baseline_line_hint if isinstance(baseline_line_hint, dict) else None,
             )
             if current_frame is None:
                 print("  [helper reset] 比較用クロップ取得失敗 → 次の Escape を試します")
@@ -2923,9 +2951,15 @@ def _try_helper_word_fallback(
         )
 
         # ヘルパー単語のローマ字を入力
-        print(f"  [ヘルパー単語] ローマ字入力: {helper_romaji!r}")
-        ok = client.type_text(helper_romaji)
-        print(f"  type:{helper_romaji} -> {'OK' if ok else 'NG'}")
+        print(
+            f"  [ヘルパー単語] ローマ字入力: {helper_romaji!r} "
+            f"(inter-key {int(_HELPER_ROMAJI_INTER_KEY_DELAY_SEC * 1000)}ms)"
+        )
+        ok = _type_helper_romaji_safely(
+            client,
+            helper_romaji,
+            inter_key_delay=_HELPER_ROMAJI_INTER_KEY_DELAY_SEC,
+        )
         time.sleep(0.3)
 
         # Space でインライン変換 → さらに Space でポップアップを開く
@@ -3386,6 +3420,7 @@ def detect_ime_mode(
     """
     if config is None:
         config = load_config(skip_password=True)
+    mlx_vlm_ime.reset_active_typing_line_hint()
 
     # 入力前フレームを取得（差分比較でより確実な IME モード検出に使用）
     pre_frame = capture_screen(

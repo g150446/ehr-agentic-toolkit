@@ -16,6 +16,7 @@ pykakasi>=2.2.0  # Katakana-to-romaji conversion for IME-specific long-vowel han
 sudachipy>=0.6.10
 sudachidict_core>=20241021
 easyocr>=1.7.0
+paddleocr>=3.4.0
 pillow>=9.0.0
 pyautogui>=0.9.54
 
@@ -47,6 +48,9 @@ pytest-asyncio>=0.21.0
 black>=23.0.0
 flake8>=6.0.0
 mypy>=1.0.0
+
+# LLM/AI Dependencies
+openai
 
 # Additional SSL support for EasyOCR
 certifi>=2023.0.0

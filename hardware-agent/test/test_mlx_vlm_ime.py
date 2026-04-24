@@ -1,6 +1,8 @@
 from contextlib import redirect_stdout
 import io
 import json
+import sys
+import types
 
 import automation.mlx_vlm_ime as mlx_vlm_ime
 import numpy as np
@@ -58,6 +60,70 @@ def test_extract_message_text_handles_real_log_style_reasoning_only_response():
     }
 
     assert "japanese" in mlx_vlm_ime._extract_message_text(result, error_prefix="mlx_vlm IME")
+
+
+def test_extract_diff_crop_stores_active_typing_line_hint():
+    pre = np.zeros((120, 160, 3), dtype=np.uint8)
+    post = pre.copy()
+    post[70:86, 20:34] = 255
+
+    mlx_vlm_ime.reset_active_typing_line_hint()
+
+    cropped = mlx_vlm_ime._extract_diff_crop(pre, post, pad=0)
+
+    hint = mlx_vlm_ime.get_active_typing_line_hint()
+    assert cropped is not None
+    assert hint is not None
+    assert 0.5 < hint["center_y_ratio"] < 0.8
+    assert hint["char_height_ratio"] > 0
+
+
+def test_crop_to_active_typing_line_uses_normalized_hint():
+    frame = np.zeros((100, 80, 3), dtype=np.uint8)
+
+    cropped = mlx_vlm_ime.crop_to_active_typing_line(
+        frame,
+        {"center_y_ratio": 0.7, "char_height_ratio": 0.1},
+    )
+
+    assert cropped is not None
+    assert 30 <= cropped.shape[0] <= 60
+
+
+def test_resolve_paddle_model_dir_prefers_paddlex_cache(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    model_dir = home / ".paddlex" / "official_models" / "PP-DocLayout_plus-L"
+    model_dir.mkdir(parents=True)
+    (model_dir / "inference.yml").write_text("test", encoding="utf-8")
+
+    monkeypatch.setattr(mlx_vlm_ime.Path, "home", classmethod(lambda cls: home))
+
+    assert mlx_vlm_ime._resolve_paddle_model_dir("PP-DocLayout_plus-L") == str(model_dir)
+
+
+def test_load_ppstructure_popup_engine_uses_local_model_dirs(monkeypatch):
+    captured = {}
+
+    class DummyPPStructure:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PPStructureV3=DummyPPStructure))
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_resolve_paddle_model_dir",
+        lambda name: f"/tmp/{name}",
+    )
+    monkeypatch.setattr(mlx_vlm_ime, "_ppstructure_popup_engine", None)
+    monkeypatch.setattr(mlx_vlm_ime, "_ppstructure_popup_engine_failed", False)
+
+    engine = mlx_vlm_ime._load_ppstructure_popup_engine()
+
+    assert isinstance(engine, DummyPPStructure)
+    assert captured["use_region_detection"] is False
+    assert captured["layout_detection_model_dir"] == "/tmp/PP-DocLayout_plus-L"
+    assert captured["text_detection_model_dir"] == "/tmp/PP-OCRv5_server_det"
+    assert captured["text_recognition_model_dir"] == "/tmp/PP-OCRv5_server_rec"
 
 
 def test_read_popup_candidates_numbered_vlm_parses_natural_language_reasoning(monkeypatch):
@@ -285,6 +351,34 @@ def test_crop_popup_region_limits_patient_record_to_panel_before_blue_detection(
     ]
 
 
+def test_crop_popup_region_uses_cyan_row_extractor_before_fallback(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+    calls = []
+    cyan_crop = np.full((24, 48, 3), 200, dtype=np.uint8)
+
+    monkeypatch.setattr(mlx_vlm_ime, "detect_patient_record_panel3", lambda image: (40, 160))
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_input_region",
+        lambda image, debug_name="", panel_bounds=None: np.ones((90, 120, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_crop_center_band",
+        lambda image, top_ratio=0.25, bottom_ratio=0.85: np.ones((54, 120, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_ime_popup_by_blue",
+        lambda image: calls.append(("blue", image.shape)) or cyan_crop,
+    )
+
+    cropped = mlx_vlm_ime._crop_popup_region(frame, debug_name="line")
+
+    assert cropped is cyan_crop
+    assert calls == [("blue", (54, 120, 3))]
+
+
 def test_crop_popup_region_uses_full_frame_blue_detection_when_not_patient_record(monkeypatch):
     frame = np.zeros((120, 240, 3), dtype=np.uint8)
     calls = []
@@ -305,6 +399,59 @@ def test_crop_popup_region_uses_full_frame_blue_detection_when_not_patient_recor
 
     assert cropped.shape == (20, 40, 3)
     assert calls == [("blue", frame.shape)]
+
+
+def test_crop_to_ime_popup_by_blue_extracts_popup_from_cyan_selected_row():
+    frame = np.zeros((320, 240, 3), dtype=np.uint8)
+    frame[90:112, 60:220] = np.array([255, 255, 0], dtype=np.uint8)
+
+    cropped = mlx_vlm_ime.crop_to_ime_popup_by_blue(frame)
+
+    assert cropped is not None
+    assert cropped.shape[1] == 170
+    assert cropped.shape[0] == int(22 * 9.5)
+
+
+def test_crop_popup_region_by_ppstructure_selects_table_like_block(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+
+    class DummyEngine:
+        def predict(self, image, **kwargs):
+            return [
+                {
+                    "layout_det_res": [
+                        {"label": "text", "bbox": [5, 5, 50, 25]},
+                        {"label": "table", "bbox": [30, 40, 160, 110]},
+                    ]
+                }
+            ]
+
+    monkeypatch.setattr(mlx_vlm_ime, "_load_ppstructure_popup_engine", lambda: DummyEngine())
+
+    cropped = mlx_vlm_ime._crop_popup_region_by_ppstructure(frame, debug_name="table")
+
+    assert cropped is not None
+    assert cropped.shape == (70, 130, 3)
+
+
+def test_read_popup_candidates_ocr_uses_popup_region_extractor(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+    popup_crop = np.ones((80, 120, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(mlx_vlm_ime, "_crop_popup_region", lambda image, debug_name="": popup_crop)
+    import automation.screen_analyzer as screen_analyzer
+
+    monkeypatch.setattr(screen_analyzer, "load_ocr_reader", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        screen_analyzer,
+        "run_ocr",
+        lambda reader, image: [
+            ([[0, 0], [10, 0], [10, 10], [0, 10]], "1", 0.99),
+            ([[20, 0], [60, 0], [60, 10], [20, 10]], "過剰", 0.99),
+        ],
+    )
+
+    assert mlx_vlm_ime.read_popup_candidates_ocr(frame, debug_name="popup") == [(1, "過剰")]
 
 
 def test_save_thinking_log_writes_reasoning_details(tmp_path, monkeypatch):

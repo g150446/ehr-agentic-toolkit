@@ -11,6 +11,7 @@ from datetime import datetime
 from itertools import combinations
 import json
 import os
+from pathlib import Path
 import re
 import socket
 import time
@@ -57,6 +58,9 @@ _OPENROUTER_PROVIDER_ORDER = [
 _VLM_REQUEST_COOLDOWN_SEC = 0.5
 _last_vlm_response_monotonic: Optional[float] = None
 _helper_reset_panel_bounds: Optional[tuple[int, int]] = None
+_active_typing_line_hint: Optional[dict[str, float]] = None
+_ppstructure_popup_engine = None
+_ppstructure_popup_engine_failed = False
 
 
 class MlxVlmImeError(RuntimeError):
@@ -213,6 +217,55 @@ def _ensure_min_size(frame: np.ndarray) -> np.ndarray:
     if scale <= 1.0:
         return frame
     return cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+
+
+def reset_active_typing_line_hint() -> None:
+    global _active_typing_line_hint
+    _active_typing_line_hint = None
+
+
+def get_active_typing_line_hint() -> Optional[dict[str, float]]:
+    if _active_typing_line_hint is None:
+        return None
+    return dict(_active_typing_line_hint)
+
+
+def _store_active_typing_line_hint(
+    *,
+    frame_height: int,
+    center_y: float,
+    char_height: float,
+) -> None:
+    global _active_typing_line_hint
+    if frame_height <= 0:
+        return
+    clamped_center_y = min(max(float(center_y), 0.0), float(frame_height))
+    normalized_char_height = max(float(char_height) / float(frame_height), 12.0 / float(frame_height))
+    _active_typing_line_hint = {
+        "center_y_ratio": clamped_center_y / float(frame_height),
+        "char_height_ratio": normalized_char_height,
+    }
+
+
+def crop_to_active_typing_line(
+    frame: np.ndarray,
+    line_hint: Optional[dict[str, float]],
+) -> Optional[np.ndarray]:
+    if line_hint is None or frame.size == 0:
+        return None
+    center_y_ratio = float(line_hint.get("center_y_ratio", -1.0))
+    char_height_ratio = float(line_hint.get("char_height_ratio", -1.0))
+    if not (0.0 <= center_y_ratio <= 1.0) or char_height_ratio <= 0.0:
+        return None
+    frame_height = frame.shape[0]
+    center_y = int(round(center_y_ratio * frame_height))
+    char_height_px = max(int(round(char_height_ratio * frame_height)), 12)
+    half_height = max(int(round(char_height_px * 2.5)), 20)
+    y1 = max(0, center_y - half_height)
+    y2 = min(frame_height, center_y + half_height)
+    if y2 - y1 < 20:
+        return None
+    return frame[y1:y2, :]
 
 
 def _encode_image_data_url(frame: np.ndarray, *, debug_name: str = "") -> str:
@@ -530,6 +583,277 @@ def _crop_center_band(
     return frame[int(h * top_ratio):int(h * bottom_ratio), :]
 
 
+def _resolve_paddle_model_dir(model_name: str) -> Optional[str]:
+    paddlex_dir = Path.home() / ".paddlex" / "official_models" / model_name
+    if (paddlex_dir / "inference.yml").exists():
+        return str(paddlex_dir)
+
+    hf_root = Path.home() / ".cache" / "huggingface" / "hub" / f"models--PaddlePaddle--{model_name}"
+    snapshots_dir = hf_root / "snapshots"
+    ref_path = hf_root / "refs" / "main"
+    candidate_names: list[str] = []
+    if ref_path.exists():
+        ref_name = ref_path.read_text(encoding="utf-8").strip()
+        if ref_name:
+            candidate_names.append(ref_name)
+    candidate_names.append("main")
+    for candidate_name in candidate_names:
+        candidate_dir = snapshots_dir / candidate_name
+        if (candidate_dir / "inference.yml").exists():
+            return str(candidate_dir)
+    for model_file in hf_root.rglob("inference.yml"):
+        return str(model_file.parent)
+    return None
+
+
+def _load_ppstructure_popup_engine():
+    global _ppstructure_popup_engine, _ppstructure_popup_engine_failed
+    if _ppstructure_popup_engine is not None:
+        return _ppstructure_popup_engine
+    if _ppstructure_popup_engine_failed:
+        return None
+    try:
+        os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        from paddleocr import PPStructureV3
+
+        engine_kwargs = {
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+            "use_table_recognition": False,
+            "use_formula_recognition": False,
+            "use_chart_recognition": False,
+            "use_seal_recognition": False,
+            "use_region_detection": False,
+            "format_block_content": False,
+        }
+        layout_model_dir = _resolve_paddle_model_dir("PP-DocLayout_plus-L")
+        if layout_model_dir:
+            engine_kwargs["layout_detection_model_dir"] = layout_model_dir
+        text_det_model_dir = _resolve_paddle_model_dir("PP-OCRv5_server_det")
+        if text_det_model_dir:
+            engine_kwargs["text_detection_model_dir"] = text_det_model_dir
+        text_rec_model_dir = _resolve_paddle_model_dir("PP-OCRv5_server_rec")
+        if text_rec_model_dir:
+            engine_kwargs["text_recognition_model_dir"] = text_rec_model_dir
+        doc_ori_model_dir = _resolve_paddle_model_dir("PP-LCNet_x1_0_doc_ori")
+        if doc_ori_model_dir:
+            engine_kwargs["doc_orientation_classify_model_dir"] = doc_ori_model_dir
+        doc_unwarp_model_dir = _resolve_paddle_model_dir("UVDoc")
+        if doc_unwarp_model_dir:
+            engine_kwargs["doc_unwarping_model_dir"] = doc_unwarp_model_dir
+
+        _ppstructure_popup_engine = PPStructureV3(**engine_kwargs)
+    except Exception as exc:
+        print(f"  [PP-StructureV3] 初期化失敗: {exc}")
+        _ppstructure_popup_engine_failed = True
+        return None
+    return _ppstructure_popup_engine
+
+
+def _ppstructure_result_to_data(result):
+    if result is None:
+        return None
+    if isinstance(result, (dict, list, tuple)):
+        return result
+    json_attr = getattr(result, "json", None)
+    if json_attr is not None:
+        try:
+            return json_attr() if callable(json_attr) else json_attr
+        except Exception:
+            pass
+    dict_method = getattr(result, "to_dict", None)
+    if callable(dict_method):
+        try:
+            return dict_method()
+        except Exception:
+            pass
+    keys_method = getattr(result, "keys", None)
+    if callable(keys_method):
+        try:
+            return dict(result)
+        except Exception:
+            pass
+    return None
+
+
+def _bbox_from_ppstructure_value(value) -> Optional[tuple[int, int, int, int]]:
+    if isinstance(value, dict):
+        if all(key in value for key in ("x1", "y1", "x2", "y2")):
+            try:
+                return (
+                    int(round(float(value["x1"]))),
+                    int(round(float(value["y1"]))),
+                    int(round(float(value["x2"]))),
+                    int(round(float(value["y2"]))),
+                )
+            except (TypeError, ValueError):
+                return None
+        return None
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    if len(value) == 4 and all(not isinstance(item, (list, tuple, dict)) for item in value):
+        try:
+            x1, y1, x2, y2 = [int(round(float(item))) for item in value]
+        except (TypeError, ValueError):
+            return None
+        return (x1, y1, x2, y2)
+    points: list[tuple[float, float]] = []
+    for item in value:
+        if isinstance(item, dict):
+            if "x" in item and "y" in item:
+                try:
+                    points.append((float(item["x"]), float(item["y"])))
+                except (TypeError, ValueError):
+                    return None
+            continue
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            try:
+                points.append((float(item[0]), float(item[1])))
+            except (TypeError, ValueError):
+                return None
+    if not points:
+        return None
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return (
+        int(round(min(xs))),
+        int(round(min(ys))),
+        int(round(max(xs))),
+        int(round(max(ys))),
+    )
+
+
+def _extract_bbox_from_ppstructure_item(item: dict) -> Optional[tuple[int, int, int, int]]:
+    for key in ("bbox", "box", "coordinate", "coordinates", "polygon", "poly", "points"):
+        if key in item:
+            bbox = _bbox_from_ppstructure_value(item[key])
+            if bbox is not None:
+                return bbox
+    return _bbox_from_ppstructure_value(item)
+
+
+def _iter_ppstructure_candidates(payload):
+    stack = [payload]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            bbox = _extract_bbox_from_ppstructure_item(current)
+            if bbox is not None:
+                label = str(
+                    current.get("label")
+                    or current.get("type")
+                    or current.get("category")
+                    or current.get("cls")
+                    or current.get("block_label")
+                    or ""
+                ).strip().lower()
+                yield label, bbox
+            for value in current.values():
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+        elif isinstance(current, (list, tuple)):
+            for value in current:
+                if isinstance(value, (dict, list, tuple)):
+                    stack.append(value)
+
+
+def _score_ppstructure_popup_candidate(
+    label: str,
+    bbox: tuple[int, int, int, int],
+    *,
+    frame_shape: tuple[int, int, int],
+) -> Optional[float]:
+    x1, y1, x2, y2 = bbox
+    fh, fw = frame_shape[:2]
+    x1 = max(0, min(x1, fw))
+    y1 = max(0, min(y1, fh))
+    x2 = max(0, min(x2, fw))
+    y2 = max(0, min(y2, fh))
+    width = x2 - x1
+    height = y2 - y1
+    if width < 60 or height < 40:
+        return None
+    if width > fw * 0.98 or height > fh * 0.98:
+        return None
+    area_ratio = (width * height) / float(max(fw * fh, 1))
+    if area_ratio < 0.01:
+        return None
+    label_score = 0.0
+    if "table" in label:
+        label_score = 8.0
+    elif "list" in label:
+        label_score = 7.0
+    elif "text" in label or "paragraph" in label:
+        label_score = 5.0
+    elif "title" in label or "header" in label:
+        label_score = 1.0
+    elif label:
+        label_score = 2.0
+    vertical_preference = 1.0 - abs(((y1 + y2) / 2.0) / float(max(fh, 1)) - 0.55)
+    return label_score * 100.0 + area_ratio * 100.0 + vertical_preference * 10.0
+
+
+def _crop_popup_region_by_ppstructure(
+    frame: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> Optional[np.ndarray]:
+    engine = _load_ppstructure_popup_engine()
+    if engine is None:
+        return None
+    try:
+        results = engine.predict(
+            frame,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            use_table_recognition=False,
+            use_formula_recognition=False,
+            use_chart_recognition=False,
+            use_seal_recognition=False,
+            use_region_detection=False,
+            format_block_content=False,
+        )
+    except Exception as exc:
+        print(f"  [PP-StructureV3] ポップアップ領域抽出失敗: {exc}")
+        return None
+
+    best_bbox: Optional[tuple[int, int, int, int]] = None
+    best_score: Optional[float] = None
+    for result in results:
+        payload = _ppstructure_result_to_data(result)
+        for label, bbox in _iter_ppstructure_candidates(payload):
+            score = _score_ppstructure_popup_candidate(label, bbox, frame_shape=frame.shape)
+            if score is None:
+                continue
+            if best_score is None or score > best_score:
+                best_score = score
+                best_bbox = bbox
+    if best_bbox is None:
+        return None
+
+    x1, y1, x2, y2 = best_bbox
+    fh, fw = frame.shape[:2]
+    x1 = max(0, min(x1, fw))
+    y1 = max(0, min(y1, fh))
+    x2 = max(0, min(x2, fw))
+    y2 = max(0, min(y2, fh))
+    if x2 - x1 < 60 or y2 - y1 < 40:
+        return None
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+    if debug_name:
+        _save_debug_frame(crop, name=debug_name, prefix="debug_ppstructure_popup")
+    return crop
+
+
+def _ppstructure_popup_crop_has_selection_indicator(crop: np.ndarray) -> bool:
+    """Return True only when the PP-Structure crop still contains an IME selection indicator."""
+    return crop_to_ime_popup_by_blue(crop) is not None
+
+
 def _find_dark_region_y(frame: np.ndarray) -> Optional[int]:
     """IME 反転表示（暗い背景または Windows 10 青色選択バー）の y 座標を検出する。"""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -561,29 +885,12 @@ def _find_dark_region_y(frame: np.ndarray) -> Optional[int]:
 
 
 def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
-    """Windows IME ポップアップの青い選択インジケータを HSV 色検出で特定し、
-    そのインジケータを基準にポップアップ全体をクロップして返す。
-
-    - Win10 IME: 選択中の候補に青いハイライトバー（横長: w >> h）
-    - Win11 IME: 選択中の候補の左端に青い細い縦バー（縦長: h >> w）
-    (標準 Windows アクセント色: RGB 0,120,215 → HSV H≈106, S≈182, V≈215)
-
-    正方形に近いアイコン（スピナー、IME モードボタンなど）は除外する。
-
-    Returns:
-        クロップされたポップアップ領域。検出失敗時は None。
-    """
+    """IME の水色選択行を検出し、候補ウィンドウ全体を推定クロップする。"""
     fh, fw = frame.shape[:2]
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    # Windows IME 選択インジケータ (青: H 95-130, S 50+, V 60+)
-    lower_blue = np.array([95, 50, 60])
-    upper_blue = np.array([130, 255, 255])
-    mask = cv2.inRange(hsv, lower_blue, upper_blue)
-
-    # 小ノイズ除去（OPEN は使わない: 選択バーの青画素が疎なため除去されてしまう）
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    mask = cv2.dilate(mask, kernel, iterations=1)
+    lower_cyan = np.array([80, 30, 180])
+    upper_cyan = np.array([100, 255, 255])
+    mask = cv2.inRange(hsv, lower_cyan, upper_cyan)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -591,29 +898,15 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
     best_area = 0
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        # IME インジケータの形状チェック:
-        #   Win11: 細い縦バー (h >= w * 1.5)
-        #   Win10: 横長バー  (w >= h * 2.0)
-        # スピナー・モードアイコンなど正方形に近い要素は除外する
-        is_vertical_bar = h >= w * 1.5    # Win11 スタイル
-        is_horizontal_bar = w >= h * 2.0  # Win10 スタイル
-        if not (is_vertical_bar or is_horizontal_bar):
+        if w < 60 or w > 500:
             continue
-        # Win11縦バー: 幅は実際 2-9px（環境によって異なる）。誤検出防止のため最大12pxに制限。
-        # Win10横バー: 幅30-450px
-        if is_vertical_bar and (w < 1 or w > 12):
+        if h < 12 or h > 80:
             continue
-        if is_horizontal_bar and (w < 30 or w > 450):
-            continue
-        if h < 8 or h > 80:
-            continue
-        # タスクバー・画面上端付近を除外
-        # アプリのツールバー (~8%) と タスクバー (~92%) を除外
         if y < fh * 0.08 or y > fh * 0.92:
             continue
-        # 画面右端 (5%) を除外: スクロールバーやウィンドウ枠の誤検出防止
-        # 左端は除外しない: Notepadなど左端揃えテキスト直下に現れるポップアップを失わないため
         if x > fw * 0.95:
+            continue
+        if w < h * 2.0:
             continue
         area = w * h
         if area > best_area:
@@ -624,31 +917,22 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
         return None
 
     x, y, w, h = best
-    is_vertical_bar = h >= w * 1.5
-    # 選択候補（position 2）の上にある position 1 を確実に含める。
-    # position 1 は選択バーの ~30px 上にあるが、行ヘッダーも含め余裕を 65px に設定。
-    # 以前の 35px では position 1 が切れて OCR に読み取られなかった。
-    # 下方向は最大 8 候補分（各行 ~25px = 200px）+ 余白
-    popup_y1 = max(0, y - 65)
-    popup_y2 = min(fh, y + h + 230)
-    popup_x1 = max(0, x - 6)
-    if is_vertical_bar:
-        # Win11縦バー: バーは左端にあるのでポップアップ幅分右に広げる
-        popup_x2 = min(fw, x + 260)
-    else:
-        # Win10横バー: バー幅 + マージン
-        popup_x2 = min(fw, x + w + 6)
-
-    return frame[popup_y1:popup_y2, popup_x1:popup_x2]
+    roi_x1 = max(0, x - 5)
+    roi_y1 = max(0, y - int(h * 1.5))
+    roi_x2 = min(fw, roi_x1 + w + 10)
+    roi_y2 = min(fh, roi_y1 + int(h * 9.5))
+    if roi_x2 - roi_x1 < 60 or roi_y2 - roi_y1 < 40:
+        return None
+    return frame[roi_y1:roi_y2, roi_x1:roi_x2]
 
 
 def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
     """IME ポップアップ候補リストの領域を切り出す。
 
-    1. patient_record では第3ペインに限定して青い選択バーを HSV 検出
-    2. それ以外は全画面で青い選択バーを HSV 検出（Win10 IME）
-    3. 失敗時は input_region にクロップして暗い領域を検出（Win7 反転）
-    4. それも失敗時は中央帯クロップ
+    1. patient_record では第3ペイン + 中央帯に限定
+    2. そのスコープ内で水色の選択行を検出し、候補ウィンドウ全体を推定
+    3. 失敗時は入力領域で暗い反転候補を検出
+    4. 最後は中央帯クロップ
     """
     popup_search_region = frame
     panel_bounds = _helper_reset_panel_bounds or detect_patient_record_panel3(frame)
@@ -866,6 +1150,7 @@ def _call_mlx_vlm_with_content(
     content: list[dict[str, object]],
     prompt: str,
     *,
+    system_prompt: Optional[str] = None,
     model: Optional[str] = None,
     url: Optional[str] = None,
     timeout: Optional[float] = None,
@@ -882,15 +1167,23 @@ def _call_mlx_vlm_with_content(
     payload = {
         "model": model,
         "temperature": 0,
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}, *content],
-            }
-        ],
+        "messages": [],
         "stream": False,
         "max_tokens": 256,
     }
+    if system_prompt:
+        payload["messages"].append(
+            {
+                "role": "system",
+                "content": system_prompt,
+            }
+        )
+    payload["messages"].append(
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": prompt}, *content],
+        }
+    )
     reasoning_requested = False
     if enable_reasoning:
         payload["include_reasoning"] = True
@@ -1010,6 +1303,7 @@ def _call_mlx_vlm_with_image(
     image_data_url: str,
     prompt: str,
     *,
+    system_prompt: Optional[str] = None,
     model: Optional[str] = None,
     url: Optional[str] = None,
     timeout: Optional[float] = None,
@@ -1020,6 +1314,7 @@ def _call_mlx_vlm_with_image(
     return _call_mlx_vlm_with_content(
         [{"type": "image_url", "image_url": {"url": image_data_url}}],
         prompt,
+        system_prompt=system_prompt,
         model=model,
         url=url,
         timeout=timeout,
@@ -1033,6 +1328,7 @@ def _call_mlx_vlm_with_images(
     image_data_urls: list[str],
     prompt: str,
     *,
+    system_prompt: Optional[str] = None,
     model: Optional[str] = None,
     url: Optional[str] = None,
     timeout: Optional[float] = None,
@@ -1043,6 +1339,7 @@ def _call_mlx_vlm_with_images(
     return _call_mlx_vlm_with_content(
         [{"type": "image_url", "image_url": {"url": image_url}} for image_url in image_data_urls],
         prompt,
+        system_prompt=system_prompt,
         model=model,
         url=url,
         timeout=timeout,
@@ -1314,15 +1611,10 @@ def read_popup_candidates_ocr(frame: np.ndarray, *, debug_name: str = "") -> lis
     Returns:
         (display_number, candidate_text) のリスト。失敗時は空リスト。
     """
-    # ポップアップ領域をクロップ（失敗時はスキップ）
-    cropped = crop_to_ime_popup_by_blue(frame)
+    # ポップアップ領域をクロップ（PP-StructureV3優先、失敗時は既存 heuristic）
+    cropped = _crop_popup_region(frame, debug_name=debug_name)
     if cropped is None:
-        # ポップアップが検出できない = まだ表示されていないか、フレームが古い。
-        # フルフレームでのEasyOCRは30秒以上かかるためスキップして空を返す。
         return []
-
-    if debug_name:
-        _save_debug_popup(cropped, debug_name)
 
     # 大きすぎるクロップはポップアップではなく背景 → スキップ
     h, w = cropped.shape[:2]
@@ -1542,6 +1834,11 @@ def _extract_diff_crop(
     x, y, bw, bh = cv2.boundingRect(largest)
     if bw < min_change_px or bh < min_change_px:
         return None
+    _store_active_typing_line_hint(
+        frame_height=post_frame.shape[0],
+        center_y=y + (bh / 2.0),
+        char_height=bh,
+    )
     x1 = max(0, x - pad)
     y1 = max(0, y - pad)
     x2 = min(post_frame.shape[1], x + bw + pad)
@@ -1924,6 +2221,7 @@ def compare_helper_reset_images(
     content = _call_mlx_vlm_with_images(
         [baseline_data_url, current_data_url],
         prompt,
+        system_prompt="<|think|>\nステップバイステップで考えろ。",
         timeout=MLX_VLM_INLINE_TIMEOUT,
         enable_reasoning=True,
         thinking_log=True,

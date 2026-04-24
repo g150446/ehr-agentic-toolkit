@@ -769,6 +769,22 @@ def test_type_ascii_text_precisely_uses_special_key_commands():
     ]
 
 
+def test_type_helper_romaji_safely_types_one_character_at_a_time(monkeypatch):
+    events = []
+    sleeps = []
+
+    class DummyClient:
+        def type_text(self, text):
+            events.append(("type", text))
+            return True
+
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert ehr_input._type_helper_romaji_safely(DummyClient(), "kajou", inter_key_delay=0.1)
+    assert events == [("type", "k"), ("type", "a"), ("type", "j"), ("type", "o"), ("type", "u")]
+    assert sleeps == [0.1, 0.1, 0.1, 0.1]
+
+
 def test_parse_ime_candidate_response_reads_json_candidate():
     assert ehr_input._parse_ime_candidate_response('{"candidate":"微熱"}') == "微熱"
     assert ehr_input._parse_ime_candidate_response('{"candidate":null}') is None
@@ -1013,6 +1029,7 @@ def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
     monkeypatch.setattr(ehr_input, "_clear_pending_ime_composition", lambda *args, **kwargs: None)
     monkeypatch.setattr(ehr_input, "_save_debug_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(
         ehr_input,
         "_read_helper_popup_candidates",
@@ -1037,6 +1054,7 @@ def test_try_helper_word_fallback_cycles_until_wrapped_candidate(monkeypatch):
     )
 
     assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0)
+    assert events[:5] == [("type", "k"), ("type", "a"), ("type", "j"), ("type", "o"), ("type", "u")]
     assert events.count(("key", "space")) == 10
     assert ("key", "enter") in events
     assert ("key", "backspace") in events
@@ -1103,6 +1121,7 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
     )
     monkeypatch.setattr(ehr_input, "_save_debug_image", lambda *args, **kwargs: None)
     monkeypatch.setattr(ehr_input, "capture_screen", lambda **kwargs: frame)
+    monkeypatch.setattr(ehr_input.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(
         ehr_input,
         "_read_helper_popup_candidates",
@@ -1115,6 +1134,7 @@ def test_try_helper_word_fallback_cleans_up_after_backspace(monkeypatch):
     )
 
     assert ehr_input._try_helper_word_fallback(DummyClient(), config, "過膨張", 0.0)
+    assert events[:5] == [("type", "k"), ("type", "a"), ("type", "j"), ("type", "o"), ("type", "u")]
     assert ("cleanup", "過剰", 1) in events
     assert events.index(("cleanup", "過剰", 1)) < events.index(
         (
@@ -1536,7 +1556,7 @@ def test_reset_ime_before_helper_lookup_stops_when_compare_matches_baseline(monk
     monkeypatch.setattr(
         ehr_input,
         "_capture_helper_reset_compare_frame",
-        lambda frame, debug_name="", screen_type=None: current_crop,
+        lambda frame, debug_name="", screen_type=None, line_hint=None: current_crop,
     )
     captured = []
     monkeypatch.setattr(
@@ -1579,7 +1599,7 @@ def test_reset_ime_before_helper_lookup_fails_after_compare_never_matches(monkey
     monkeypatch.setattr(
         ehr_input,
         "_capture_helper_reset_compare_frame",
-        lambda frame, debug_name="", screen_type=None: current_crop,
+        lambda frame, debug_name="", screen_type=None, line_hint=None: current_crop,
     )
     monkeypatch.setattr(
         ehr_input,
@@ -1613,7 +1633,7 @@ def test_reset_ime_before_helper_lookup_logs_when_compare_requests_next_escape(m
     monkeypatch.setattr(
         ehr_input,
         "_capture_helper_reset_compare_frame",
-        lambda frame, debug_name="", screen_type=None: current_crop,
+        lambda frame, debug_name="", screen_type=None, line_hint=None: current_crop,
     )
     monkeypatch.setattr(
         ehr_input,
@@ -1633,6 +1653,51 @@ def test_reset_ime_before_helper_lookup_logs_when_compare_requests_next_escape(m
     output = capsys.readouterr().out
     assert "baseline_vs_current=no" in output
     assert "リセット未完了 → 次の Escape を送ります" in output
+
+
+def test_reset_ime_before_helper_lookup_reuses_baseline_line_hint(monkeypatch):
+    events = []
+    compare_calls = []
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    frame = _make_frame()
+    baseline_crop = np.zeros((40, 120, 3), dtype=np.uint8)
+    current_crop = np.ones((40, 120, 3), dtype=np.uint8)
+    line_hint = {"center_y_ratio": 0.62, "char_height_ratio": 0.025}
+
+    class DummyClient:
+        def press_key(self, key):
+            events.append(("key", key))
+            return True
+
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_compare_frame",
+        lambda frame, debug_name="", screen_type=None, line_hint=None: (
+            compare_calls.append((debug_name, screen_type, line_hint)) or current_crop
+        ),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "compare_helper_reset_images",
+        lambda baseline, current, left_context="", anchor_text="", target_text="", screen_type="": True,
+    )
+
+    assert ehr_input._reset_ime_before_helper_lookup(
+        DummyClient(),
+        config,
+        target_kanji="痛",
+        anchor_text="咽頭",
+        baseline_state={
+            "cropped_frame": baseline_crop,
+            "anchor_text": "咽頭",
+            "screen_type": "patient_record",
+            "line_hint": line_hint,
+        },
+    )
+
+    assert events == [("key", "escape")]
+    assert compare_calls == [("helper_reset_compare_attempt_1", "patient_record", line_hint)]
 
 
 def test_reset_ime_before_helper_lookup_aborts_when_left_context_breaks(monkeypatch):
@@ -1822,7 +1887,7 @@ def test_capture_helper_reset_baseline_stores_screen_type(monkeypatch):
     monkeypatch.setattr(
         ehr_input,
         "_capture_helper_reset_compare_frame",
-        lambda image, debug_name="", screen_type=None: np.ones((20, 40, 3), dtype=np.uint8),
+        lambda image, debug_name="", screen_type=None, line_hint=None: np.ones((20, 40, 3), dtype=np.uint8),
     )
 
     state = ehr_input._capture_helper_reset_baseline(config, anchor_text="咽頭", debug_name="helper_reset")
@@ -1879,6 +1944,65 @@ def test_capture_helper_reset_compare_frame_focuses_patient_record_center_band(m
     assert cropped is center_band
 
 
+def test_capture_helper_reset_compare_frame_prefers_active_typing_line(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+    panel_crop = np.ones((100, 80, 3), dtype=np.uint8)
+    line_crop = np.full((36, 80, 3), 9, dtype=np.uint8)
+
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_helper_reset_region",
+        lambda image, **kwargs: (panel_crop, "patient_record"),
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "get_active_typing_line_hint",
+        lambda: {"center_y_ratio": 0.55, "char_height_ratio": 0.08},
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_active_typing_line",
+        lambda image, line_hint: line_crop,
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_crop_center_band",
+        lambda image, **kwargs: (_ for _ in ()).throw(AssertionError("center band should not run")),
+    )
+
+    cropped = ehr_input._capture_helper_reset_compare_frame(
+        frame,
+        debug_name="helper_reset",
+        screen_type="patient_record",
+    )
+
+    assert cropped is line_crop
+
+
+def test_capture_helper_reset_baseline_stores_active_line_hint(monkeypatch):
+    frame = _make_frame()
+    config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
+    line_hint = {"center_y_ratio": 0.6, "char_height_ratio": 0.03}
+
+    monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: frame)
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "classify_helper_reset_screen",
+        lambda image, debug_name="": "patient_record",
+    )
+    monkeypatch.setattr(mlx_vlm_ime, "get_active_typing_line_hint", lambda: dict(line_hint))
+    monkeypatch.setattr(
+        ehr_input,
+        "_capture_helper_reset_compare_frame",
+        lambda image, debug_name="", screen_type=None, line_hint=None: np.ones((20, 40, 3), dtype=np.uint8),
+    )
+
+    state = ehr_input._capture_helper_reset_baseline(config, anchor_text="咽頭", debug_name="helper_reset")
+
+    assert state is not None
+    assert state["line_hint"] == line_hint
+
+
 def test_compare_helper_reset_images_prompt_uses_anchor_and_two_images(monkeypatch):
     baseline = _make_frame()
     current = _make_frame()
@@ -1891,9 +2015,10 @@ def test_compare_helper_reset_images_prompt_uses_anchor_and_two_images(monkeypat
         lambda image, **kwargs: calls.append(("encode", kwargs.get("debug_name"))) or f"data:image/{len(calls)}",
     )
 
-    def _fake_call(data_urls, prompt, timeout, enable_reasoning=False, thinking_log=False):
+    def _fake_call(data_urls, prompt, timeout, system_prompt=None, enable_reasoning=False, thinking_log=False):
         captured["data_urls"] = data_urls
         captured["prompt"] = prompt
+        captured["system_prompt"] = system_prompt
         captured["enable_reasoning"] = enable_reasoning
         captured["thinking_log"] = thinking_log
         return "yes"
@@ -1915,6 +2040,7 @@ def test_compare_helper_reset_images_prompt_uses_anchor_and_two_images(monkeypat
     assert captured["data_urls"] == ["data:image/1", "data:image/2"]
     assert captured["enable_reasoning"] is True
     assert captured["thinking_log"] is True
+    assert captured["system_prompt"] == "<|think|>\nステップバイステップで考えろ。"
     assert "ここでは2枚の別画像が送られます" in captured["prompt"]
     assert "1枚目を縦に分割した1枚画像だと思わないでください" in captured["prompt"]
     assert "1枚目の最後の確定済み文字列は '咽頭'" in captured["prompt"]
@@ -1932,8 +2058,9 @@ def test_compare_helper_reset_images_prompt_accepts_anchor_with_ascii_suffix(mon
         "_encode_image_data_url",
         lambda image, **kwargs: "data:image/mock",
     )
-    def _fake_call(data_urls, prompt, timeout, enable_reasoning=False, thinking_log=False):
+    def _fake_call(data_urls, prompt, timeout, system_prompt=None, enable_reasoning=False, thinking_log=False):
         captured["prompt"] = prompt
+        captured["system_prompt"] = system_prompt
         return "yes"
 
     monkeypatch.setattr(mlx_vlm_ime, "_call_mlx_vlm_with_images", _fake_call)
@@ -1946,6 +2073,7 @@ def test_compare_helper_reset_images_prompt_accepts_anchor_with_ascii_suffix(mon
         left_context="感冒症状(",
         screen_type="notepad",
     ) is True
+    assert captured["system_prompt"] == "<|think|>\nステップバイステップで考えろ。"
     assert "1枚目の最後の確定済み文字列は '症状('" in captured["prompt"]
     assert "'症状(' の後ろに別の文字" in captured["prompt"]
 
