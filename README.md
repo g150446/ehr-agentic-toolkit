@@ -242,6 +242,7 @@ python -m automation.ehr_input --help
 | `--clear` | 入力前に Backspace を 50 回送信してフィールドをクリア |
 | `--fireworks <model>` | 文節分割・IME 候補読取・ヘルパー単語提案を Fireworks AI の指定モデルへ切り替える |
 | `--google-ai-studio` | 文節分割・IME 候補読取・ヘルパー単語提案を Google AI Studio の `gemma-4-26b-a4b-it` へ切り替える |
+| `--novita [model]` | 文節分割・IME 候補読取・ヘルパー単語提案を Novita AI へ切り替える。モデル省略時は `google/gemma-4-31b-it` を使う |
 | `--openrouter <model>` | 文節分割・IME 候補読取・ヘルパー単語提案を OpenRouter の vision 対応モデルへ切り替える |
 | `--mactest` | HDMI/BLE の代わりに Mac ローカル画面 + `pyautogui` で動作確認する |
 

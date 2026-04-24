@@ -109,6 +109,20 @@ def test_build_ehr_input_command_adds_google_ai_studio():
     ]
 
 
+def test_build_ehr_input_command_adds_novita():
+    assert asthma_input._build_ehr_input_command(
+        "咳嗽あり。",
+        novita_model="google/gemma-4-31b-it",
+    ) == [
+        asthma_input._PYTHON,
+        "-m",
+        "automation.ehr_input",
+        "--novita",
+        "google/gemma-4-31b-it",
+        "咳嗽あり。",
+    ]
+
+
 def test_build_ehr_input_command_adds_fireworks():
     assert asthma_input._build_ehr_input_command(
         "咳嗽あり。",
@@ -158,7 +172,35 @@ def test_main_runs_only_selected_fragment(monkeypatch):
                 "clear": False,
                 "fireworks_model": None,
                 "google_ai_studio": False,
+                "novita_model": None,
                 "openrouter_model": "google/gemma-4-26b-a4b-it",
+            },
+        )
+    ]
+
+
+def test_main_parses_novita_without_explicit_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。", "二つ目。"])
+    monkeypatch.setattr(asthma_input.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        asthma_input,
+        "_run_fragment",
+        lambda fragment, index, total, **kwargs: calls.append((fragment, index, total, kwargs)) or True,
+    )
+
+    assert asthma_input.main(["--fragment", "2", "--novita"]) == 0
+    assert calls == [
+        (
+            "二つ目。",
+            2,
+            2,
+            {
+                "clear": False,
+                "fireworks_model": None,
+                "google_ai_studio": False,
+                "novita_model": "google/gemma-4-31b-it",
+                "openrouter_model": None,
             },
         )
     ]
@@ -254,6 +296,37 @@ def test_run_fragment_passes_command_to_subprocess(monkeypatch):
     }
 
 
+def test_run_fragment_passes_novita_command_to_subprocess(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, cwd, timeout):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["timeout"] = timeout
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(asthma_input.subprocess, "run", fake_run)
+
+    assert asthma_input._run_fragment(
+        "咳嗽あり。",
+        1,
+        3,
+        novita_model="google/gemma-4-31b-it",
+    )
+    assert captured == {
+        "cmd": [
+            asthma_input._PYTHON,
+            "-m",
+            "automation.ehr_input",
+            "--novita",
+            "google/gemma-4-31b-it",
+            "咳嗽あり。",
+        ],
+        "cwd": asthma_input._PROJECT_ROOT,
+        "timeout": 900,
+    }
+
+
 def test_main_rejects_google_ai_studio_with_openrouter(monkeypatch):
     monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。", "二つ目。"])
     stderr = io.StringIO()
@@ -262,7 +335,7 @@ def test_main_rejects_google_ai_studio_with_openrouter(monkeypatch):
         asthma_input.main(["--google-ai-studio", "--openrouter", "google/gemma-4-26b-a4b-it"])
 
     assert excinfo.value.code == 2
-    assert "--google-ai-studio / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()
+    assert "--google-ai-studio / --novita / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()
 
 
 def test_main_rejects_fireworks_with_openrouter(monkeypatch):
@@ -273,4 +346,15 @@ def test_main_rejects_fireworks_with_openrouter(monkeypatch):
         asthma_input.main(["--fireworks", "accounts/fireworks/models/gemma-4-26b-a4b-it", "--openrouter", "google/gemma-4-26b-a4b-it"])
 
     assert excinfo.value.code == 2
-    assert "--google-ai-studio / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()
+    assert "--google-ai-studio / --novita / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()
+
+
+def test_main_rejects_novita_with_openrouter(monkeypatch):
+    monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。", "二つ目。"])
+    stderr = io.StringIO()
+
+    with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
+        asthma_input.main(["--novita", "--openrouter", "google/gemma-4-26b-a4b-it"])
+
+    assert excinfo.value.code == 2
+    assert "--google-ai-studio / --novita / --openrouter / --fireworks は同時に使えません" in stderr.getvalue()

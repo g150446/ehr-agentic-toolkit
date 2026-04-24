@@ -12,6 +12,8 @@
   python scripts/test_asthma_input.py --start 3        # 3番目から再開
   python scripts/test_asthma_input.py --fragment 3     # 3番目だけ実行
   python scripts/test_asthma_input.py --fireworks accounts/fireworks/models/gemma-4-26b-a4b-it
+  python scripts/test_asthma_input.py --novita
+  python scripts/test_asthma_input.py --novita google/gemma-4-31b-it
   python scripts/test_asthma_input.py --openrouter google/gemma-4-26b-a4b-it
   python scripts/test_asthma_input.py --google-ai-studio
   python scripts/test_asthma_input.py --dry-run        # 行と Enter の並びを表示
@@ -28,6 +30,7 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).parent.parent
 _PATIENT_RECORDS_DIR = _PROJECT_ROOT / "data" / "patient_records"
 _DEFAULT_RECORD = "asthma_1"
+_DEFAULT_NOVITA_MODEL = "google/gemma-4-31b-it"
 _SUPPORTED_RECORDS = ("asthma_1", "asthma_2", "asthma_3")
 
 
@@ -89,6 +92,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fragment", type=int, default=None, metavar="N", help="N番目のフラグメントだけを実行（1始まり）")
     parser.add_argument("--dry-run", action="store_true", help="フラグメント一覧のみ表示して終了")
     parser.add_argument("--fireworks", metavar="MODEL", help="ehr_input に --fireworks MODEL を渡す")
+    parser.add_argument(
+        "--novita",
+        nargs="?",
+        const=_DEFAULT_NOVITA_MODEL,
+        metavar="MODEL",
+        help=f"ehr_input に --novita [MODEL] を渡す（省略時: {_DEFAULT_NOVITA_MODEL}）",
+    )
     parser.add_argument("--openrouter", metavar="MODEL", help="ehr_input に --openrouter MODEL を渡す")
     parser.add_argument("--google-ai-studio", action="store_true", help="ehr_input に --google-ai-studio を渡す")
     parser.add_argument("--delay", type=float, default=2.0, metavar="SEC", help="フラグメント間の待機秒数（デフォルト: 2.0）")
@@ -101,17 +111,20 @@ def _build_ehr_input_command(
     *,
     clear: bool = False,
     fireworks_model: str | None = None,
+    novita_model: str | None = None,
     openrouter_model: str | None = None,
     google_ai_studio: bool = False,
 ) -> list[str]:
-    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(fireworks_model))
+    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(novita_model)) + int(bool(fireworks_model))
     if provider_count > 1:
-        raise ValueError("--google-ai-studio / --openrouter / --fireworks は同時に指定できません")
+        raise ValueError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
     cmd = [_PYTHON, "-m", "automation.ehr_input"]
     if fireworks_model:
         cmd.extend(["--fireworks", fireworks_model])
     if google_ai_studio:
         cmd.append("--google-ai-studio")
+    if novita_model:
+        cmd.extend(["--novita", novita_model])
     if openrouter_model:
         cmd.extend(["--openrouter", openrouter_model])
     if clear:
@@ -147,6 +160,7 @@ def _run_fragment(
     *,
     clear: bool = False,
     fireworks_model: str | None = None,
+    novita_model: str | None = None,
     openrouter_model: str | None = None,
     google_ai_studio: bool = False,
 ) -> bool:
@@ -163,6 +177,7 @@ def _run_fragment(
         fragment,
         clear=clear,
         fireworks_model=fireworks_model,
+        novita_model=novita_model,
         openrouter_model=openrouter_model,
         google_ai_studio=google_ai_studio,
     )
@@ -202,9 +217,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fragment is not None and (args.start is not None or args.end is not None):
         parser.error("--fragment は --start/--end と同時に使えません")
-    provider_count = int(bool(args.google_ai_studio)) + int(bool(args.openrouter)) + int(bool(args.fireworks))
+    provider_count = int(bool(args.google_ai_studio)) + int(bool(args.openrouter)) + int(bool(args.novita)) + int(bool(args.fireworks))
     if provider_count > 1:
-        parser.error("--google-ai-studio / --openrouter / --fireworks は同時に使えません")
+        parser.error("--google-ai-studio / --novita / --openrouter / --fireworks は同時に使えません")
 
     try:
         start, end, target = _select_target_fragments(
@@ -232,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                 total,
                 clear=args.clear,
                 fireworks_model=args.fireworks,
+                novita_model=args.novita,
                 openrouter_model=args.openrouter,
                 google_ai_studio=args.google_ai_studio,
             )

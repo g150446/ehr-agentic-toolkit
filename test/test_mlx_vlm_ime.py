@@ -142,6 +142,29 @@ def test_suggest_ime_helper_word_logs_google_ai_studio_runtime(monkeypatch):
     assert "Qwen3応答" not in output
 
 
+def test_suggest_ime_helper_word_logs_novita_runtime(monkeypatch):
+    stdout = io.StringIO()
+
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_URL", "https://api.novita.ai/openai/chat/completions")
+    monkeypatch.setattr(mlx_vlm_ime, "MLX_VLM_TEXT_MODEL", "google/gemma-4-31b-it")
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_call_mlx_vlm_text_only",
+        lambda prompt, model=None: '{"words":["過剰","過去","過失"]}',
+    )
+
+    with redirect_stdout(stdout):
+        assert mlx_vlm_ime.suggest_ime_helper_word("過") == [
+            {"word": "過剰", "backspace_count": 1},
+            {"word": "過去", "backspace_count": 1},
+            {"word": "過失", "backspace_count": 1},
+        ]
+
+    output = stdout.getvalue()
+    assert "Novita(google/gemma-4-31b-it)応答" in output
+    assert "Qwen3応答" not in output
+
+
 def test_classify_helper_reset_screen_keeps_patient_record_without_vlm(monkeypatch):
     frame = np.zeros((120, 240, 3), dtype=np.uint8)
 
@@ -411,6 +434,52 @@ def test_call_mlx_vlm_with_content_uses_fireworks_openai_payload(monkeypatch):
         "Content-type": "application/json",
     }
     assert captured["payload"]["model"] == "accounts/fireworks/models/gemma-4-26b-a4b-it"
+    assert captured["payload"]["include_reasoning"] is True
+    assert captured["payload"]["reasoning"] == {"enabled": True}
+    assert "provider" not in captured["payload"]
+
+
+def test_call_mlx_vlm_with_content_uses_novita_openai_payload(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"message":{"content":"yes","reasoning":"trace"}}]}'
+
+    def _fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        captured["headers"] = dict(req.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(mlx_vlm_ime, "_wait_for_vlm_cooldown", lambda: None)
+    monkeypatch.setattr(mlx_vlm_ime.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(mlx_vlm_ime.time, "monotonic", lambda: 10.0)
+
+    result = mlx_vlm_ime._call_mlx_vlm_with_content(
+        [{"type": "image_url", "image_url": {"url": "data:image/png;base64,xxx"}}],
+        "compare prompt",
+        model="google/gemma-4-31b-it",
+        url="https://api.novita.ai/openai/chat/completions",
+        api_key="token",
+        enable_reasoning=True,
+    )
+
+    assert result == "yes"
+    assert captured["url"] == "https://api.novita.ai/openai/chat/completions"
+    assert captured["timeout"] == mlx_vlm_ime.MLX_VLM_IME_TIMEOUT
+    assert captured["headers"] == {
+        "Authorization": "Bearer token",
+        "Content-type": "application/json",
+    }
+    assert captured["payload"]["model"] == "google/gemma-4-31b-it"
     assert captured["payload"]["include_reasoning"] is True
     assert captured["payload"]["reasoning"] == {"enabled": True}
     assert "provider" not in captured["payload"]

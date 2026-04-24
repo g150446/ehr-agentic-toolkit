@@ -136,7 +136,58 @@ def test_run_cli_parses_openrouter(monkeypatch):
     assert configured == {
         "fireworks_model": None,
         "google_ai_studio": False,
+        "novita_model": None,
         "openrouter_model": "qwen/qwen3.5-9b",
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
+def test_run_cli_parses_novita_default_model(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--novita", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "google/gemma-4-31b-it",
+        "openrouter_model": None,
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
+def test_run_cli_parses_novita_custom_model(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--novita", "deepseek/deepseek-vl2", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "deepseek/deepseek-vl2",
+        "openrouter_model": None,
     }
     assert events == [("肺炎", {"clear_field": False})]
 
@@ -160,6 +211,7 @@ def test_run_cli_parses_fireworks(monkeypatch):
     assert configured == {
         "fireworks_model": "accounts/fireworks/models/gemma-4-26b-a4b-it",
         "google_ai_studio": False,
+        "novita_model": None,
         "openrouter_model": None,
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -184,6 +236,7 @@ def test_run_cli_parses_google_ai_studio(monkeypatch):
     assert configured == {
         "fireworks_model": None,
         "google_ai_studio": True,
+        "novita_model": None,
         "openrouter_model": None,
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -203,6 +256,22 @@ def test_configure_runtime_openrouter_updates_segmentation_and_ime(monkeypatch):
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "https://openrouter.ai/api/v1/chat/completions"
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "qwen/vision-model"
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-xyz"
+
+
+def test_configure_runtime_novita_updates_segmentation_and_ime(monkeypatch):
+    monkeypatch.setenv("NOVITA_API_KEY", "token-novita")
+
+    ehr_input._configure_runtime(novita_model="google/gemma-4-31b-it")
+
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == "https://api.novita.ai/openai/chat/completions"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "google/gemma-4-31b-it"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY == "token-novita"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_URL == "https://api.novita.ai/openai/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_MODEL == "google/gemma-4-31b-it"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_API_KEY == "token-novita"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "https://api.novita.ai/openai/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "google/gemma-4-31b-it"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "token-novita"
 
 
 def test_configure_runtime_google_ai_studio_updates_segmentation_and_ime(monkeypatch):
@@ -238,10 +307,10 @@ def test_configure_runtime_fireworks_updates_segmentation_and_ime(monkeypatch):
 
 
 def test_configure_runtime_without_external_provider_restores_defaults(monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "token-xyz")
-    ehr_input._configure_runtime(openrouter_model="qwen/vision-model")
+    monkeypatch.setenv("NOVITA_API_KEY", "token-novita")
+    ehr_input._configure_runtime(novita_model="google/gemma-4-31b-it")
 
-    ehr_input._configure_runtime(openrouter_model=None, google_ai_studio=False)
+    ehr_input._configure_runtime(openrouter_model=None, novita_model=None, google_ai_studio=False)
 
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["url"]
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -394,7 +463,7 @@ def test_build_run_log_header_records_executable_and_options():
     assert "=== ehr_input invocation ===" in header
     assert "executable: ehr_input.py" in header
     assert 'argv: ["/tmp/automation/ehr_input.py", "--openrouter", "qwen/qwen3.5-9b", "--clear", "open test", "肺炎"]' in header
-    assert 'parsed_options: {"clear_field": true, "fireworks_model": null, "google_ai_studio": false, "openrouter_model": "qwen/qwen3.5-9b"}' in header
+    assert 'parsed_options: {"clear_field": true, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": "qwen/qwen3.5-9b"}' in header
     assert 'positional_args: ["open test", "肺炎"]' in header
 
 
@@ -410,7 +479,7 @@ def test_main_prepends_run_header_to_log(monkeypatch, tmp_path):
 
     log_text = log_files[0].read_text(encoding="utf-8")
     assert log_text.startswith("=== ehr_input invocation ===\nexecutable: ehr_input.py\n")
-    assert 'parsed_options: {"clear_field": false, "fireworks_model": null, "google_ai_studio": false, "openrouter_model": null}' in log_text
+    assert 'parsed_options: {"clear_field": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": null}' in log_text
     assert 'positional_args: ["help"]' in log_text
     assert "usage called\n" in log_text
 
@@ -2268,6 +2337,30 @@ def test_segment_japanese_with_google_ai_studio_uses_runtime_aware_logs(monkeypa
     assert "Qwen分割結果" not in output
 
 
+def test_segment_japanese_with_novita_uses_runtime_aware_logs(monkeypatch):
+    monkeypatch.setenv("NOVITA_API_KEY", "token-novita")
+    monkeypatch.setattr(
+        ehr_input,
+        "segment_japanese_text_with_mlx_vlm",
+        lambda text: ('[{"text":"肺炎","romaji":"haien"}]', [{"text": "肺炎", "romaji": "haien"}]),
+    )
+    monkeypatch.setattr(ehr_input, "_kanji_to_romaji", lambda text: "haien")
+    stdout = io.StringIO()
+
+    ehr_input._configure_runtime(novita_model="google/gemma-4-31b-it")
+    try:
+        with redirect_stdout(stdout):
+            assert ehr_input._segment_japanese_with_default_vlm("肺炎") == [
+                {"text": "肺炎", "romaji": "haien"}
+            ]
+    finally:
+        ehr_input._configure_runtime(openrouter_model=None, novita_model=None, google_ai_studio=False)
+
+    output = stdout.getvalue()
+    assert "Novita(google/gemma-4-31b-it)分割結果" in output
+    assert "Qwen分割結果" not in output
+
+
 def test_segment_japanese_with_fireworks_uses_runtime_aware_logs(monkeypatch):
     monkeypatch.setenv("FIREWORKS_API_KEY", "token-fireworks")
     monkeypatch.setattr(
@@ -2295,6 +2388,50 @@ def test_segment_japanese_with_fireworks_uses_runtime_aware_logs(monkeypatch):
 def test_parse_cli_options_rejects_google_ai_studio_with_openrouter():
     with pytest.raises(RuntimeError, match="同時に指定できません"):
         ehr_input._parse_cli_options(["--google-ai-studio", "--openrouter", "qwen/qwen3.5-9b", "肺炎"])
+
+
+def test_parse_cli_options_parses_novita_default_model():
+    args, option_summary = ehr_input._parse_cli_options(["--novita", "肺炎"])
+
+    assert args == ["肺炎"]
+    assert option_summary == {
+        "clear_field": False,
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "google/gemma-4-31b-it",
+        "openrouter_model": None,
+    }
+
+
+def test_parse_cli_options_parses_novita_custom_model():
+    args, option_summary = ehr_input._parse_cli_options(["--novita", "deepseek/deepseek-vl2", "肺炎"])
+
+    assert args == ["肺炎"]
+    assert option_summary == {
+        "clear_field": False,
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "deepseek/deepseek-vl2",
+        "openrouter_model": None,
+    }
+
+
+def test_parse_cli_options_parses_novita_inline_model():
+    args, option_summary = ehr_input._parse_cli_options(["--novita=google/gemma-4-31b-it", "肺炎"])
+
+    assert args == ["肺炎"]
+    assert option_summary == {
+        "clear_field": False,
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": "google/gemma-4-31b-it",
+        "openrouter_model": None,
+    }
+
+
+def test_parse_cli_options_rejects_openrouter_with_novita():
+    with pytest.raises(RuntimeError, match="同時に指定できません"):
+        ehr_input._parse_cli_options(["--novita", "--openrouter", "qwen/qwen3.5-9b", "肺炎"])
 
 
 def test_parse_cli_options_rejects_fireworks_with_openrouter():

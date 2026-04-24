@@ -155,10 +155,13 @@ _CHAR_ASCII_FALLBACK: dict[str, str] = {
 
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 _FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+_NOVITA_CHAT_URL = "https://api.novita.ai/openai/chat/completions"
+_NOVITA_DEFAULT_MODEL = "google/gemma-4-31b-it"
 _GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _GOOGLE_AI_STUDIO_MODEL = "gemma-4-26b-a4b-it"
 _RUNTIME_OPTIONS = SimpleNamespace(
     openrouter_model=None,
+    novita_model=None,
     fireworks_model=None,
     google_ai_studio=False,
 )
@@ -240,6 +243,7 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
     """Split raw CLI args into positional arguments and normalized option state."""
     clear_field = False
     openrouter_model: Optional[str] = None
+    novita_model: Optional[str] = None
     fireworks_model: Optional[str] = None
     google_ai_studio = False
     filtered_args: list[str] = []
@@ -255,6 +259,15 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
                 raise RuntimeError("--fireworks の後にモデルIDを指定してください")
             fireworks_model = args[index + 1]
             index += 1
+        elif arg == "--novita":
+            novita_model, index = _parse_optional_provider_model(
+                args,
+                index,
+                option_name="--novita",
+                default_model=_NOVITA_DEFAULT_MODEL,
+            )
+        elif arg.startswith("--novita="):
+            novita_model = _parse_inline_provider_model(arg, option_name="--novita")
         elif arg == "--openrouter":
             if index + 1 >= len(args):
                 raise RuntimeError("--openrouter の後にモデル名を指定してください")
@@ -266,17 +279,59 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
             filtered_args.append(arg)
         index += 1
 
-    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(fireworks_model))
+    provider_count = (
+        int(bool(google_ai_studio))
+        + int(bool(openrouter_model))
+        + int(bool(novita_model))
+        + int(bool(fireworks_model))
+    )
     if provider_count > 1:
-        raise RuntimeError("--google-ai-studio / --openrouter / --fireworks は同時に指定できません")
+        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
 
     option_summary = {
         "clear_field": clear_field,
         "fireworks_model": fireworks_model,
         "google_ai_studio": google_ai_studio,
+        "novita_model": novita_model,
         "openrouter_model": openrouter_model,
     }
     return filtered_args, option_summary
+
+
+def _parse_inline_provider_model(arg: str, *, option_name: str) -> str:
+    _, _, model = arg.partition("=")
+    if not model:
+        raise RuntimeError(f"{option_name}= の後にモデルIDを指定してください")
+    return model
+
+
+def _parse_optional_provider_model(
+    args: list[str],
+    index: int,
+    *,
+    option_name: str,
+    default_model: str,
+) -> tuple[str, int]:
+    next_index = index + 1
+    if next_index >= len(args):
+        return default_model, index
+
+    candidate = args[next_index]
+    if candidate.startswith("--"):
+        return default_model, index
+
+    # `--novita` はモデル省略時に既定モデルへフォールバックするため、
+    # 位置引数の本文やファイルパスを誤ってモデルIDとして消費しない。
+    if next_index + 1 >= len(args) and not _looks_like_model_id(candidate):
+        return default_model, index
+
+    return candidate, next_index
+
+
+def _looks_like_model_id(candidate: str) -> bool:
+    if "/" not in candidate:
+        return False
+    return not Path(candidate).exists()
 
 
 def _build_run_log_header(
@@ -304,14 +359,21 @@ def _build_run_log_header(
 def _configure_runtime(
     *,
     openrouter_model: Optional[str] = None,
+    novita_model: Optional[str] = None,
     fireworks_model: Optional[str] = None,
     google_ai_studio: bool = False,
 ) -> None:
-    provider_count = int(bool(google_ai_studio)) + int(bool(openrouter_model)) + int(bool(fireworks_model))
+    provider_count = (
+        int(bool(google_ai_studio))
+        + int(bool(openrouter_model))
+        + int(bool(novita_model))
+        + int(bool(fireworks_model))
+    )
     if provider_count > 1:
-        raise RuntimeError("--google-ai-studio / --openrouter / --fireworks は同時に指定できません")
+        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
 
     _RUNTIME_OPTIONS.openrouter_model = openrouter_model
+    _RUNTIME_OPTIONS.novita_model = novita_model
     _RUNTIME_OPTIONS.fireworks_model = fireworks_model
     _RUNTIME_OPTIONS.google_ai_studio = google_ai_studio
 
@@ -350,6 +412,19 @@ def _configure_runtime(
         mlx_vlm_ime.MLX_VLM_IME_API_KEY = api_key
         mlx_vlm_ime.MLX_VLM_TEXT_URL = _FIREWORKS_CHAT_URL
         mlx_vlm_ime.MLX_VLM_TEXT_MODEL = fireworks_model
+        mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
+    elif novita_model:
+        api_key = os.getenv("NOVITA_API_KEY")
+        if not api_key:
+            raise RuntimeError("--novita を使うには NOVITA_API_KEY 環境変数が必要です")
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _NOVITA_CHAT_URL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = novita_model
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_IME_URL = _NOVITA_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_IME_MODEL = novita_model
+        mlx_vlm_ime.MLX_VLM_IME_API_KEY = api_key
+        mlx_vlm_ime.MLX_VLM_TEXT_URL = _NOVITA_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_TEXT_MODEL = novita_model
         mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
     elif openrouter_model:
         api_key = os.getenv("OPENROUTER_API_KEY")
@@ -3400,6 +3475,7 @@ def _print_usage() -> None:
     print("  --clear              入力前に Backspace を 50 回送信してフィールドをクリアする")
     print("  --fireworks <model>  文節分割・IME候補読取・ヘルパー単語提案を Fireworks AI のモデルで実行する")
     print(f"  --google-ai-studio   文節分割・IME候補読取・ヘルパー単語提案を Google AI Studio の {_GOOGLE_AI_STUDIO_MODEL} で実行する")
+    print(f"  --novita [model]     文節分割・IME候補読取・ヘルパー単語提案を Novita AI のモデルで実行する（省略時: {_NOVITA_DEFAULT_MODEL}）")
     print("  --openrouter <model> 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
     print("  --help, -h, help     このヘルプを表示")
     print()
@@ -3421,6 +3497,8 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input --clear 肺炎')
     print('  python -m automation.ehr_input --fireworks accounts/fireworks/models/gemma-4-26b-a4b-it "両肺野に"')
     print('  python -m automation.ehr_input --google-ai-studio "両肺野に"')
+    print('  python -m automation.ehr_input --novita "両肺野に"')
+    print('  python -m automation.ehr_input --novita deepseek/deepseek-vl2 "聴診"')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-9b "両肺野に"')
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-35b-a3b "聴診"')
     print('  python -m automation.ehr_input "COVID-19の検査"')
@@ -3433,12 +3511,14 @@ def _print_usage() -> None:
 def _run_cli_with_parsed_args(args: list[str], option_summary: dict[str, object]) -> int:
     """Run the CLI using already-normalized option state."""
     openrouter_model = option_summary["openrouter_model"]
+    novita_model = option_summary["novita_model"]
     fireworks_model = option_summary["fireworks_model"]
     google_ai_studio = bool(option_summary["google_ai_studio"])
     clear_field = bool(option_summary["clear_field"])
 
     _configure_runtime(
         openrouter_model=openrouter_model,
+        novita_model=novita_model,
         fireworks_model=fireworks_model,
         google_ai_studio=google_ai_studio,
     )

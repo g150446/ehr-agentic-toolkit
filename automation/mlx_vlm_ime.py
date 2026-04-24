@@ -40,6 +40,7 @@ MLX_VLM_TEXT_URL = os.getenv("MLX_VLM_TEXT_URL", MLX_VLM_IME_URL)
 MLX_VLM_TEXT_API_KEY = os.getenv("MLX_VLM_TEXT_API_KEY", MLX_VLM_IME_API_KEY)
 _OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 _FIREWORKS_CHAT_URL = "https://api.fireworks.ai/inference/v1/chat/completions"
+_NOVITA_CHAT_URL = "https://api.novita.ai/openai/chat/completions"
 _GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _OPENROUTER_HTTP_REFERER = os.getenv(
     "OPENROUTER_HTTP_REFERER",
@@ -67,6 +68,8 @@ def describe_runtime(*, url: Optional[str], model: Optional[str], default_kind: 
         return f"OpenRouter({model_name})"
     if url and _FIREWORKS_CHAT_URL in url:
         return f"Fireworks({model_name})"
+    if url and _NOVITA_CHAT_URL in url:
+        return f"Novita({model_name})"
     if url and url.startswith(_GOOGLE_AI_STUDIO_API_BASE):
         return f"Google AI Studio({model_name})"
     return f"{default_kind}({model_name})"
@@ -78,6 +81,10 @@ def _is_openrouter_url(url: Optional[str]) -> bool:
 
 def _is_fireworks_url(url: Optional[str]) -> bool:
     return bool(url and _FIREWORKS_CHAT_URL in url)
+
+
+def _is_novita_url(url: Optional[str]) -> bool:
+    return bool(url and _NOVITA_CHAT_URL in url)
 
 
 def _is_google_ai_studio_url(url: Optional[str]) -> bool:

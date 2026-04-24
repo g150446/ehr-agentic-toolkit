@@ -24,6 +24,7 @@ Automated EHR field input and patient chart opening via HDMI screen capture, OCR
 
 > `--openrouter` は **文節分割・IME モード検出・候補読取・ヘルパー単語提案** を OpenRouter 側へ切り替えます。画像付き IME 読取も行うため、**vision 対応のモデル**を指定してください。
 > `--fireworks <model>` は同じ外部 VLM 呼び出しを **Fireworks AI** の OpenAI 互換 API へ切り替えます（要 `FIREWORKS_API_KEY`）。
+> `--novita [model]` は同じ外部 VLM 呼び出しを **Novita AI** の OpenAI 互換 API へ切り替えます（要 `NOVITA_API_KEY`）。モデル省略時は `google/gemma-4-31b-it` を使います。
 > `--google-ai-studio` は同じ外部 VLM 呼び出しを **Google AI Studio の `gemma-4-26b-a4b-it`** へ切り替えます（要 `GEMINI_API_KEY`）。
 
 ```bash
@@ -51,6 +52,12 @@ python -m automation.ehr_input "COVID-19の感染を確認した"
 
 # OpenRouter のモデルで文節分割・候補読取・ヘルパー単語提案を実行
 python -m automation.ehr_input --openrouter google/gemma-4-26b-a4b-it "両肺野に"
+
+# Novita AI のデフォルトモデルで文節分割・候補読取・ヘルパー単語提案を実行
+python -m automation.ehr_input --novita "両肺野に"
+
+# Novita AI の指定モデルで文節分割・候補読取・ヘルパー単語提案を実行
+python -m automation.ehr_input --novita deepseek/deepseek-vl2 "聴診"
 
 # Fireworks AI のモデルで文節分割・候補読取・ヘルパー単語提案を実行
 python -m automation.ehr_input --fireworks accounts/fireworks/models/gemma-4-26b-a4b-it "両肺野に"
@@ -268,7 +275,7 @@ type_kanji_via_ime(romaji, "肺炎")
 
 Windows IME の現在入力モードをスクリーンキャプチャから判定し、必要に応じて切替える。
 
-**`detect_ime_mode(client, config)`**: `'a'` を1文字入力し、Qwen3-VL（omlx VLM サーバー）で画面を読み取って IME モードを検出する。英語入力モードなら `'a'` が、日本語（ひらがな）入力モードなら `'あ'` が表示される。判定後に Backspace で入力した文字を削除する。`--openrouter` 指定時は OpenRouter のモデル、`--fireworks` 指定時は Fireworks AI の指定モデル、`--google-ai-studio` 指定時は Google AI Studio の `gemma-4-26b-a4b-it` を使用する。
+**`detect_ime_mode(client, config)`**: `'a'` を1文字入力し、Qwen3-VL（omlx VLM サーバー）で画面を読み取って IME モードを検出する。英語入力モードなら `'a'` が、日本語（ひらがな）入力モードなら `'あ'` が表示される。判定後に Backspace で入力した文字を削除する。`--openrouter` 指定時は OpenRouter のモデル、`--novita` 指定時は Novita AI の指定モデル（省略時は `google/gemma-4-31b-it`）、`--fireworks` 指定時は Fireworks AI の指定モデル、`--google-ai-studio` 指定時は Google AI Studio の `gemma-4-26b-a4b-it` を使用する。
 
 **`ensure_ime_mode(target_mode, client, current_mode)`**: 現在モードが目標と異なる場合のみ `key:zenkaku`（半角/全角キー）を送信してトグルし、新しいモード文字列を返す。画面再キャプチャはしない設計で、呼び出し元がモードをトラッキングする。
 
