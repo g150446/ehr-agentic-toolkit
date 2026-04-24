@@ -1758,6 +1758,25 @@ def test_detect_patient_record_panel3_saves_opencv_overlay(monkeypatch):
     assert saved == [((240, 600, 3), "helper_reset_panel", "debug_panel_detection")]
 
 
+def test_select_divider_group_handles_extra_lines_around_patient_record_panes():
+    dividers = [224, 272, 974, 1000, 1628, 1717]
+
+    assert mlx_vlm_ime._select_divider_group(dividers, width=1920) == [272, 974, 1628, 1717]
+
+
+def test_detect_patient_record_panel3_ignores_spurious_extra_dividers(monkeypatch):
+    frame = _make_frame(1080, 1920)
+
+    monkeypatch.setattr(mlx_vlm_ime, "_find_gray_divider_candidates", lambda image: [224, 1626, 1636])
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_find_hough_divider_candidates",
+        lambda image: [221, 228, 272, 972, 975, 999, 1001, 1616, 1618, 1634, 1638, 1716, 1718],
+    )
+
+    assert mlx_vlm_ime.detect_patient_record_panel3(frame) == (974, 1628)
+
+
 def test_assess_helper_reset_state_requests_panel_and_vlm_debug(monkeypatch):
     frame = _make_frame()
     calls = []

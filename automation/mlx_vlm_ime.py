@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime
+from itertools import combinations
 import json
 import os
 import re
@@ -315,13 +316,22 @@ def _select_divider_group(dividers: list[int], *, width: int) -> Optional[list[i
         return dividers
 
     best_group: Optional[list[int]] = None
-    best_score: Optional[float] = None
-    for start in range(0, len(dividers) - 3):
-        group = dividers[start:start + 4]
+    best_score: Optional[tuple[float, float, int, int]] = None
+    min_gap = width * 0.04
+    max_gap = width * 0.45
+    for group_tuple in combinations(dividers, 4):
+        group = list(group_tuple)
         gaps = np.diff(group)
-        if np.any(gaps < width * 0.05) or np.any(gaps > width * 0.45):
+        if np.any(gaps < min_gap) or np.any(gaps > max_gap):
             continue
-        score = float(np.std(gaps))
+        # Prefer combinations whose first three panes are similarly spaced,
+        # while still favoring groups that span more of the screen.
+        score = (
+            float(np.std(gaps[:2])),
+            float(np.std(gaps)),
+            -(group[-1] - group[0]),
+            group[0],
+        )
         if best_score is None or score < best_score:
             best_score = score
             best_group = group
