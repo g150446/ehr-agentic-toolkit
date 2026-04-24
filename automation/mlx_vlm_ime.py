@@ -645,19 +645,35 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
 def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
     """IME ポップアップ候補リストの領域を切り出す。
 
-    1. 全画面で青い選択バーを HSV 検出して精密クロップ（Win10 IME）
-    2. 失敗時は input_region にクロップして暗い領域を検出（Win7 反転）
-    3. それも失敗時は中央帯クロップ
+    1. patient_record では第3ペインに限定して青い選択バーを HSV 検出
+    2. それ以外は全画面で青い選択バーを HSV 検出（Win10 IME）
+    3. 失敗時は input_region にクロップして暗い領域を検出（Win7 反転）
+    4. それも失敗時は中央帯クロップ
     """
-    # Win10: 全フレームで青いハイライトバーを精密クロップ
-    popup = crop_to_ime_popup_by_blue(frame)
+    popup_search_region = frame
+    panel_bounds = _helper_reset_panel_bounds or detect_patient_record_panel3(frame)
+    if panel_bounds is not None:
+        popup_search_region = crop_to_input_region(
+            frame,
+            debug_name=f"popup_region_{debug_name or 'current'}",
+            panel_bounds=panel_bounds,
+        )
+        popup_search_region = _crop_center_band(
+            popup_search_region,
+            top_ratio=0.25,
+            bottom_ratio=0.85,
+        )
+
+    popup = crop_to_ime_popup_by_blue(popup_search_region)
     if popup is not None:
         if debug_name:
             _save_debug_popup(popup, debug_name)
         return popup
 
     # フォールバック: 入力ペインに限定してグレースケール閾値で検出
-    roi = crop_to_input_region(frame, debug_name=f"popup_region_{debug_name or 'current'}")
+    roi = popup_search_region
+    if panel_bounds is None:
+        roi = crop_to_input_region(frame, debug_name=f"popup_region_{debug_name or 'current'}")
     center_y = _find_dark_region_y(roi)
     fh = roi.shape[0]
 

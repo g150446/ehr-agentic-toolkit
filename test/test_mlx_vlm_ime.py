@@ -250,6 +250,63 @@ def test_crop_helper_reset_region_uses_notepad_branch(monkeypatch):
     assert cropped.shape == (40, 80, 3)
 
 
+def test_crop_popup_region_limits_patient_record_to_panel_before_blue_detection(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+    calls = []
+
+    monkeypatch.setattr(mlx_vlm_ime, "detect_patient_record_panel3", lambda image: (40, 160))
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_input_region",
+        lambda image, debug_name="", panel_bounds=None: calls.append(
+            ("panel", image.shape, debug_name, panel_bounds)
+        ) or np.ones((90, 120, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "_crop_center_band",
+        lambda image, top_ratio=0.25, bottom_ratio=0.85: calls.append(
+            ("band", image.shape, top_ratio, bottom_ratio)
+        ) or np.ones((54, 120, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_ime_popup_by_blue",
+        lambda image: calls.append(("blue", image.shape)) or np.full((30, 50, 3), 255, dtype=np.uint8),
+    )
+
+    cropped = mlx_vlm_ime._crop_popup_region(frame, debug_name="line")
+
+    assert cropped.shape == (30, 50, 3)
+    assert calls == [
+        ("panel", frame.shape, "popup_region_line", (40, 160)),
+        ("band", (90, 120, 3), 0.25, 0.85),
+        ("blue", (54, 120, 3)),
+    ]
+
+
+def test_crop_popup_region_uses_full_frame_blue_detection_when_not_patient_record(monkeypatch):
+    frame = np.zeros((120, 240, 3), dtype=np.uint8)
+    calls = []
+
+    monkeypatch.setattr(mlx_vlm_ime, "detect_patient_record_panel3", lambda image: None)
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_ime_popup_by_blue",
+        lambda image: calls.append(("blue", image.shape)) or np.full((20, 40, 3), 255, dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        mlx_vlm_ime,
+        "crop_to_input_region",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fallback should not run")),
+    )
+
+    cropped = mlx_vlm_ime._crop_popup_region(frame, debug_name="line")
+
+    assert cropped.shape == (20, 40, 3)
+    assert calls == [("blue", frame.shape)]
+
+
 def test_save_thinking_log_writes_reasoning_details(tmp_path, monkeypatch):
     monkeypatch.setattr(mlx_vlm_ime, "_logs_dir", lambda: str(tmp_path))
 
