@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CoreGraphics
 
 // MARK: - ChatMessage
 struct ChatMessage {
@@ -11,11 +12,13 @@ struct ChatMessage {
 class ChatViewController: NSViewController {
     private var scrollView: NSScrollView!
     private var textView: NSTextView!
-    private var inputField: NSTextField!
+    private var inputView: NSTextView!
     private var sendButton: NSButton!
+    private var debugButton: NSButton!
     private var modelSelector: NSPopUpButton!
     private var messages: [ChatMessage] = []
     private var isStreaming = false
+    private var debugMode = false
 
     private let apiBase = "http://localhost:8000/v1"
     private let apiKey = "penguin"
@@ -68,17 +71,43 @@ class ChatViewController: NSViewController {
 
         scrollView.documentView = textView
 
-        let inputBar = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 50))
+        let inputBar = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 100))
         inputBar.autoresizingMask = [.width, .maxYMargin]
 
-        inputField = NSTextField(frame: NSRect(x: 10, y: 10, width: 1, height: 30))
-        inputField.autoresizingMask = [.width]
-        inputField.placeholderString = "Type a message..."
-        inputField.delegate = self
-        inputField.focusRingType = .none
-        inputBar.addSubview(inputField)
+        let inputScrollView = NSScrollView()
+        inputScrollView.hasVerticalScroller = false
+        inputScrollView.borderType = .bezelBorder
+        inputScrollView.autoresizingMask = [.width]
 
-        sendButton = NSButton(frame: NSRect(x: 0, y: 10, width: 70, height: 30))
+        inputView = NSTextView()
+        inputView.isEditable = true
+        inputView.isRichText = false
+        inputView.font = NSFont.systemFont(ofSize: 14)
+        inputView.backgroundColor = NSColor.textBackgroundColor
+        inputView.drawsBackground = true
+        inputView.isAutomaticQuoteSubstitutionEnabled = false
+        inputView.isAutomaticDashSubstitutionEnabled = false
+        inputView.isAutomaticTextReplacementEnabled = false
+        inputView.delegate = self
+        inputView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        inputView.textContainer?.widthTracksTextView = true
+
+        inputScrollView.documentView = inputView
+
+        let buttonWidth: CGFloat = 70
+        inputScrollView.frame = NSRect(x: 10, y: 10, width: 1, height: 80)
+        inputBar.addSubview(inputScrollView)
+
+        debugButton = NSButton(frame: NSRect(x: 0, y: 60, width: buttonWidth, height: 30))
+        debugButton.title = "Debug"
+        debugButton.bezelStyle = .rounded
+        debugButton.autoresizingMask = [.minXMargin]
+        debugButton.target = self
+        debugButton.action = #selector(debugAction)
+        debugButton.isHidden = true
+        inputBar.addSubview(debugButton)
+
+        sendButton = NSButton(frame: NSRect(x: 0, y: 10, width: buttonWidth, height: 30))
         sendButton.title = "Send"
         sendButton.bezelStyle = .rounded
         sendButton.autoresizingMask = [.minXMargin]
@@ -98,21 +127,100 @@ class ChatViewController: NSViewController {
         let topBar = view.subviews[0]
         let inputBar = view.subviews[2]
 
+        let inputBarHeight: CGFloat = 100
         topBar.frame = NSRect(x: 0, y: viewFrame.height - 40, width: viewFrame.width, height: 40)
-        scrollView.frame = NSRect(x: 0, y: 50, width: viewFrame.width, height: viewFrame.height - 90)
-        inputBar.frame = NSRect(x: 0, y: 0, width: viewFrame.width, height: 50)
+        scrollView.frame = NSRect(x: 0, y: inputBarHeight, width: viewFrame.width, height: viewFrame.height - inputBarHeight - 40)
+        inputBar.frame = NSRect(x: 0, y: 0, width: viewFrame.width, height: inputBarHeight)
 
-        let sendButtonWidth: CGFloat = 70
-        inputField.frame = NSRect(x: 10, y: 10, width: viewFrame.width - sendButtonWidth - 20, height: 30)
-        sendButton.frame = NSRect(x: viewFrame.width - sendButtonWidth - 10, y: 10, width: sendButtonWidth, height: 30)
+        let buttonWidth: CGFloat = 70
+        let inputScrollView = inputBar.subviews[0] as? NSScrollView
+        inputScrollView?.frame = NSRect(x: 10, y: 10, width: viewFrame.width - buttonWidth - 20, height: 80)
+
+        debugButton.frame = NSRect(x: viewFrame.width - buttonWidth - 10, y: 60, width: buttonWidth, height: 30)
+        sendButton.frame = NSRect(x: viewFrame.width - buttonWidth - 10, y: 10, width: buttonWidth, height: 30)
 
         modelSelector.frame = NSRect(x: 60, y: 7, width: viewFrame.width - 70, height: 25)
+    }
+
+    func setDebugMode(_ enabled: Bool) {
+        debugMode = enabled
+        debugButton.isHidden = !enabled
+        view.needsLayout = true
     }
 
     @objc private func modelChanged(_ sender: NSPopUpButton) {
         if let selected = sender.selectedItem?.title {
             currentModel = selected
         }
+    }
+
+    @objc private func debugAction() {
+        debugButton.isEnabled = false
+        debugButton.title = "Wait..."
+
+        DispatchQueue.global().async { [weak self] in
+            Thread.sleep(forTimeInterval: 3)
+
+            guard let event = CGEvent(source: nil) else {
+                DispatchQueue.main.async {
+                    self?.debugButton.isEnabled = true
+                    self?.debugButton.title = "Debug"
+                }
+                return
+            }
+            let cursorPosition = event.location
+
+            let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: cursorPosition, mouseButton: .left)
+            let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: cursorPosition, mouseButton: .left)
+            clickDown?.post(tap: .cghidEventTap)
+            clickUp?.post(tap: .cghidEventTap)
+
+            Thread.sleep(forTimeInterval: 0.5)
+
+            let source = CGEventSource(stateID: .hidSystemState)
+            for char in "test" {
+                if let keyCode = self?.charToKeyCode(char) {
+                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+                    keyDown?.post(tap: .cghidEventTap)
+                    keyUp?.post(tap: .cghidEventTap)
+                }
+            }
+
+            Thread.sleep(forTimeInterval: 0.5)
+
+            let desktopURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/debug_screenshot.png")
+            var windowID: Int = 0
+            if let windowInfo = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+                for info in windowInfo {
+                    if let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+                       let ownerName = info[kCGWindowOwnerName as String] as? String,
+                       ownerName != "Window Server",
+                       ownerName != "Dock",
+                       let winNum = info[kCGWindowNumber as String] as? Int {
+                        windowID = winNum
+                        break
+                    }
+                }
+            }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            process.arguments = ["-x", "-l", "\(windowID)", desktopURL.path]
+            try? process.run()
+            process.waitUntilExit()
+
+            DispatchQueue.main.async {
+                self?.debugButton.isEnabled = true
+                self?.debugButton.title = "Debug"
+            }
+        }
+    }
+
+    private func charToKeyCode(_ char: Character) -> CGKeyCode? {
+        let keyMap: [Character: CGKeyCode] = [
+            "t": 17, "e": 14, "s": 1,
+        ]
+        return keyMap[char]
     }
 
     private func authHeader() -> String {
@@ -151,16 +259,16 @@ class ChatViewController: NSViewController {
     }
 
     @objc private func sendMessage() {
-        let text = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = inputView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
 
         messages.append(ChatMessage(role: "user", content: text))
-        inputField.stringValue = ""
+        inputView.string = ""
         appendMessage(role: "user", content: text)
 
         isStreaming = true
         sendButton.isEnabled = false
-        inputField.isEnabled = false
+        inputView.isEditable = false
 
         appendMessage(role: "assistant", content: "")
 
@@ -263,18 +371,18 @@ class ChatViewController: NSViewController {
                 self?.messages.append(ChatMessage(role: "assistant", content: assistantContent))
                 self?.isStreaming = false
                 self?.sendButton.isEnabled = true
-                self?.inputField.isEnabled = true
-                self?.inputField.becomeFirstResponder()
+                self?.inputView.isEditable = true
+                self?.inputView.becomeFirstResponder()
             }
         }
         task.resume()
     }
 }
 
-// MARK: - NSTextFieldDelegate
-extension ChatViewController: NSTextFieldDelegate {
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+// MARK: - NSTextViewDelegate
+extension ChatViewController: NSTextViewDelegate {
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) && NSEvent.modifierFlags.contains(.command) {
             sendMessage()
             return true
         }
@@ -285,6 +393,8 @@ extension ChatViewController: NSTextFieldDelegate {
 // MARK: - AppDelegate
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
+    var chatVC: ChatViewController!
+    var debugMenuItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
@@ -305,7 +415,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "AI Chat"
         window.minSize = NSSize(width: 300, height: 200)
 
-        let chatVC = ChatViewController()
+        chatVC = ChatViewController()
         window.contentViewController = chatVC
 
         window.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
@@ -318,6 +428,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
 
+        debugMenuItem = NSMenuItem(
+            title: "Debug Mode",
+            action: #selector(toggleDebugMode(_:)),
+            keyEquivalent: ""
+        )
+        debugMenuItem.target = self
+        appMenu.addItem(debugMenuItem)
+
         let quitMenuItem = NSMenuItem(
             title: "Quit AI Chat",
             action: #selector(NSApplication.terminate(_:)),
@@ -329,6 +447,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func toggleDebugMode(_ sender: NSMenuItem) {
+        debugMenuItem.state = debugMenuItem.state == .on ? .off : .on
+        chatVC?.setDebugMode(debugMenuItem.state == .on)
     }
 }
 
