@@ -914,25 +914,153 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
             best = (x, y, w, h)
 
     if best is None:
+        print(f"  [popup_crop] 水色選択行を検出できませんでした (frame={fw}x{fh})")
         return None
 
     x, y, w, h = best
+    print(f"  [popup_crop] 水色選択行: x={x}, y={y}, w={w}, h={h} (frame={fw}x{fh})")
+    # 選択行が1番目とは限らないため、上方向へ十分に拡張して
+    # ポップアップの先頭候補を含むようにする。
+    # 各行の高さは約 h と同等なので、上方向へ 5 行分、下方向へ 12 行分確保する。
     roi_x1 = max(0, x - 5)
-    roi_y1 = max(0, y - int(h * 1.5))
+    roi_y1 = max(0, y - int(h * 5))
     roi_x2 = min(fw, roi_x1 + w + 10)
-    roi_y2 = min(fh, roi_y1 + int(h * 9.5))
+    roi_y2 = min(fh, roi_y1 + int(h * 12))
+    print(f"  [popup_crop] クロップ範囲: x=[{roi_x1}:{roi_x2}], y=[{roi_y1}:{roi_y2}]")
     if roi_x2 - roi_x1 < 60 or roi_y2 - roi_y1 < 40:
         return None
     return frame[roi_y1:roi_y2, roi_x1:roi_x2]
+
+
+def crop_to_ime_popup_by_corner(frame: np.ndarray, *, debug_name: str = "") -> Optional[np.ndarray]:
+    """IME ポップアップの右下端 >> アイコンをテンプレートマッチングで検出し、
+    輪郭抽出でポップアップ外枠を切り出す。
+    """
+    fh, fw = frame.shape[:2]
+
+    # 1. テンプレート読み込み
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "match_templates", "ime_right_corner.png"
+    )
+    tmpl = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+    if tmpl is None:
+        print(f"  [popup_crop_corner] テンプレートを読み込めません: {template_path}")
+        return None
+
+    # 2. テンプレートマッチング
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    result = cv2.matchTemplate(gray, tmpl, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+    print(f"  [popup_crop_corner] テンプレートマッチング スコア: {max_val:.3f}")
+    if max_val < 0.5:
+        print(f"  [popup_crop_corner] スコアが低すぎます (閾値 0.5)")
+        return None
+
+    mx, my = max_loc
+    tw, th = tmpl.shape[::-1]
+    print(f"  [popup_crop_corner] >> 検出: x={mx}, y={my}, w={tw}, h={th}")
+
+    # >> の中心座標
+    cx = mx + tw // 2
+    cy = my + th // 2
+
+    # 3. ROI 設定: >> の左上方向にポップアップが広がる
+    roi_x1 = max(0, cx - 400)
+    roi_y1 = max(0, cy - 500)
+    roi_x2 = min(fw, cx + 30)
+    roi_y2 = min(fh, cy + 30)
+
+    roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+    if roi.size == 0:
+        print(f"  [popup_crop_corner] ROI が空です")
+        return None
+
+    print(f"  [popup_crop_corner] ROI: x=[{roi_x1}:{roi_x2}], y=[{roi_y1}:{roi_y2}]")
+
+    # 4. 輪郭抽出で外枠を検出
+    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+    # ガウシアンブラーでノイズ除去
+    blurred = cv2.GaussianBlur(roi_gray, (5, 5), 0)
+
+    # Cannyエッジ検出
+    edges = cv2.Canny(blurred, 30, 100)
+
+    # エッジを少し太くして連続性を持たせる
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edges = cv2.dilate(edges, kernel, iterations=1)
+
+    # 輪郭検出
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        # ROI内の座標をフレーム座標に変換
+        abs_x = roi_x1 + x
+        abs_y = roi_y1 + y
+        abs_x2 = abs_x + w
+        abs_y2 = abs_y + h
+
+        # フィルタ条件
+        if w < 60 or w > 500:
+            continue
+        if h < 100 or h > 600:
+            continue
+        if h < w * 0.3:  # あまり横長すぎるものは除外（入力欄等）
+            continue
+
+        # >> の位置を含むかチェック（右下端付近）
+        contains_corner = (abs_x <= cx <= abs_x2) and (abs_y <= cy <= abs_y2)
+
+        # 右下端から >> までの距離
+        dist_to_corner = ((abs_x2 - cx) ** 2 + (abs_y2 - cy) ** 2) ** 0.5
+
+        candidates.append({
+            'rect': (abs_x, abs_y, w, h),
+            'contains_corner': contains_corner,
+            'dist_to_corner': dist_to_corner,
+            'area': w * h,
+        })
+
+    if not candidates:
+        print(f"  [popup_crop_corner] 輪郭から有効な矩形が見つかりませんでした")
+        return None
+
+    # 優先: >> を含む矩形 > >> に最も近い右下端 > 面積最大
+    candidates_with_corner = [c for c in candidates if c['contains_corner']]
+    if candidates_with_corner:
+        best = max(candidates_with_corner, key=lambda c: c['area'])
+        print(f"  [popup_crop_corner] >> を含む矩形を選択: {best['rect']}")
+    else:
+        best = min(candidates, key=lambda c: c['dist_to_corner'])
+        print(f"  [popup_crop_corner] >> に最も近い矩形を選択: {best['rect']}")
+
+    x, y, w, h = best['rect']
+
+    # 少し余裕を持たせてクロップ
+    pad = 5
+    crop_x1 = max(0, x - pad)
+    crop_y1 = max(0, y - pad)
+    crop_x2 = min(fw, x + w + pad)
+    crop_y2 = min(fh, y + h + pad)
+
+    print(f"  [popup_crop_corner] クロップ範囲: x=[{crop_x1}:{crop_x2}], y=[{crop_y1}:{crop_y2}]")
+
+    return frame[crop_y1:crop_y2, crop_x1:crop_x2]
 
 
 def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
     """IME ポップアップ候補リストの領域を切り出す。
 
     1. patient_record では第3ペイン + 中央帯に限定
-    2. そのスコープ内で水色の選択行を検出し、候補ウィンドウ全体を推定
-    3. 失敗時は入力領域で暗い反転候補を検出
-    4. 最後は中央帯クロップ
+    2. そのスコープ内で >> コーナーアイコンを検出し、輪郭抽出でウィンドウ全体を推定
+    3. フォールバック: 水色の選択行を検出
+    4. さらにフォールバック: 入力領域で暗い反転候補を検出
+    5. 最後は中央帯クロップ
     """
     popup_search_region = frame
     panel_bounds = _helper_reset_panel_bounds or detect_patient_record_panel3(frame)
@@ -947,6 +1075,12 @@ def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray
             top_ratio=0.25,
             bottom_ratio=0.85,
         )
+
+    popup = crop_to_ime_popup_by_corner(popup_search_region, debug_name=debug_name)
+    if popup is not None:
+        if debug_name:
+            _save_debug_popup(popup, debug_name)
+        return popup
 
     popup = crop_to_ime_popup_by_blue(popup_search_region)
     if popup is not None:

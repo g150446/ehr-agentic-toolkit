@@ -208,6 +208,9 @@ _NOVITA_CHAT_URL = "https://api.novita.ai/openai/chat/completions"
 _NOVITA_DEFAULT_MODEL = "google/gemma-4-31b-it"
 _GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _GOOGLE_AI_STUDIO_MODEL = "gemma-4-26b-a4b-it"
+_OMLX_CHAT_URL = "http://localhost:8000/v1/chat/completions"
+_OMLX_DEFAULT_MODEL = "gemma-4-26b-a4b-it-4bit"
+_OMLX_API_KEY = "penguin"
 _RUNTIME_OPTIONS = SimpleNamespace(
     dual_provider_model=None,
     dual_provider_turn=0,
@@ -215,6 +218,8 @@ _RUNTIME_OPTIONS = SimpleNamespace(
     novita_model=None,
     fireworks_model=None,
     google_ai_studio=False,
+    omlx=False,
+    omlx_model=None,
 )
 _DEFAULT_SEGMENTATION_RUNTIME = {
     "url": mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
@@ -298,6 +303,8 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
     novita_model: Optional[str] = None
     fireworks_model: Optional[str] = None
     google_ai_studio = False
+    omlx = False
+    omlx_model: Optional[str] = None
     filtered_args: list[str] = []
     index = 0
     while index < len(args):
@@ -331,6 +338,17 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         elif arg.startswith("--openrouter="):
             openrouter_requested = True
             openrouter_model = _parse_inline_provider_model(arg, option_name="--openrouter")
+        elif arg == "--omlx":
+            omlx = True
+            omlx_model, index = _parse_optional_provider_model(
+                args,
+                index,
+                option_name="--omlx",
+                default_model=_OMLX_DEFAULT_MODEL,
+            )
+        elif arg.startswith("--omlx="):
+            omlx = True
+            omlx_model = _parse_inline_provider_model(arg, option_name="--omlx")
         elif arg.startswith("--"):
             raise RuntimeError(f"不明なオプション: {arg}")
         else:
@@ -350,9 +368,10 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         int(bool(google_ai_studio))
         + int(bool(fireworks_model))
         + int(bool(openrouter_model or novita_model))
+        + int(bool(omlx))
     )
     if conflicting_provider_count > 1:
-        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
+        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks / --omlx は同時に指定できません")
 
     option_summary = {
         "clear_field": clear_field,
@@ -360,6 +379,8 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         "fireworks_model": fireworks_model,
         "google_ai_studio": google_ai_studio,
         "novita_model": novita_model,
+        "omlx": omlx,
+        "omlx_model": omlx_model,
         "openrouter_model": openrouter_model,
     }
     return filtered_args, option_summary
@@ -487,14 +508,17 @@ def _configure_runtime(
     novita_model: Optional[str] = None,
     fireworks_model: Optional[str] = None,
     google_ai_studio: bool = False,
+    omlx: bool = False,
+    omlx_model: Optional[str] = None,
 ) -> None:
     conflicting_provider_count = (
         int(bool(google_ai_studio))
         + int(bool(fireworks_model))
         + int(bool(openrouter_model or novita_model))
+        + int(bool(omlx))
     )
     if conflicting_provider_count > 1:
-        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
+        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks / --omlx は同時に指定できません")
 
     if openrouter_model and novita_model and openrouter_model != novita_model:
         raise RuntimeError("--openrouter と --novita を併用する場合は同じモデルIDを指定してください")
@@ -512,6 +536,8 @@ def _configure_runtime(
     _RUNTIME_OPTIONS.novita_model = novita_model
     _RUNTIME_OPTIONS.fireworks_model = fireworks_model
     _RUNTIME_OPTIONS.google_ai_studio = google_ai_studio
+    _RUNTIME_OPTIONS.omlx = omlx
+    _RUNTIME_OPTIONS.omlx_model = omlx_model
 
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _DEFAULT_SEGMENTATION_RUNTIME["url"]
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = _DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -577,6 +603,17 @@ def _configure_runtime(
         mlx_vlm_ime.MLX_VLM_TEXT_URL = _OPENROUTER_CHAT_URL
         mlx_vlm_ime.MLX_VLM_TEXT_MODEL = openrouter_model
         mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
+    elif omlx:
+        model = omlx_model or _OMLX_DEFAULT_MODEL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _OMLX_CHAT_URL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = model
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = _OMLX_API_KEY
+        mlx_vlm_ime.MLX_VLM_IME_URL = _OMLX_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_IME_MODEL = model
+        mlx_vlm_ime.MLX_VLM_IME_API_KEY = _OMLX_API_KEY
+        mlx_vlm_ime.MLX_VLM_TEXT_URL = _OMLX_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_TEXT_MODEL = model
+        mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = _OMLX_API_KEY
 
 
 def _runtime_label(*, url: str, model: str, default_kind: str = "VLM") -> str:
@@ -3794,6 +3831,7 @@ def _print_usage() -> None:
     print(f"  --novita [model]     文節分割・IME候補読取・ヘルパー単語提案を Novita AI のモデルで実行する（省略時: {_NOVITA_DEFAULT_MODEL}）")
     print("  --openrouter [model] 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
     print(f"                      --novita と併用した場合は OpenRouter / Novita を交互に使う（共有モデル省略時: {_NOVITA_DEFAULT_MODEL}）")
+    print(f"  --omlx [model]       文節分割・IME候補読取・ヘルパー単語提案をローカル omlx サーバーで実行する（省略時: {_OMLX_DEFAULT_MODEL}）")
     print("  --help, -h, help     このヘルプを表示")
     print()
     print("コマンド:")
@@ -3820,6 +3858,8 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-35b-a3b "聴診"')
     print('  python -m automation.ehr_input --openrouter --novita "両肺野に"')
     print('  python -m automation.ehr_input --openrouter --novita deepseek/deepseek-vl2 "聴診"')
+    print('  python -m automation.ehr_input --omlx "両肺野に"')
+    print(f'  python -m automation.ehr_input --omlx={_OMLX_DEFAULT_MODEL} "聴診"')
     print('  python -m automation.ehr_input "COVID-19の検査"')
     print('  python -m automation.ehr_input note.txt')
     print('  python -m automation.ehr_input "open test" 肺炎')
@@ -3834,12 +3874,16 @@ def _run_cli_with_parsed_args(args: list[str], option_summary: dict[str, object]
     fireworks_model = option_summary["fireworks_model"]
     google_ai_studio = bool(option_summary["google_ai_studio"])
     clear_field = bool(option_summary["clear_field"])
+    omlx = bool(option_summary["omlx"])
+    omlx_model = option_summary["omlx_model"]
 
     _configure_runtime(
         openrouter_model=openrouter_model,
         novita_model=novita_model,
         fireworks_model=fireworks_model,
         google_ai_studio=google_ai_studio,
+        omlx=omlx,
+        omlx_model=omlx_model,
     )
 
     if not args:

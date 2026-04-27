@@ -137,6 +137,8 @@ def test_run_cli_parses_openrouter(monkeypatch):
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": None,
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": "qwen/qwen3.5-9b",
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -162,6 +164,8 @@ def test_run_cli_parses_novita_default_model(monkeypatch):
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "google/gemma-4-31b-it",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": None,
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -187,6 +191,8 @@ def test_run_cli_parses_novita_custom_model(monkeypatch):
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "deepseek/deepseek-vl2",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": None,
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -212,6 +218,8 @@ def test_run_cli_parses_dual_openrouter_and_novita_default_model(monkeypatch):
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "google/gemma-4-31b-it",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": "google/gemma-4-31b-it",
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -237,6 +245,8 @@ def test_run_cli_parses_fireworks(monkeypatch):
         "fireworks_model": "accounts/fireworks/models/gemma-4-26b-a4b-it",
         "google_ai_studio": False,
         "novita_model": None,
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": None,
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -262,6 +272,8 @@ def test_run_cli_parses_google_ai_studio(monkeypatch):
         "fireworks_model": None,
         "google_ai_studio": True,
         "novita_model": None,
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": None,
     }
     assert events == [("肺炎", {"clear_field": False})]
@@ -354,7 +366,7 @@ def test_configure_runtime_without_external_provider_restores_defaults(monkeypat
     monkeypatch.setenv("NOVITA_API_KEY", "token-novita")
     ehr_input._configure_runtime(novita_model="google/gemma-4-31b-it")
 
-    ehr_input._configure_runtime(openrouter_model=None, novita_model=None, google_ai_studio=False)
+    ehr_input._configure_runtime(openrouter_model=None, novita_model=None, google_ai_studio=False, omlx=False)
 
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["url"]
     assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == ehr_input._DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -365,6 +377,139 @@ def test_configure_runtime_without_external_provider_restores_defaults(monkeypat
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == ehr_input._DEFAULT_IME_TEXT_RUNTIME["url"]
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == ehr_input._DEFAULT_IME_TEXT_RUNTIME["model"]
     assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == ehr_input._DEFAULT_IME_TEXT_RUNTIME["api_key"]
+
+
+def test_run_cli_parses_omlx_default_model(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--omlx", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": None,
+        "omlx": True,
+        "omlx_model": "gemma-4-26b-a4b-it-4bit",
+        "openrouter_model": None,
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
+def test_run_cli_parses_omlx_custom_model(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--omlx", "custom-model", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": None,
+        "omlx": True,
+        "omlx_model": "custom-model",
+        "openrouter_model": None,
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
+def test_run_cli_parses_omlx_inline_model(monkeypatch):
+    configured = {}
+    events = []
+
+    monkeypatch.setattr(
+        ehr_input,
+        "_configure_runtime",
+        lambda **kwargs: configured.update(kwargs),
+    )
+    monkeypatch.setattr(
+        ehr_input,
+        "_input_resolved_text",
+        lambda text, **kwargs: events.append((text, kwargs)),
+    )
+
+    assert ehr_input._run_cli(["--omlx=my-custom-model", "肺炎"]) == 0
+    assert configured == {
+        "fireworks_model": None,
+        "google_ai_studio": False,
+        "novita_model": None,
+        "omlx": True,
+        "omlx_model": "my-custom-model",
+        "openrouter_model": None,
+    }
+    assert events == [("肺炎", {"clear_field": False})]
+
+
+def test_configure_runtime_omlx_updates_segmentation_and_ime(monkeypatch):
+    ehr_input._configure_runtime(omlx=True, omlx_model="gemma-4-26b-a4b")
+
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL == "http://localhost:8000/v1/chat/completions"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "gemma-4-26b-a4b"
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY == "penguin"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_URL == "http://localhost:8000/v1/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_MODEL == "gemma-4-26b-a4b"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_API_KEY == "penguin"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_URL == "http://localhost:8000/v1/chat/completions"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "gemma-4-26b-a4b"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_API_KEY == "penguin"
+
+
+def test_configure_runtime_omlx_uses_default_model_when_none(monkeypatch):
+    ehr_input._configure_runtime(omlx=True, omlx_model=None)
+
+    assert ehr_input.mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL == "gemma-4-26b-a4b-it-4bit"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_IME_MODEL == "gemma-4-26b-a4b-it-4bit"
+    assert ehr_input.mlx_vlm_ime.MLX_VLM_TEXT_MODEL == "gemma-4-26b-a4b-it-4bit"
+
+
+def test_configure_runtime_omlx_conflicts_with_other_providers(monkeypatch):
+    with pytest.raises(RuntimeError, match="--omlx"):
+        ehr_input._configure_runtime(omlx=True, openrouter_model="qwen/model")
+
+    with pytest.raises(RuntimeError, match="--omlx"):
+        ehr_input._configure_runtime(omlx=True, novita_model="google/model")
+
+    with pytest.raises(RuntimeError, match="--omlx"):
+        ehr_input._configure_runtime(omlx=True, google_ai_studio=True)
+
+    with pytest.raises(RuntimeError, match="--omlx"):
+        ehr_input._configure_runtime(omlx=True, fireworks_model="accounts/fireworks/model")
+
+
+def test_build_run_log_header_records_omlx_option():
+    raw_args = ["--omlx", "肺炎"]
+    positional_args, option_summary = ehr_input._parse_cli_options(raw_args)
+
+    header = ehr_input._build_run_log_header(
+        "/tmp/automation/ehr_input.py",
+        raw_args,
+        positional_args,
+        option_summary,
+    )
+
+    assert 'parsed_options:' in header
+    assert '"omlx": true' in header
+    assert '"omlx_model": "gemma-4-26b-a4b-it-4bit"' in header
 
 
 def test_run_cli_prioritizes_command_over_same_named_file(monkeypatch, tmp_path):
@@ -537,7 +682,7 @@ def test_build_run_log_header_records_executable_and_options():
     assert "=== ehr_input invocation ===" in header
     assert "executable: ehr_input.py" in header
     assert 'argv: ["/tmp/automation/ehr_input.py", "--openrouter", "qwen/qwen3.5-9b", "--clear", "open test", "肺炎"]' in header
-    assert 'parsed_options: {"clear_field": true, "dual_provider_mode": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": "qwen/qwen3.5-9b"}' in header
+    assert 'parsed_options: {"clear_field": true, "dual_provider_mode": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "omlx": false, "omlx_model": null, "openrouter_model": "qwen/qwen3.5-9b"}' in header
     assert 'positional_args: ["open test", "肺炎"]' in header
 
 
@@ -553,7 +698,7 @@ def test_main_prepends_run_header_to_log(monkeypatch, tmp_path):
 
     log_text = log_files[0].read_text(encoding="utf-8")
     assert log_text.startswith("=== ehr_input invocation ===\nexecutable: ehr_input.py\n")
-    assert 'parsed_options: {"clear_field": false, "dual_provider_mode": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "openrouter_model": null}' in log_text
+    assert 'parsed_options: {"clear_field": false, "dual_provider_mode": false, "fireworks_model": null, "google_ai_studio": false, "novita_model": null, "omlx": false, "omlx_model": null, "openrouter_model": null}' in log_text
     assert 'positional_args: ["help"]' in log_text
     assert "usage called\n" in log_text
 
@@ -2769,6 +2914,8 @@ def test_parse_cli_options_parses_novita_default_model():
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "google/gemma-4-31b-it",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": None,
     }
 
@@ -2783,6 +2930,8 @@ def test_parse_cli_options_parses_novita_custom_model():
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "deepseek/deepseek-vl2",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": None,
     }
 
@@ -2797,6 +2946,8 @@ def test_parse_cli_options_parses_novita_inline_model():
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "google/gemma-4-31b-it",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": None,
     }
 
@@ -2811,6 +2962,8 @@ def test_parse_cli_options_parses_dual_provider_default_model():
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "google/gemma-4-31b-it",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": "google/gemma-4-31b-it",
     }
 
@@ -2825,6 +2978,8 @@ def test_parse_cli_options_parses_dual_provider_custom_model():
         "fireworks_model": None,
         "google_ai_studio": False,
         "novita_model": "deepseek/deepseek-vl2",
+        "omlx": False,
+        "omlx_model": None,
         "openrouter_model": "deepseek/deepseek-vl2",
     }
 
