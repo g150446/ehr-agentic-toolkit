@@ -1210,6 +1210,30 @@ def _find_notepad_document_top(frame: np.ndarray) -> int:
     return min(max_scan, int(h * 0.12))
 
 
+def _crop_notepad_menu_bar(frame: np.ndarray) -> np.ndarray:
+    """Notepad のメニュー行を setting_icon テンプレートで検出して除外する。"""
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "match_templates", "setting_icon.png"
+    )
+    tmpl = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+    if tmpl is None:
+        return frame
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    result = cv2.matchTemplate(gray, tmpl, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+    if max_val < 0.6:
+        return frame
+
+    _, th = tmpl.shape
+    menu_bottom = max_loc[1] + th + 5
+    menu_bottom = min(menu_bottom, int(frame.shape[0] * 0.15))
+
+    return frame[menu_bottom:, :]
+
+
 def crop_notepad_document_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
     """Crop the Notepad document body, excluding the top menu and Windows taskbar."""
     h, w = frame.shape[:2]
@@ -1247,6 +1271,9 @@ def crop_notepad_document_region(frame: np.ndarray, *, debug_name: str = "") -> 
     doc_top = _find_notepad_document_top(crop)
     if 0 < doc_top < crop.shape[0]:
         crop = crop[doc_top:, :]
+
+    # setting_icon テンプレートでメニュー行を検出して除外
+    crop = _crop_notepad_menu_bar(crop)
 
     if debug_name:
         _save_debug_frame(crop, name=debug_name, prefix="debug_notepad_crop")
@@ -2005,6 +2032,8 @@ def detect_ime_mode_from_typed_a(
         diff_crop = _extract_diff_crop(pre_frame, frame)
         if diff_crop is not None:
             diff_crop = _ensure_min_size(diff_crop)
+            # Notepad の場合はメニュー行を除外
+            diff_crop = _crop_notepad_menu_bar(diff_crop)
             # デバッグ用に差分クロップを保存
             _save_debug_popup(diff_crop, "ime_mode_diff")
             data_url = _encode_image_data_url(diff_crop, debug_name="ime_mode_diff")
