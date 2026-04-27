@@ -796,7 +796,9 @@ def _capture_helper_reset_compare_frame(
     if cropped.size == 0:
         return None
     active_line_hint = line_hint or mlx_vlm_ime.get_active_typing_line_hint()
-    line_cropped = mlx_vlm_ime.crop_to_active_typing_line(cropped, active_line_hint)
+    line_cropped = None
+    if _resolved_screen_type != "notepad":
+        line_cropped = mlx_vlm_ime.crop_to_active_typing_line(cropped, active_line_hint)
     if line_cropped is not None:
         cropped = line_cropped
     elif _resolved_screen_type == "patient_record":
