@@ -2500,16 +2500,15 @@ def _cancel_ime_popup_safe(
     time.sleep(0.25)
 
     # Step 3: ひらがな組成を Backspace で削除
-    # VLM-guided path: VLM 偽陰性で BS ループが早期終了する問題を防ぐため、
-    # 最低でも conservative 回数（hira_len-1）の BS を無条件で送信し、
-    # その後 VLM で残存を 1 回だけ確認する。
+    # VLM-guided path: VLM が組成を検出した場合のみ Backspace を送信する。
+    # VLM が検出しない場合は組成なしと判断し、Backspace を送信しない。
     if config is not None:
         time.sleep(0.4)
         first_frame = _capture_frame(config)
         vlm_sees = first_frame is not None and _has_ime_composition(first_frame)
         conservative = max(hira_len - 1, 1)
         if vlm_sees:
-            # Phase 1: conservative floor (VLM 偽陰性でも最低限の削除を保証)
+            # Phase 1: conservative floor
             for _ in range(conservative):
                 client.press_key("backspace")
                 time.sleep(0.12)
@@ -2524,12 +2523,7 @@ def _cancel_ime_popup_safe(
             total = conservative + extra
             print(f"  [cancel_safe] VLM検出 → BS×{total} (conservative={conservative}, vlm_extra={extra}, hira_len={hira_len})")
         else:
-            # VLM が Esc+F6 直後の組成を検出できない場合（偽陰性の可能性）
-            # conservative の固定 BS で過削除リスクを最小化しつつ未削除を抑える。
-            print(f"  [cancel_safe] VLM偽陰性 → 控えめBS×{conservative} (hira_len={hira_len})")
-            for _ in range(conservative):
-                client.press_key("backspace")
-                time.sleep(0.12)
+            print(f"  [cancel_safe] VLM検出なし → Backspace 送信スキップ (hira_len={hira_len})")
     else:
         for _ in range(hira_len):
             client.press_key("backspace")

@@ -1472,8 +1472,8 @@ def test_cancel_ime_popup_safe_vlm_guided_extra_bs_when_remaining(monkeypatch):
     ]
 
 
-def test_cancel_ime_popup_safe_vlm_false_negative_uses_conservative_bs(monkeypatch):
-    """VLM が Esc+F6 直後に組成を検出できない場合、控えめな固定 BS で対応。"""
+def test_cancel_ime_popup_safe_vlm_false_negative_skips_backspace(monkeypatch):
+    """VLM が Esc+F6 直後に組成を検出できない場合、Backspace を送信しない。"""
     events = []
     config = SimpleNamespace(capture_device_index=0, capture_width=1920, capture_height=1080)
     import numpy as np
@@ -1486,20 +1486,17 @@ def test_cancel_ime_popup_safe_vlm_false_negative_uses_conservative_bs(monkeypat
             events.append(("key", key))
             return True
 
-    # VLM は常に False を返す（偽陰性）
+    # VLM は常に False を返す（組成なし）
     monkeypatch.setattr(ehr_input, "_text_to_hiragana_len", lambda text: 4)
     monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
     monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: False)
 
     ehr_input._cancel_ime_popup_safe(DummyClient(), "呼気性", config=config)
 
-    # conservative = max(4-1, 1) = 3 fixed BS
+    # VLM検出なし → Backspace 送信スキップ
     assert events == [
         ("key", "escape"),
         ("key", "f6"),
-        ("key", "backspace"),
-        ("key", "backspace"),
-        ("key", "backspace"),
     ]
 
 
@@ -1557,18 +1554,18 @@ def test_cancel_ime_popup_safe_extra_budget_increases_bs(monkeypatch):
             events.append(("key", key))
             return True
 
-    # VLM false negative path; hira_len=4 + extra_budget=4 = 8, conservative=max(8-1,1)=7
+    # VLM detects composition; hira_len=4 + extra_budget=4 = 8, conservative=max(8-1,1)=7
     monkeypatch.setattr(ehr_input, "_romaji_to_hiragana_len", lambda r: 4)
     monkeypatch.setattr(ehr_input, "_capture_frame", lambda config: _make_frame())
-    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: False)
+    monkeypatch.setattr(ehr_input, "_has_ime_composition", lambda frame: True)
 
     ehr_input._cancel_ime_popup_safe(
         DummyClient(), "著者", config=config, romaji="chosha", extra_budget=4,
     )
 
-    # Esc + F6 + conservative BS×7
+    # Esc + F6 + conservative BS×7 + Phase 2 extra BS×1 = 8 total
     bs_count = sum(1 for ev in events if ev == ("key", "backspace"))
-    assert bs_count == 7
+    assert bs_count == 8
 
 
 def test_is_helper_popup_contaminated_detects_residual():
