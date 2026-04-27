@@ -1926,7 +1926,7 @@ def test_assess_helper_reset_state_prompt_uses_anchor_text(monkeypatch):
     monkeypatch.setattr(mlx_vlm_ime, "_crop_center_band", lambda image, **kwargs: image)
     monkeypatch.setattr(mlx_vlm_ime, "_encode_image_data_url", lambda image, **kwargs: "data:image/mock")
 
-    def _fake_call(data_url, prompt, timeout):
+    def _fake_call(data_url, prompt, *, system_prompt=None, timeout=None):
         captured["prompt"] = prompt
         return '{"left_context_preserved": true, "composition_cleared": false, "ready": false}'
 
@@ -2005,7 +2005,7 @@ def test_assess_helper_reset_state_requests_panel_and_vlm_debug(monkeypatch):
     monkeypatch.setattr(
         mlx_vlm_ime,
         "_call_mlx_vlm_with_image",
-        lambda data_url, prompt, timeout: '{"left_context_preserved": true, "composition_cleared": true, "ready": true}',
+        lambda data_url, prompt, *, system_prompt=None, timeout=None: '{"left_context_preserved": true, "composition_cleared": true, "ready": true}',
     )
 
     state = mlx_vlm_ime.assess_helper_reset_state(

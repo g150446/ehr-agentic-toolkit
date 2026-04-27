@@ -2298,7 +2298,12 @@ def assess_helper_reset_state(
         ' 形式: {"left_context_preserved": true|false, "composition_cleared": true|false, "ready": true|false}'
     )
     data_url = _encode_image_data_url(cropped, debug_name="helper_reset_state")
-    content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
+    content = _call_mlx_vlm_with_image(
+        data_url,
+        prompt,
+        system_prompt="<|think|>\nステップバイステップで考えろ。",
+        timeout=MLX_VLM_INLINE_TIMEOUT,
+    )
     return _parse_helper_reset_state_response(content)
 
 
