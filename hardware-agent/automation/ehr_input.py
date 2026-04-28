@@ -3286,10 +3286,10 @@ def detect_ime_mode(
     config=None,
 ) -> Optional[str]:
     """
-    'a' を1文字入力し、EasyOCR でスクリーンを読んで IME モードを検出する。
+    'a' を1文字入力し、VLM でスクリーンを読んで IME モードを検出する。
 
     英語入力モードなら 'a' が、日本語（ひらがな）入力モードなら「あ」が表示される。
-    OCR 判定後に Backspace × 3 で入力した文字と Enter × 2 を取り消す。
+    日本語モードなら Backspace × 2、英語モードなら Backspace × 3 で入力を取り消す。
 
     Args:
         client: BLEClient インスタンス（キー送信に使用）
@@ -3334,8 +3334,11 @@ def detect_ime_mode(
     else:
         print("  [IME検出] キャプチャ失敗")
 
-    # 入力した 'a'/'あ' + Enter × 2 を Backspace × 3 で取り消す
-    for i in range(3):
+    # 日本語モード: Enter × 1 が変換確定に使われるため backspace × 2
+    # 英語モード/判定不能: backspace × 3
+    backspace_count = 2 if result == "japanese" else 3
+    print(f"  [IME検出/cleanup] backspace × {backspace_count}")
+    for i in range(backspace_count):
         client.press_key("backspace")
         time.sleep(0.15)
 

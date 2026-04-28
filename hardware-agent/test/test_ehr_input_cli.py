@@ -961,7 +961,7 @@ def _make_patient_record_frame() -> np.ndarray:
 
 
 def test_detect_ime_mode_returns_japanese_via_easyocr(monkeypatch):
-    """detect_ime_mode は EasyOCR が 'japanese' を返せば 'japanese' を返す。"""
+    """detect_ime_mode は VLM が 'japanese' を返せば 'japanese' を返す。"""
     client = MagicMock()
     config = MagicMock()
     config.capture_device_index = 0
@@ -980,7 +980,7 @@ def test_detect_ime_mode_returns_japanese_via_easyocr(monkeypatch):
 
     assert ehr_input.detect_ime_mode(client, config) == "japanese"
     client.type_text.assert_called_once_with("a")
-    assert [call.args[0] for call in client.press_key.call_args_list] == ["enter", "enter", "backspace", "backspace", "backspace"]
+    assert [call.args[0] for call in client.press_key.call_args_list] == ["enter", "enter", "backspace", "backspace"]
 
 
 def test_detect_ime_mode_returns_english_via_easyocr(monkeypatch):
