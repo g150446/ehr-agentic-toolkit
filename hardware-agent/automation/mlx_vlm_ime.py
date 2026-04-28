@@ -1225,11 +1225,13 @@ def _crop_notepad_menu_bar(frame: np.ndarray) -> np.ndarray:
     _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
     if max_val < 0.6:
+        print(f"  [Notepad menu detection] setting_icon not matched (max_val={max_val:.3f} < 0.6)")
         return frame
 
     _, th = tmpl.shape
     menu_bottom = max_loc[1] + th + 5
     menu_bottom = min(menu_bottom, int(frame.shape[0] * 0.15))
+    print(f"  [Notepad menu detection] setting_icon matched (max_val={max_val:.3f}), menu_bottom={menu_bottom}px")
 
     return frame[menu_bottom:, :]
 
@@ -1966,6 +1968,7 @@ def _extract_diff_crop(
     min_change_px: int = 12,
     pad: int = 30,
     max_y_fraction: float = 0.82,
+    min_y_px: int = 0,
 ) -> Optional[np.ndarray]:
     """2フレームの差分から変化した矩形領域を切り出す。
 
@@ -1973,6 +1976,7 @@ def _extract_diff_crop(
     周辺領域のみを返す。既存テキストの影響を排除するためのヘルパー。
 
     max_y_fraction: 画面下部（IME クラウド候補等）を除外するための上限 (0〜1)。
+    min_y_px: 画面上部（メニューバー等）を除外するための下限（ピクセル）。
     Windows IME のクラウド候補パネルは画面下部に表示されることが多いため、
     その領域を差分検索から除外することで誤検出を防ぐ。
 
@@ -1981,9 +1985,11 @@ def _extract_diff_crop(
     """
     h = min(pre_frame.shape[0], post_frame.shape[0])
     w = min(pre_frame.shape[1], post_frame.shape[1])
+    # 画面上部（メニューバー等）を除外
+    y_start = max(0, min_y_px)
     # 画面下部（IMEクラウド候補/ツールバーエリア）を除外
     h_limit = int(h * max_y_fraction)
-    diff = cv2.absdiff(pre_frame[:h_limit, :w], post_frame[:h_limit, :w])
+    diff = cv2.absdiff(pre_frame[y_start:h_limit, :w], post_frame[y_start:h_limit, :w])
     gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
@@ -1993,18 +1999,81 @@ def _extract_diff_crop(
         return None
     largest = max(contours, key=cv2.contourArea)
     x, y, bw, bh = cv2.boundingRect(largest)
+    actual_y = y + y_start
     if bw < min_change_px or bh < min_change_px:
         return None
     _store_active_typing_line_hint(
         frame_height=post_frame.shape[0],
-        center_y=y + (bh / 2.0),
+        center_y=actual_y + (bh / 2.0),
         char_height=bh,
     )
     x1 = max(0, x - pad)
-    y1 = max(0, y - pad)
+    y1 = max(0, actual_y - pad)
     x2 = min(post_frame.shape[1], x + bw + pad)
-    y2 = min(post_frame.shape[0], y + bh + pad)
+    y2 = min(post_frame.shape[0], actual_y + bh + pad)
     return post_frame[y1:y2, x1:x2]
+
+
+def _detect_ime_mode_by_easyocr(
+    image: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> Optional[str]:
+    """EasyOCR で画像内の文字を読み取り、IME モードを判定する。
+
+    認識結果が 'a' または 'A'（半角英字）なら 'english'、
+    それ以外なら 'japanese' を返す。
+    認識結果をオーバーレイした画像を別ファイルに保存する。
+
+    Args:
+        image: BGR 画像（差分クロップまたは入力エリア全体）
+        debug_name: デバッグ保存用の名前
+
+    Returns:
+        'japanese', 'english', または None（認識不能時）
+    """
+    from automation.screen_analyzer import load_ocr_reader, run_ocr
+
+    reader = load_ocr_reader()
+    results = run_ocr(reader, image)
+
+    if not results:
+        print(f"  [EasyOCR IME検出] 文字認識なし")
+        return None
+
+    # 最も信頼度の高い結果を採用
+    best = max(results, key=lambda r: r[2])
+    bbox, text, conf = best
+    text = text.strip()
+    print(f"  [EasyOCR IME検出] 認識結果: '{text}' (conf={conf:.3f})")
+
+    # 判定: a/A（半角英字）→ english、それ以外 → japanese
+    if text.lower() == "a":
+        mode = "english"
+    else:
+        mode = "japanese"
+    print(f"  [EasyOCR IME検出] 判定: {mode}")
+
+    # オーバーレイ画像を作成して保存
+    overlay = image.copy()
+    h, w = overlay.shape[:2]
+    # テキスト背景の黒い帯を上部に描画
+    bar_h = max(30, int(h * 0.15))
+    cv2.rectangle(overlay, (0, 0), (w, bar_h), (0, 0, 0), -1)
+    # 認識結果と判定を描画
+    display_text = f"OCR: '{text}'  ->  {mode.upper()}"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.4, min(w / 400, 1.0))
+    thickness = max(1, int(font_scale * 2))
+    cv2.putText(overlay, display_text, (10, int(bar_h * 0.7)), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
+    # bbox を描画（認識領域を囲む）
+    pts = np.array(bbox, np.int32).reshape((-1, 1, 2))
+    cv2.polylines(overlay, [pts], True, (0, 0, 255), 2)
+
+    save_name = debug_name if debug_name else "ime_mode"
+    _save_debug_frame(overlay, name=f"{save_name}_easyocr_overlay", prefix="debug_easyocr_overlay")
+
+    return mode
 
 
 def detect_ime_mode_from_typed_a(
@@ -2029,59 +2098,43 @@ def detect_ime_mode_from_typed_a(
     """
     # --- 差分クロップ優先 (pre_frame 提供時) ---
     if pre_frame is not None:
-        diff_crop = _extract_diff_crop(pre_frame, frame)
+        # Notepad メニュー下限を検出して差分探索領域を限定
+        # 1) setting_icon テンプレートでアイコン下端を検出
+        menu_bar_cropped = _crop_notepad_menu_bar(frame)
+        menu_bottom = frame.shape[0] - menu_bar_cropped.shape[0]
+        is_notepad = menu_bottom > 0
+        print(f"  [IME mode detection] notepad detected: {is_notepad} (menu_bottom={menu_bottom}px)")
+        if is_notepad:
+            # 2) 輝度ベースでドキュメント本文上端を検出し、
+            #    アイコン下端と比較してより下（安全な）方を採用
+            #    これで「ファイル」「編集」などのメニュー文字列も確実に除外できる
+            doc_top = _find_notepad_document_top(frame)
+            print(f"  [IME mode detection] doc_top={doc_top}px")
+            menu_bottom = max(menu_bottom, doc_top)
+            # 安全マージン: メニュー文字下端が少し残ることがあるため、
+            # 本文上端よりもさらに 15px 下から diff 探索を開始する
+            menu_bottom += 15
+            menu_bottom = min(menu_bottom, int(frame.shape[0] * 0.25))
+            print(f"  [IME mode detection] final menu_bottom={menu_bottom}px")
+        diff_crop = _extract_diff_crop(pre_frame, frame, min_y_px=menu_bottom)
         if diff_crop is not None:
             diff_crop = _ensure_min_size(diff_crop)
-            # Notepad の場合はメニュー行を除外
+            # Notepad の場合はメニュー行を除外（二重ガード）
             diff_crop = _crop_notepad_menu_bar(diff_crop)
             # デバッグ用に差分クロップを保存
             _save_debug_popup(diff_crop, "ime_mode_diff")
-            data_url = _encode_image_data_url(diff_crop, debug_name="ime_mode_diff")
-            prompt = (
-                "この画像は 'a' キーを1回押した直後に画面で変化した部分だけを切り抜いたものです。"
-                "新しく追加された1文字を特定してください。"
-                "平仮名の「あ」（曲線的な日本語文字）であれば 'japanese'、"
-                "半角英字の 'a'（単純なラテン文字）であれば 'english' とだけ答えてください。"
-                "それ以外の説明は不要です。"
-            )
-            try:
-                content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
-                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-                print(f"  [VLM IME検出/diff] 応答: {content!r}")
-                if "japanese" in content.lower() or "あ" in content:
-                    return "japanese"
-                if "english" in content.lower():
-                    return "english"
-                # 判定できなかった場合はフォールバックへ
-                print("  [VLM IME検出/diff] 判定不能 → 全体フレームで再試行")
-            except MlxVlmImeError as exc:
-                print(f"  [VLM IME検出/diff] 失敗: {exc} → 全体フレームで再試行")
+            mode = _detect_ime_mode_by_easyocr(diff_crop, debug_name="ime_mode_diff")
+            if mode is not None:
+                return mode
+            print("  [EasyOCR IME検出/diff] 判定不能 → 全体フレームで再試行")
         else:
-            print("  [VLM IME検出/diff] 差分なし → 全体フレームで再試行")
+            print("  [EasyOCR IME検出/diff] 差分なし → 全体フレームで再試行")
 
-    # --- フォールバック: 入力エリア全体を VLM で判定 ---
+    # --- フォールバック: 入力エリア全体を EasyOCR で判定 ---
     cropped = crop_to_input_region(frame, debug_name="ime_mode_typed_a_panel")
     cropped = _ensure_min_size(cropped)
-    data_url = _encode_image_data_url(cropped, debug_name="ime_mode_typed_a")
-    prompt = (
-        "テキスト入力フィールドに 'a' というキーを1回押しました。"
-        "直前に入力した最後の1文字だけに注目してください。"
-        "その文字が平仮名の「あ」なら 'japanese'、半角の 'a' なら 'english' とだけ答えてください。"
-        "既存のテキストは無視して、最後に追加された文字だけを判定してください。"
-        "それ以外のテキストや説明は不要です。"
-    )
-    try:
-        content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        print(f"  [VLM IME検出/typed-a] 応答: {content!r}")
-        if "japanese" in content.lower() or "あ" in content:
-            return "japanese"
-        if "english" in content.lower():
-            return "english"
-        return None
-    except MlxVlmImeError as exc:
-        print(f"  [VLM IME検出/typed-a] 失敗: {exc}")
-        return None
+    mode = _detect_ime_mode_by_easyocr(cropped, debug_name="ime_mode_typed_a")
+    return mode
 
 
 # ---------------------------------------------------------------------------
