@@ -2020,64 +2020,66 @@ def _extract_diff_crop(
     return post_frame[y1:y2, x1:x2]
 
 
-def _detect_ime_mode_by_easyocr(
+def _detect_ime_mode_by_vlm(
     image: np.ndarray,
     *,
     debug_name: str = "",
 ) -> Optional[str]:
-    """EasyOCR で画像内の文字を読み取り、IME モードを判定する。
+    """VLM で画像内の文字を読み取り、IME モードを判定する。
 
-    認識結果が 'a' または 'A'（半角英字）なら 'english'、
-    それ以外なら 'japanese' を返す。
-    認識結果をオーバーレイした画像を別ファイルに保存する。
+    半角英字の 'a' または 'A' であれば 'english'、
+    それ以外であれば 'japanese' を返す。
+    VLM 応答と判定結果をデバッグ画像にオーバーレイして保存する。
 
     Args:
         image: BGR 画像（差分クロップまたは入力エリア全体）
         debug_name: デバッグ保存用の名前
 
     Returns:
-        'japanese', 'english', または None（認識不能時）
+        'japanese', 'english', または None（判定不能時）
     """
-    from automation.screen_analyzer import load_ocr_reader, run_ocr
-
-    reader = load_ocr_reader()
-    results = run_ocr(reader, image)
-
-    if not results:
-        print(f"  [EasyOCR IME検出] 文字認識なし")
+    data_url = _encode_image_data_url(
+        image, debug_name=f"{debug_name}_vlm" if debug_name else "ime_mode_vlm"
+    )
+    prompt = (
+        "この画像は 'a' キーを1回押した直後に変化した部分だけを切り抜いたものです。"
+        "新しく追加された1文字を特定してください。"
+        "半角英字の 'a' または 'A' であれば 'english'、"
+        "それ以外（ひらがな「あ」など）であれば 'japanese' とだけ答えてください。"
+        "それ以外の説明は不要です。"
+    )
+    try:
+        content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    except MlxVlmImeError as exc:
+        print(f"  [VLM IME検出] 失敗: {exc}")
         return None
 
-    # 最も信頼度の高い結果を採用
-    best = max(results, key=lambda r: r[2])
-    bbox, text, conf = best
-    text = text.strip()
-    print(f"  [EasyOCR IME検出] 認識結果: '{text}' (conf={conf:.3f})")
+    print(f"  [VLM IME検出] 応答: {content!r}")
 
-    # 判定: a/A（半角英字）→ english、それ以外 → japanese
-    if text.lower() == "a":
+    if "english" in content.lower():
         mode = "english"
-    else:
+    elif "japanese" in content.lower() or "あ" in content:
         mode = "japanese"
-    print(f"  [EasyOCR IME検出] 判定: {mode}")
+    else:
+        print(f"  [VLM IME検出] 判定不能")
+        return None
 
-    # オーバーレイ画像を作成して保存
+    print(f"  [VLM IME検出] 判定: {mode}")
+
+    # デバッグ画像に VLM 応答と判定をオーバーレイ
     overlay = image.copy()
     h, w = overlay.shape[:2]
-    # テキスト背景の黒い帯を上部に描画
     bar_h = max(30, int(h * 0.15))
     cv2.rectangle(overlay, (0, 0), (w, bar_h), (0, 0, 0), -1)
-    # 認識結果と判定を描画
-    display_text = f"OCR: '{text}'  ->  {mode.upper()}"
+    display_text = f"VLM: {content}  ->  {mode.upper()}"
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = max(0.4, min(w / 400, 1.0))
     thickness = max(1, int(font_scale * 2))
     cv2.putText(overlay, display_text, (10, int(bar_h * 0.7)), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-    # bbox を描画（認識領域を囲む）
-    pts = np.array(bbox, np.int32).reshape((-1, 1, 2))
-    cv2.polylines(overlay, [pts], True, (0, 0, 255), 2)
 
     save_name = debug_name if debug_name else "ime_mode"
-    _save_debug_frame(overlay, name=f"{save_name}_easyocr_overlay", prefix="debug_easyocr_overlay")
+    _save_debug_frame(overlay, name=f"{save_name}_vlm_overlay", prefix="debug_vlm_overlay")
 
     return mode
 
@@ -2129,20 +2131,20 @@ def detect_ime_mode_from_typed_a(
             diff_crop = _crop_notepad_menu_bar(diff_crop)
             # デバッグ用に差分クロップを保存
             _save_debug_popup(diff_crop, "ime_mode_diff")
-            mode = _detect_ime_mode_by_easyocr(diff_crop, debug_name="ime_mode_diff")
+            mode = _detect_ime_mode_by_vlm(diff_crop, debug_name="ime_mode_diff")
             if mode is not None:
                 return mode
-            print("  [EasyOCR IME検出/diff] 判定不能 → 全体フレームで再試行")
+            print("  [VLM IME検出/diff] 判定不能 → 全体フレームで再試行")
         else:
-            print("  [EasyOCR IME検出/diff] 差分なし → 全体フレームで再試行")
+            print("  [VLM IME検出/diff] 差分なし → 全体フレームで再試行")
 
-    # --- フォールバック: 画面左上1/4領域を EasyOCR で判定 ---
+    # --- フォールバック: 画面左上1/4領域を VLM で判定 ---
     # Enter × 2 後に crop_to_input_region が空領域を返すことがあるため、
     # 画面左上1/4を直接クロップして使用する
     h, w = frame.shape[:2]
     cropped = frame[: h // 2, : w // 2]
     cropped = _ensure_min_size(cropped)
-    mode = _detect_ime_mode_by_easyocr(cropped, debug_name="ime_mode_typed_a")
+    mode = _detect_ime_mode_by_vlm(cropped, debug_name="ime_mode_typed_a")
     return mode
 
 
