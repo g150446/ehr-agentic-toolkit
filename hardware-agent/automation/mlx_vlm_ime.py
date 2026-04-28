@@ -2130,8 +2130,11 @@ def detect_ime_mode_from_typed_a(
         else:
             print("  [EasyOCR IME検出/diff] 差分なし → 全体フレームで再試行")
 
-    # --- フォールバック: 入力エリア全体を EasyOCR で判定 ---
-    cropped = crop_to_input_region(frame, debug_name="ime_mode_typed_a_panel")
+    # --- フォールバック: 画面左上1/4領域を EasyOCR で判定 ---
+    # Enter × 2 後に crop_to_input_region が空領域を返すことがあるため、
+    # 画面左上1/4を直接クロップして使用する
+    h, w = frame.shape[:2]
+    cropped = frame[: h // 2, : w // 2]
     cropped = _ensure_min_size(cropped)
     mode = _detect_ime_mode_by_easyocr(cropped, debug_name="ime_mode_typed_a")
     return mode
