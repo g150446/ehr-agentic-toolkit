@@ -2029,7 +2029,6 @@ def _detect_ime_mode_by_vlm(
 
     半角英字の 'a' または 'A' であれば 'english'、
     それ以外であれば 'japanese' を返す。
-    VLM 応答と判定結果をデバッグ画像にオーバーレイして保存する。
 
     Args:
         image: BGR 画像（差分クロップまたは入力エリア全体）
@@ -2066,20 +2065,6 @@ def _detect_ime_mode_by_vlm(
         return None
 
     print(f"  [VLM IME検出] 判定: {mode}")
-
-    # デバッグ画像に VLM 応答と判定をオーバーレイ
-    overlay = image.copy()
-    h, w = overlay.shape[:2]
-    bar_h = max(30, int(h * 0.15))
-    cv2.rectangle(overlay, (0, 0), (w, bar_h), (0, 0, 0), -1)
-    display_text = f"VLM: {content}  ->  {mode.upper()}"
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = max(0.4, min(w / 400, 1.0))
-    thickness = max(1, int(font_scale * 2))
-    cv2.putText(overlay, display_text, (10, int(bar_h * 0.7)), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-
-    save_name = debug_name if debug_name else "ime_mode"
-    _save_debug_frame(overlay, name=f"{save_name}_vlm_overlay", prefix="debug_vlm_overlay")
 
     return mode
 
