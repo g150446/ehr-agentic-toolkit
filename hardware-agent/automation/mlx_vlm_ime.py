@@ -1211,29 +1211,35 @@ def _find_notepad_document_top(frame: np.ndarray) -> int:
 
 
 def _crop_notepad_menu_bar(frame: np.ndarray) -> np.ndarray:
-    """Notepad のメニュー行を setting_icon テンプレートで検出して除外する。"""
-    template_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "match_templates", "setting_icon.png"
-    )
-    tmpl = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
-    if tmpl is None:
+    """Notepad のメニュー行を水色領域の B-R 色差で検出して除外する。
+
+    Windows 11 Notepad のメニューバーは薄い水色（B > R）で、
+    ドキュメント本文は純白（B ≈ R ≈ G）であるため、
+    行ごとの B-R 差分が閾値を下回る位置をメニュー下端として検出する。
+    """
+    h, w = frame.shape[:2]
+    if h < 20 or w < 20:
         return frame
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    result = cv2.matchTemplate(gray, tmpl, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+    # 画面上部 20% までをスキャン（メニューは通常 10% 以内）
+    max_scan = min(int(h * 0.20), h)
+    window = 5  # スムージング用の行ウィンドウ
 
-    if max_val < 0.6:
-        print(f"  [Notepad menu detection] setting_icon not matched (max_val={max_val:.3f} < 0.6)")
-        return frame
+    for y in range(0, max_scan - window):
+        row_window = frame[y:y+window, :, :]
+        mean_b = row_window[:, :, 0].mean()
+        mean_r = row_window[:, :, 2].mean()
+        br_diff = mean_b - mean_r
 
-    _, th = tmpl.shape
-    menu_bottom = max_loc[1] + th + 5
-    menu_bottom = min(menu_bottom, int(frame.shape[0] * 0.15))
-    print(f"  [Notepad menu detection] setting_icon matched (max_val={max_val:.3f}), menu_bottom={menu_bottom}px")
+        # B-R 差分が 3.0 未満ならドキュメント本文と判定
+        if br_diff < 3.0:
+            menu_bottom = y
+            print(f"  [Notepad menu detection] color-based boundary at row {menu_bottom} (B-R={br_diff:.1f})")
+            return frame[menu_bottom:, :]
 
-    return frame[menu_bottom:, :]
+    # 検出できなかった場合はフレーム全体を返す
+    print(f"  [Notepad menu detection] color-based detection failed, returning full frame")
+    return frame
 
 
 def crop_notepad_document_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
