@@ -159,9 +159,12 @@ class ChatViewController: NSViewController {
         debugButton.title = "Wait..."
 
         DispatchQueue.global().async { [weak self] in
+            print("[Debug] Starting debug action")
+
             Thread.sleep(forTimeInterval: 3)
 
             guard let event = CGEvent(source: nil) else {
+                print("[Debug] Error: Failed to create CGEvent")
                 DispatchQueue.main.async {
                     self?.debugButton.isEnabled = true
                     self?.debugButton.title = "Debug"
@@ -174,22 +177,10 @@ class ChatViewController: NSViewController {
             let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: cursorPosition, mouseButton: .left)
             clickDown?.post(tap: .cghidEventTap)
             clickUp?.post(tap: .cghidEventTap)
+            print("[Debug] Clicked at cursor position: \(cursorPosition)")
 
             Thread.sleep(forTimeInterval: 0.5)
 
-            let source = CGEventSource(stateID: .hidSystemState)
-            for char in "test" {
-                if let keyCode = self?.charToKeyCode(char) {
-                    let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
-                    let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-                    keyDown?.post(tap: .cghidEventTap)
-                    keyUp?.post(tap: .cghidEventTap)
-                }
-            }
-
-            Thread.sleep(forTimeInterval: 0.5)
-
-            let desktopURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/debug_screenshot.png")
             var windowID: Int = 0
             if let windowInfo = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
                 for info in windowInfo {
@@ -199,28 +190,93 @@ class ChatViewController: NSViewController {
                        ownerName != "Dock",
                        let winNum = info[kCGWindowNumber as String] as? Int {
                         windowID = winNum
+                        print("[Debug] Found active window: \(ownerName) (ID: \(winNum))")
                         break
                     }
                 }
             }
+
+            if windowID == 0 {
+                print("[Debug] Error: No active window found")
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Debug Error"
+                    alert.informativeText = "No active window found"
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                    self?.debugButton.isEnabled = true
+                    self?.debugButton.title = "Debug"
+                }
+                return
+            }
+
+            let capturesDir = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("captures")
+            print("[Debug] Captures directory path: \(capturesDir.path)")
+            
+            var targetDir = capturesDir
+            if !FileManager.default.fileExists(atPath: capturesDir.path) {
+                print("[Debug] Captures directory not found, trying to create...")
+                do {
+                    try FileManager.default.createDirectory(at: capturesDir, withIntermediateDirectories: true)
+                    print("[Debug] Created captures directory: \(capturesDir.path)")
+                } catch {
+                    print("[Debug] Error creating directory: \(error)")
+                    targetDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
+                    print("[Debug] Fallback to Desktop: \(targetDir.path)")
+                }
+            }
+
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd_HHmmss"
+            let timestamp = formatter.string(from: Date())
+            let filename = "debug_\(timestamp).png"
+            let fileURL = capturesDir.appendingPathComponent(filename)
+
+            print("[Debug] Capturing window to: \(fileURL.path)")
+
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            process.arguments = ["-x", "-l", "\(windowID)", desktopURL.path]
-            try? process.run()
-            process.waitUntilExit()
+            process.arguments = ["-x", "-l", "\(windowID)", fileURL.path]
+
+            let pipe = Pipe()
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+
+                if process.terminationStatus == 0 {
+                    print("[Debug] Screenshot saved successfully")
+                } else {
+                    print("[Debug] screencapture failed with status: \(process.terminationStatus)")
+                    print("[Debug] stderr: \(errorOutput)")
+                    DispatchQueue.main.async {
+                        let alert = NSAlert()
+                        alert.messageText = "Screenshot Failed"
+                        alert.informativeText = "screencapture exited with status \(process.terminationStatus)\n\n\(errorOutput)"
+                        alert.addButton(withTitle: "OK")
+                        alert.runModal()
+                    }
+                }
+            } catch {
+                print("[Debug] Error running screencapture: \(error)")
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Screenshot Error"
+                    alert.informativeText = error.localizedDescription
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                }
+            }
 
             DispatchQueue.main.async {
                 self?.debugButton.isEnabled = true
                 self?.debugButton.title = "Debug"
             }
         }
-    }
-
-    private func charToKeyCode(_ char: Character) -> CGKeyCode? {
-        let keyMap: [Character: CGKeyCode] = [
-            "t": 17, "e": 14, "s": 1,
-        ]
-        return keyMap[char]
     }
 
     private func authHeader() -> String {
@@ -412,7 +468,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "AI Chat"
+        window.title = "EHR-Agent"
         window.minSize = NSSize(width: 300, height: 200)
 
         chatVC = ChatViewController()
@@ -431,13 +487,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         debugMenuItem = NSMenuItem(
             title: "Debug Mode",
             action: #selector(toggleDebugMode(_:)),
-            keyEquivalent: ""
+            keyEquivalent: "d"
         )
+        debugMenuItem.keyEquivalentModifierMask = .command
         debugMenuItem.target = self
         appMenu.addItem(debugMenuItem)
 
         let quitMenuItem = NSMenuItem(
-            title: "Quit AI Chat",
+            title: "Quit EHR-Agent",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )

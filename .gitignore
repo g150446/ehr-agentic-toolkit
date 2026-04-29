@@ -26,8 +26,11 @@ audit_logs/*.log
 
 # Captures and processed images
 captures/
+!captures/.gitkeep
 screenshots/
 ehr_captures/
+swift-appkit/captures/
+!swift-appkit/captures/.gitkeep
 
 # Hardware Agent generated outputs
 # No leading / so moved subtrees are also ignored.
