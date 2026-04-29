@@ -157,7 +157,8 @@ _TEXT_NORMALIZATION_MAP = str.maketrans({
 _MULTI_CHAR_REPLACEMENTS = {
     "→": "->",
     "⇒": "=>",
-    "℃": "度",
+    "℃": "C",
+    "×": "x",
 }
 _ASCII_SPECIAL_KEYS = {
     "\n": "enter",
