@@ -319,6 +319,10 @@ class BLEController:
         """
         return await self.send_command(f"scroll:{amount}")
 
+    async def alt_tab(self) -> bool:
+        """Send Alt+Tab shortcut to switch windows."""
+        return await self.send_command("key:alt_tab")
+
     def is_connected(self) -> bool:
         """
         Check if connected to BLE device.

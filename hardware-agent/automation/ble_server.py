@@ -84,6 +84,8 @@ async def dispatch(ble: BLEController, ble_lock: asyncio.Lock, req: dict) -> dic
                 return {"ok": await ble.press_key(req["key"])}
             if cmd == "send_command":
                 return {"ok": await ble.send_command(req["command"])}
+            if cmd == "alt_tab":
+                return {"ok": await ble.send_command("key:alt_tab")}
             return {"ok": False, "error": f"Unknown command: {cmd}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}

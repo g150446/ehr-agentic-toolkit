@@ -1,6 +1,10 @@
 #!/bin/bash
 # Helper script to run BLE Test CLI
 # Automatically sets up environment and runs the interactive CLI
+#
+# Usage:
+#   ./scripts/run_ble_test.sh          # Direct BLE connection (default)
+#   ./scripts/run_ble_test.sh --socket # Via ble_server Unix socket
 
 # Get project root (parent directory of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

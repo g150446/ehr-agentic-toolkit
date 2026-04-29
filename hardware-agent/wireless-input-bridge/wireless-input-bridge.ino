@@ -29,6 +29,7 @@
   - "key:lparen" / "key:rparen" / "key:percent" / "key:colon" / "key:newline"
   - "key:up" / "key:down" / "key:left" / "key:right" (arrow keys)
   - "key:shift_right" : Shift+Right (IME segment extension)
+  - "key:alt_tab" : Alt+Tab (window switch)
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -274,6 +275,15 @@ bool pressNamedKey(const String &keyName) {
     delay(50);
     Keyboard.releaseAll();
     Serial.println("-> key: Ctrl+Z");
+    return true;
+  }
+  if (keyName == "alt_tab") {
+    Keyboard.press(KEY_LEFT_ALT);
+    delay(5);
+    Keyboard.press(KEY_TAB);
+    delay(5);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Alt+Tab");
     return true;
   }
   return false;
