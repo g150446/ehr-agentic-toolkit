@@ -162,21 +162,16 @@ class ChatViewController: NSViewController {
         DispatchQueue.global().async { [weak self] in
             print("[Debug] Starting debug action")
 
-            print("[Debug] Waiting 3 seconds before click...")
-            Thread.sleep(forTimeInterval: 3)
+            let mainDisplay = CGMainDisplayID()
+            let bounds = CGDisplayBounds(mainDisplay)
+            let centerPoint = CGPoint(x: bounds.width / 2, y: bounds.height / 2)
+            print("[Debug] Moving cursor to center: \(centerPoint)")
 
-            guard let event = CGEvent(source: nil) else {
-                print("[Debug] Error: Failed to create CGEvent")
-                DispatchQueue.main.async {
-                    self?.debugButton.isEnabled = true
-                    self?.debugButton.title = "Debug"
-                }
-                return
-            }
-            let cursorPosition = event.location
-            print("[Debug] Cursor position: \(cursorPosition)")
+            CGDisplayMoveCursorToPoint(mainDisplay, centerPoint)
 
-            guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: cursorPosition, mouseButton: .left) else {
+            Thread.sleep(forTimeInterval: 1.0)
+
+            guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: centerPoint, mouseButton: .left) else {
                 print("[Debug] Error: Failed to create clickDown event")
                 DispatchQueue.main.async {
                     self?.debugButton.isEnabled = true
@@ -184,7 +179,7 @@ class ChatViewController: NSViewController {
                 }
                 return
             }
-            guard let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: cursorPosition, mouseButton: .left) else {
+            guard let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: centerPoint, mouseButton: .left) else {
                 print("[Debug] Error: Failed to create clickUp event")
                 DispatchQueue.main.async {
                     self?.debugButton.isEnabled = true
@@ -198,7 +193,7 @@ class ChatViewController: NSViewController {
             Thread.sleep(forTimeInterval: 0.05)
             print("[Debug] Posting clickUp")
             clickUp.post(tap: .cghidEventTap)
-            print("[Debug] Click events posted at cursor position: \(cursorPosition)")
+            print("[Debug] Click events posted at screen center: \(centerPoint)")
 
             Thread.sleep(forTimeInterval: 0.5)
 
