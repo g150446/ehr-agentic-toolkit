@@ -30,6 +30,8 @@
   - "key:up" / "key:down" / "key:left" / "key:right" (arrow keys)
   - "key:shift_right" : Shift+Right (IME segment extension)
   - "key:alt_tab" : Alt+Tab (window switch)
+  - "key:win" : Windows key (single press)
+  - "key:win_up" : Win+Up Arrow (snap window to maximize)
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -284,6 +286,22 @@ bool pressNamedKey(const String &keyName) {
     delay(5);
     Keyboard.releaseAll();
     Serial.println("-> key: Alt+Tab");
+    return true;
+  }
+  if (keyName == "win") {
+    Keyboard.press(KEY_LEFT_GUI);
+    delay(100);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Win (Windows key)");
+    return true;
+  }
+  if (keyName == "win_up") {
+    Keyboard.press(KEY_LEFT_GUI);
+    delay(5);
+    Keyboard.press(KEY_UP_ARROW);
+    delay(5);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Win+Up");
     return true;
   }
   return false;

@@ -569,6 +569,76 @@ class BLETestShell(cmd.Cmd):
         print("\nSend Alt+Tab shortcut to switch windows")
         print("Usage: alt_tab")
 
+    def do_scroll_up(self, arg):
+        """Scroll up (default 3 units)."""
+        amount = 3
+        if arg.strip():
+            try:
+                amount = int(arg.strip())
+            except ValueError:
+                print(ColoredOutput.error("Invalid scroll amount"))
+                return
+        self.do_scroll(str(-abs(amount)))
+
+    def help_scroll_up(self):
+        """Help for scroll_up command."""
+        print("\nScroll up")
+        print("Usage: scroll_up [amount]")
+        print("Default amount: 3")
+
+    def do_scroll_down(self, arg):
+        """Scroll down (default 3 units)."""
+        amount = 3
+        if arg.strip():
+            try:
+                amount = int(arg.strip())
+            except ValueError:
+                print(ColoredOutput.error("Invalid scroll amount"))
+                return
+        self.do_scroll(str(abs(amount)))
+
+    def help_scroll_down(self):
+        """Help for scroll_down command."""
+        print("\nScroll down")
+        print("Usage: scroll_down [amount]")
+        print("Default amount: 3")
+
+    def do_win(self, arg):
+        """Press Windows key."""
+        del arg
+        if not self._check_connection():
+            return
+        try:
+            if self.runner.press_key("win"):
+                print(ColoredOutput.success("Pressed: Win"))
+            else:
+                print(ColoredOutput.error("Failed to press Win"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Win key error: {e}"))
+
+    def help_win(self):
+        """Help for win command."""
+        print("\nPress Windows key")
+        print("Usage: win")
+
+    def do_win_up(self, arg):
+        """Press Win+Up Arrow shortcut (maximize window)."""
+        del arg
+        if not self._check_connection():
+            return
+        try:
+            if self.runner.press_key("win_up"):
+                print(ColoredOutput.success("Sent: Win+Up"))
+            else:
+                print(ColoredOutput.error("Failed to send Win+Up"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Win+Up error: {e}"))
+
+    def help_win_up(self):
+        """Help for win_up command."""
+        print("\nPress Win+Up Arrow shortcut (maximize window)")
+        print("Usage: win_up")
+
     # ========== Mouse Commands ==========
 
     def do_move(self, arg):
