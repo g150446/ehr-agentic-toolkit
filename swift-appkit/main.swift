@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CoreGraphics
+import ApplicationServices
 
 // MARK: - ChatMessage
 struct ChatMessage {
@@ -161,6 +162,7 @@ class ChatViewController: NSViewController {
         DispatchQueue.global().async { [weak self] in
             print("[Debug] Starting debug action")
 
+            print("[Debug] Waiting 3 seconds before click...")
             Thread.sleep(forTimeInterval: 3)
 
             guard let event = CGEvent(source: nil) else {
@@ -172,12 +174,31 @@ class ChatViewController: NSViewController {
                 return
             }
             let cursorPosition = event.location
+            print("[Debug] Cursor position: \(cursorPosition)")
 
-            let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: cursorPosition, mouseButton: .left)
-            let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: cursorPosition, mouseButton: .left)
-            clickDown?.post(tap: .cghidEventTap)
-            clickUp?.post(tap: .cghidEventTap)
-            print("[Debug] Clicked at cursor position: \(cursorPosition)")
+            guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: cursorPosition, mouseButton: .left) else {
+                print("[Debug] Error: Failed to create clickDown event")
+                DispatchQueue.main.async {
+                    self?.debugButton.isEnabled = true
+                    self?.debugButton.title = "Debug"
+                }
+                return
+            }
+            guard let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: cursorPosition, mouseButton: .left) else {
+                print("[Debug] Error: Failed to create clickUp event")
+                DispatchQueue.main.async {
+                    self?.debugButton.isEnabled = true
+                    self?.debugButton.title = "Debug"
+                }
+                return
+            }
+
+            print("[Debug] Posting clickDown")
+            clickDown.post(tap: .cghidEventTap)
+            Thread.sleep(forTimeInterval: 0.05)
+            print("[Debug] Posting clickUp")
+            clickUp.post(tap: .cghidEventTap)
+            print("[Debug] Click events posted at cursor position: \(cursorPosition)")
 
             Thread.sleep(forTimeInterval: 0.5)
 
@@ -453,6 +474,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var debugMenuItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as NSString: true]
+        if !AXIsProcessTrustedWithOptions(options) {
+            print("[Debug] Accessibility permission not granted, prompting user...")
+        }
+
         setupMenuBar()
 
         let screen = NSScreen.main!
