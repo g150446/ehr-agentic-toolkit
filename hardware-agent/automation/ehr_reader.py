@@ -295,11 +295,11 @@ def _scroll_past_chart_down(
     dividers: list[int],
     screen_width: int,
     screen_height: int,
-    scroll_amount: int = 15,
+    scroll_count: int = 1,
 ) -> None:
-    """過去カルテ領域の右下をクリックし、指定量だけ上にスクロールする。
+    """過去カルテ領域の右下をクリックし、指定回数だけ上にスクロールする。
 
-    scroll_amount は BLE HID デバイスにそのまま渡すスクロール量。
+    基本スクロール量（15単位）を scroll_count 回、0.5秒間隔で送信する。
     """
     client = _wait_for_ble_connected()
 
@@ -320,10 +320,13 @@ def _scroll_past_chart_down(
     print(f"click (past chart focus) -> {'OK' if ok else 'NG'}")
     print(f"過去カルテ領域右下をクリック: ({click_x}, {click_y})")
 
-    # 指定されたスクロール量をそのままBLEに送信（上方向）
-    ok = client.scroll(-scroll_amount)
-    print(f"scroll:-{scroll_amount} -> {'OK' if ok else 'NG'}")
-    print(f"スクロール: {scroll_amount} 単位（上方向）")
+    base_scroll = 1
+    for i in range(scroll_count):
+        ok = client.scroll(-base_scroll)
+        print(f"scroll:-{base_scroll} ({i + 1}/{scroll_count}) -> {'OK' if ok else 'NG'}")
+        if i < scroll_count - 1:
+            time.sleep(0.5)
+    print(f"スクロール: {base_scroll} 単位 × {scroll_count} 回（上方向）")
 
 
 def _build_runtime_config(
@@ -344,7 +347,7 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
     omlx = False
     omlx_model: Optional[str] = None
     do_scroll = False
-    scroll_amount = 15
+    scroll_count = 1
     scroll_only = False
     filtered_args: list[str] = []
     index = 0
@@ -368,7 +371,7 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
             next_index = index + 1
             if next_index < len(args) and not args[next_index].startswith("--"):
                 try:
-                    scroll_amount = int(args[next_index])
+                    scroll_count = int(args[next_index])
                     index += 1
                 except ValueError:
                     pass
@@ -377,7 +380,7 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
             _, _, val = arg.partition("=")
             if val:
                 try:
-                    scroll_amount = int(val)
+                    scroll_count = int(val)
                 except ValueError:
                     pass
         elif arg == "--scroll-only":
@@ -385,7 +388,7 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
             next_index = index + 1
             if next_index < len(args) and not args[next_index].startswith("--"):
                 try:
-                    scroll_amount = int(args[next_index])
+                    scroll_count = int(args[next_index])
                     index += 1
                 except ValueError:
                     pass
@@ -394,7 +397,7 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
             _, _, val = arg.partition("=")
             if val:
                 try:
-                    scroll_amount = int(val)
+                    scroll_count = int(val)
                 except ValueError:
                     pass
         elif arg.startswith("--"):
@@ -402,13 +405,13 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
         else:
             filtered_args.append(arg)
         index += 1
-    return omlx, omlx_model, do_scroll, scroll_amount, scroll_only
+    return omlx, omlx_model, do_scroll, scroll_count, scroll_only
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     try:
-        omlx, omlx_model, do_scroll, scroll_amount, scroll_only = _parse_cli_options(args)
+        omlx, omlx_model, do_scroll, scroll_count, scroll_only = _parse_cli_options(args)
     except RuntimeError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
@@ -449,12 +452,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  パネル3 (右端): {dividers[2]} 〜 {frame.shape[1]}")
 
     if scroll_only:
-        print(f"\nスクロールのみモード: {scroll_amount} 単位（上方向）")
+        print(f"\nスクロールのみモード: 1 単位 × {scroll_count} 回（上方向）")
         _scroll_past_chart_down(
             dividers=dividers,
             screen_width=config.capture_width,
             screen_height=config.capture_height,
-            scroll_amount=scroll_amount,
+            scroll_count=scroll_count,
         )
         return 0
 
@@ -494,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
             dividers=dividers,
             screen_width=config.capture_width,
             screen_height=config.capture_height,
-            scroll_amount=scroll_amount,
+            scroll_count=scroll_count,
         )
 
     return 0
