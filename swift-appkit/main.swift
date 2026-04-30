@@ -159,7 +159,9 @@ class ChatViewController: NSViewController {
         debugButton.isEnabled = false
         debugButton.title = "Wait..."
 
-        DispatchQueue.global().async { [weak self] in
+        let weakSelf: ChatViewController? = self
+        let workItem = DispatchWorkItem {
+            guard let strongSelf = weakSelf else { return }
             print("[Debug] Starting debug action")
 
             let mainDisplay = CGMainDisplayID()
@@ -174,16 +176,16 @@ class ChatViewController: NSViewController {
             guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: centerPoint, mouseButton: .left) else {
                 print("[Debug] Error: Failed to create clickDown event")
                 DispatchQueue.main.async {
-                    self?.debugButton.isEnabled = true
-                    self?.debugButton.title = "Debug"
+                    strongSelf.debugButton.isEnabled = true
+                    strongSelf.debugButton.title = "Debug"
                 }
                 return
             }
             guard let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: centerPoint, mouseButton: .left) else {
                 print("[Debug] Error: Failed to create clickUp event")
                 DispatchQueue.main.async {
-                    self?.debugButton.isEnabled = true
-                    self?.debugButton.title = "Debug"
+                    strongSelf.debugButton.isEnabled = true
+                    strongSelf.debugButton.title = "Debug"
                 }
                 return
             }
@@ -220,79 +222,79 @@ class ChatViewController: NSViewController {
                     alert.informativeText = "No active window found"
                     alert.addButton(withTitle: "OK")
                     alert.runModal()
-                    self?.debugButton.isEnabled = true
-                    self?.debugButton.title = "Debug"
+                    strongSelf.debugButton.isEnabled = true
+                    strongSelf.debugButton.title = "Debug"
                 }
                 return
             }
 
             let capturesDir = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("captures")
             print("[Debug] Captures directory path: \(capturesDir.path)")
-            
-            var targetDir = capturesDir
+
             if !FileManager.default.fileExists(atPath: capturesDir.path) {
-                print("[Debug] Captures directory not found, trying to create...")
                 do {
                     try FileManager.default.createDirectory(at: capturesDir, withIntermediateDirectories: true)
                     print("[Debug] Created captures directory: \(capturesDir.path)")
                 } catch {
                     print("[Debug] Error creating directory: \(error)")
-                    targetDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
-                    print("[Debug] Fallback to Desktop: \(targetDir.path)")
                 }
             }
 
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyyMMdd_HHmmss"
-            let timestamp = formatter.string(from: Date())
-            let filename = "debug_\(timestamp).png"
-            let fileURL = capturesDir.appendingPathComponent(filename)
 
-            print("[Debug] Capturing window to: \(fileURL.path)")
+            let timestamp1 = formatter.string(from: Date())
+            let filename1 = "debug_\(timestamp1)_1.png"
+            let fileURL1 = capturesDir.appendingPathComponent(filename1)
+            print("[Debug] Capturing screenshot 1 to: \(fileURL1.path)")
 
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            process.arguments = ["-x", "-l", "\(windowID)", fileURL.path]
+            let process1 = Process()
+            process1.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            process1.arguments = ["-x", "-l", "\(windowID)", fileURL1.path]
+            let pipe1 = Pipe()
+            process1.standardError = pipe1
+            try? process1.run()
+            process1.waitUntilExit()
 
-            let pipe = Pipe()
-            process.standardError = pipe
+            let errorData1 = pipe1.fileHandleForReading.readDataToEndOfFile()
+            if let errorOutput1 = String(data: errorData1, encoding: .utf8), !errorOutput1.isEmpty {
+                print("[Debug] screencapture stderr: \(errorOutput1)")
+            }
 
-            do {
-                try process.run()
-                process.waitUntilExit()
+            Thread.sleep(forTimeInterval: 0.5)
 
-                let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
-                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+            let scrollAmount = Int(bounds.height / 2)
+            let scrollEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(-scrollAmount), wheel2: 0, wheel3: 0)
+            scrollEvent?.location = centerPoint
+            scrollEvent?.post(tap: .cghidEventTap)
+            print("[Debug] Scrolled down by \(scrollAmount) pixels")
 
-                if process.terminationStatus == 0 {
-                    print("[Debug] Screenshot saved successfully")
-                } else {
-                    print("[Debug] screencapture failed with status: \(process.terminationStatus)")
-                    print("[Debug] stderr: \(errorOutput)")
-                    DispatchQueue.main.async {
-                        let alert = NSAlert()
-                        alert.messageText = "Screenshot Failed"
-                        alert.informativeText = "screencapture exited with status \(process.terminationStatus)\n\n\(errorOutput)"
-                        alert.addButton(withTitle: "OK")
-                        alert.runModal()
-                    }
-                }
-            } catch {
-                print("[Debug] Error running screencapture: \(error)")
-                DispatchQueue.main.async {
-                    let alert = NSAlert()
-                    alert.messageText = "Screenshot Error"
-                    alert.informativeText = error.localizedDescription
-                    alert.addButton(withTitle: "OK")
-                    alert.runModal()
-                }
+            Thread.sleep(forTimeInterval: 0.5)
+
+            let timestamp2 = formatter.string(from: Date())
+            let filename2 = "debug_\(timestamp2)_2.png"
+            let fileURL2 = capturesDir.appendingPathComponent(filename2)
+            print("[Debug] Capturing screenshot 2 to: \(fileURL2.path)")
+
+            let process2 = Process()
+            process2.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            process2.arguments = ["-x", "-l", "\(windowID)", fileURL2.path]
+            let pipe2 = Pipe()
+            process2.standardError = pipe2
+            try? process2.run()
+            process2.waitUntilExit()
+
+            let errorData2 = pipe2.fileHandleForReading.readDataToEndOfFile()
+            if let errorOutput2 = String(data: errorData2, encoding: .utf8), !errorOutput2.isEmpty {
+                print("[Debug] screencapture stderr: \(errorOutput2)")
             }
 
             DispatchQueue.main.async {
-                self?.debugButton.isEnabled = true
-                self?.debugButton.title = "Debug"
+                strongSelf.debugButton.isEnabled = true
+                strongSelf.debugButton.title = "Debug"
             }
         }
+        DispatchQueue.global(qos: .userInitiated).async(execute: workItem)
     }
 
     private func authHeader() -> String {
