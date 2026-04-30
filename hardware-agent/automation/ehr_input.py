@@ -1426,9 +1426,11 @@ def open_test_patient_chart() -> None:
     ok = client.switch_to_keyboard_mode()
     print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
 
-    # Step 2: 患者一覧が表示されるまで待ってから Enter で先頭患者を選択
+    # Step 2: 患者一覧が表示されるまで待ってから、下矢印で2番目の患者を選択して Enter
     print("患者一覧の表示を待機中 (0.5秒)...")
     time.sleep(0.5)
+    ok = client.press_key("down")
+    print(f"key:down (select 2nd patient) -> {'OK' if ok else 'NG'}")
     ok = client.press_key("enter")
     print(f"key:enter (select patient) -> {'OK' if ok else 'NG'}")
 
