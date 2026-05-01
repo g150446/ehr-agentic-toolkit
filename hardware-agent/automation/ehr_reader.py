@@ -1176,17 +1176,15 @@ def main(argv: list[str] | None = None) -> int:
         print("2.0秒待機（ドラッグ範囲確認）...")
         time.sleep(2.0)
 
-        # ドラッグ範囲を削除（backspace）
+        # 先にマウスボタンを離す
+        ok = client.mouse_up()
+        print(f"mouse_up -> {'OK' if ok else 'NG'}")
+
+        # キーボードモードに切り替えて backspace
         ok = client.switch_to_keyboard_mode()
         print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
         ok = client.press_key("backspace")
         print(f"press_key(backspace) -> {'OK' if ok else 'NG'}")
-
-        # マウスモードに戻して mouse_up
-        ok = client.switch_to_mouse_mode()
-        print(f"mode:mouse -> {'OK' if ok else 'NG'}")
-        ok = client.mouse_up()
-        print(f"mouse_up -> {'OK' if ok else 'NG'}")
 
         return 0
 
