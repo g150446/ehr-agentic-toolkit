@@ -493,7 +493,7 @@ def _find_word_return_mark_bottom(
     # y 座標が最大のものを選ぶ（最も下側）
     best_x, best_y = max(filtered, key=lambda p: p[1])
     cx = int(best_x + w // 2)
-    cy = int(best_y + h // 2)
+    cy = int(best_y + h // 2 + 10)
     print(f"  word_return_mark 検出（最下）: ({best_x}, {best_y})〜({best_x + w}, {best_y + h}) 中心=({cx}, {cy}) (score={result[best_y, best_x]:.3f}, total={len(points)}, filtered={len(filtered)})")
     return (cx, cy)
 
