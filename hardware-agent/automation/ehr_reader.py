@@ -223,6 +223,19 @@ def _detect_all_dividers(
     return None
 
 
+def _is_frame_unchanged(prev: np.ndarray, curr: np.ndarray, *, diff_threshold: int = 15, max_diff_ratio: float = 0.005) -> bool:
+    """2フレームを比較し、変化が無視できるレベルなら True を返す。"""
+    if prev.shape != curr.shape:
+        return False
+    diff = cv2.absdiff(prev, curr)
+    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    significant_pixels = np.count_nonzero(gray > diff_threshold)
+    total_pixels = gray.size
+    ratio = significant_pixels / total_pixels
+    print(f"    画面変化率: {ratio*100:.3f}% ({significant_pixels}/{total_pixels} 画素)")
+    return ratio < max_diff_ratio
+
+
 def _detect_edit_button_bottom(
     frame: np.ndarray,
     x_start: int,
@@ -566,12 +579,12 @@ def _build_runtime_config(
     }
 
 
-def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int, bool]:
+def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Optional[int], bool]:
     """CLI オプションをパースする。"""
     omlx = False
     omlx_model: Optional[str] = None
     do_scroll = False
-    scroll_count = 1
+    scroll_count: Optional[int] = None
     scroll_only = False
     filtered_args: list[str] = []
     index = 0
@@ -598,9 +611,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                     scroll_count = int(args[next_index])
                     index += 1
                 except ValueError:
-                    scroll_count = 3
+                    scroll_count = None
             else:
-                scroll_count = 3
+                scroll_count = None
         elif arg.startswith("--scroll="):
             do_scroll = True
             _, _, val = arg.partition("=")
@@ -608,9 +621,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                 try:
                     scroll_count = int(val)
                 except ValueError:
-                    scroll_count = 3
+                    scroll_count = None
             else:
-                scroll_count = 3
+                scroll_count = None
         elif arg == "--scroll-only":
             scroll_only = True
             next_index = index + 1
@@ -619,9 +632,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                     scroll_count = int(args[next_index])
                     index += 1
                 except ValueError:
-                    scroll_count = 3
+                    scroll_count = None
             else:
-                scroll_count = 3
+                scroll_count = None
         elif arg.startswith("--scroll-only="):
             scroll_only = True
             _, _, val = arg.partition("=")
@@ -629,9 +642,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                 try:
                     scroll_count = int(val)
                 except ValueError:
-                    scroll_count = 3
+                    scroll_count = None
             else:
-                scroll_count = 3
+                scroll_count = None
         elif arg.startswith("--"):
             raise RuntimeError(f"不明なオプション: {arg}")
         else:
@@ -684,13 +697,48 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  パネル3 (右端): {dividers[2]} 〜 {frame.shape[1]}")
 
     if scroll_only:
-        print(f"\nスクロールのみモード: 1 単位 × {scroll_count} 回（上方向）")
-        _scroll_past_chart_down(
-            dividers=dividers,
-            screen_width=config.capture_width,
-            screen_height=config.capture_height,
-            scroll_count=scroll_count,
-        )
+        prev_frame = frame.copy()
+        iteration = 0
+        max_iterations = scroll_count if scroll_count is not None else 20
+
+        while True:
+            iteration += 1
+            if iteration > max_iterations:
+                if scroll_count is None:
+                    print("\n安全上限(20セット)に達しました。自動終了します。")
+                break
+
+            print(f"\nスクロールのみモード [セット {iteration}] 過去カルテ領域をスクロール中...")
+            _scroll_past_chart_down(
+                dividers=dividers,
+                screen_width=config.capture_width,
+                screen_height=config.capture_height,
+                scroll_count=3,
+            )
+
+            print("スクロール後の画面をキャプチャ中...")
+            frame = _capture_screen_hdmi(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if frame is None:
+                print("[WARNING] 再キャプチャに失敗しました。終了します。", file=sys.stderr)
+                break
+
+            print("画面変化を確認中...")
+            if _is_frame_unchanged(prev_frame, frame):
+                print("スクロール後の画面が変化しませんでした。自動終了します。")
+                break
+            prev_frame = frame.copy()
+
+            _save_debug_frame(frame, f"full_screen_scroll_{iteration}")
+            print("画面を解析中...")
+            dividers = _detect_all_dividers(frame, debug=True)
+            if dividers is None:
+                print("[ERROR] スクロール後の画面で区切り線を検出できませんでした", file=sys.stderr)
+                break
+
         return 0
 
     print("\n過去カルテ領域を切り出し中...")
@@ -733,8 +781,18 @@ def main(argv: list[str] | None = None) -> int:
         print("\n過去カルテにテキストが見つかりませんでした。")
 
     if do_scroll:
-        for iteration in range(scroll_count):
-            print(f"\n[セット {iteration + 1}/{scroll_count}] 過去カルテ領域をスクロール中...")
+        prev_frame = frame.copy()
+        iteration = 0
+        max_iterations = scroll_count if scroll_count is not None else 20
+
+        while True:
+            iteration += 1
+            if iteration > max_iterations:
+                if scroll_count is None:
+                    print("\n安全上限(20セット)に達しました。自動終了します。")
+                break
+
+            print(f"\n[セット {iteration}] 過去カルテ領域をスクロール中...")
             _scroll_past_chart_down(
                 dividers=dividers,
                 screen_width=config.capture_width,
@@ -753,7 +811,13 @@ def main(argv: list[str] | None = None) -> int:
                 print("[WARNING] 再キャプチャに失敗しました。現在の結果で終了します。", file=sys.stderr)
                 break
 
-            _save_debug_frame(frame, f"full_screen_scroll_{iteration + 1}")
+            print("画面変化を確認中...")
+            if _is_frame_unchanged(prev_frame, frame):
+                print("スクロール後の画面が変化しませんでした。自動終了します。")
+                break
+            prev_frame = frame.copy()
+
+            _save_debug_frame(frame, f"full_screen_scroll_{iteration}")
             print("画面を解析中...")
 
             dividers = _detect_all_dividers(frame, debug=True)
@@ -772,7 +836,7 @@ def main(argv: list[str] | None = None) -> int:
             ocr_text = _extract_ocr_text(past_chart)
             print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
 
-            print(f"\n[セット {iteration + 1}/{scroll_count}] VLM で統合読み取り中...")
+            print(f"\n[セット {iteration}] VLM で統合読み取り中...")
             raw_response = _read_past_chart_with_vlm_merge(
                 past_chart,
                 structured,
@@ -783,7 +847,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=MLX_VLM_IME_TIMEOUT,
             )
 
-            print(f"\n--- VLM 生応答 (セット {iteration + 1}) ---\n{raw_response}\n--- 終了 ---\n")
+            print(f"\n--- VLM 生応答 (セット {iteration}) ---\n{raw_response}\n--- 終了 ---\n")
 
             try:
                 structured = _parse_vlm_response(raw_response)
