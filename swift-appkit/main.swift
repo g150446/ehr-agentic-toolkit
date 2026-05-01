@@ -326,7 +326,13 @@ class ChatViewController: NSViewController {
                     for id in modelIds {
                         self?.modelSelector.addItem(withTitle: id)
                     }
-                    self?.currentModel = modelIds.first ?? self!.currentModel
+                    let preferredModel = "gemma-4-26b-a4b-it-4bit"
+                    if modelIds.contains(preferredModel) {
+                        self?.currentModel = preferredModel
+                    } else {
+                        self?.currentModel = modelIds.first ?? self!.currentModel
+                    }
+                    self?.modelSelector.selectItem(withTitle: self?.currentModel ?? "")
                 }
             }
         }.resume()
