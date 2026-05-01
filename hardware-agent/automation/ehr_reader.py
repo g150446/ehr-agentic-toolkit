@@ -441,7 +441,7 @@ def _find_word_return_mark_x(
 
     # x 座標が最大のものを選ぶ（最も右側）
     best_x, best_y = max(points, key=lambda p: p[0])
-    cx = best_x + w // 2
+    cx = int(best_x + w // 2)
     print(f"  word_return_mark 検出（最右）: ({best_x}, {best_y})〜({best_x + w}, {best_y + h}) 中心x={cx} (score={result[best_y, best_x]:.3f}, total={len(points)})")
     return cx
 
