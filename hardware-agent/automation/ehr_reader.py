@@ -345,6 +345,42 @@ def _click_letter_icon(
     return ok
 
 
+def _find_text_position_ocr(
+    frame: np.ndarray,
+    dividers: list[int],
+    search_text: str = "退院時要約",
+    *,
+    min_confidence: float = 0.3,
+) -> tuple[int, int] | None:
+    """パネル2（左から3番目）を EasyOCR で認識し、指定テキストの画面全体座標の中心を返す。
+
+    search_text の部分一致でテキストを検索する。
+    検出できなければ None を返す。
+    """
+    x_start = dividers[1]
+    x_end = dividers[2]
+    panel2 = frame[:, x_start:x_end]
+
+    reader = load_ocr_reader(languages=['ja', 'en'], use_gpu=False)
+    results = run_ocr_word_split(reader, panel2)
+
+    for bbox, text, conf in results:
+        if conf < min_confidence:
+            continue
+        if search_text in text:
+            # bbox は [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+            # 中心座標を計算し、画面全体座標に変換
+            xs = [p[0] for p in bbox]
+            ys = [p[1] for p in bbox]
+            cx = x_start + int(sum(xs) / len(xs))
+            cy = int(sum(ys) / len(ys))
+            print(f"  OCR '{search_text}' 検出: bbox中心=({cx}, {cy}) text='{text}' conf={conf:.2f}")
+            return (cx, cy)
+
+    print(f"  OCR '{search_text}' は見つかりませんでした")
+    return None
+
+
 def _extract_past_chart_region(
     frame: np.ndarray,
     dividers: list[int],
@@ -643,7 +679,7 @@ def _build_runtime_config(
     }
 
 
-def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Optional[int], bool, bool]:
+def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Optional[int], bool, bool, bool]:
     """CLI オプションをパースする。"""
     omlx = False
     omlx_model: Optional[str] = None
@@ -651,6 +687,7 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Opti
     scroll_count: Optional[int] = None
     scroll_only = False
     do_letter = False
+    do_summary = False
     filtered_args: list[str] = []
     index = 0
     while index < len(args):
@@ -712,27 +749,30 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Opti
                 scroll_count = None
         elif arg == "--letter":
             do_letter = True
+        elif arg == "--summary":
+            do_summary = True
         elif arg.startswith("--"):
             raise RuntimeError(f"不明なオプション: {arg}")
         else:
             filtered_args.append(arg)
         index += 1
-    return omlx, omlx_model, do_scroll, scroll_count, scroll_only, do_letter
+    return omlx, omlx_model, do_scroll, scroll_count, scroll_only, do_letter, do_summary
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     try:
-        omlx, omlx_model, do_scroll, scroll_count, scroll_only, do_letter = _parse_cli_options(args)
+        omlx, omlx_model, do_scroll, scroll_count, scroll_only, do_letter, do_summary = _parse_cli_options(args)
     except RuntimeError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 
-    if not omlx and not scroll_only and not do_letter:
-        print("[ERROR] --omlx または --scroll-only または --letter のいずれかのオプションが必要です", file=sys.stderr)
+    if not omlx and not scroll_only and not do_letter and not do_summary:
+        print("[ERROR] --omlx または --scroll-only または --letter または --summary のいずれかのオプションが必要です", file=sys.stderr)
         print("使用例: python -m automation.ehr_reader --omlx", file=sys.stderr)
         print("       python -m automation.ehr_reader --scroll-only", file=sys.stderr)
         print("       python -m automation.ehr_reader --letter", file=sys.stderr)
+        print("       python -m automation.ehr_reader --summary", file=sys.stderr)
         return 1
 
     runtime = _build_runtime_config(omlx_model=omlx_model) if omlx else {"model": "", "url": "", "api_key": ""}
@@ -799,6 +839,59 @@ def main(argv: list[str] | None = None) -> int:
         print(f"パネル2中央へ移動: ({panel2_center_x}, {panel2_center_y})")
         ok = client.move_mouse_to_position(panel2_center_x, panel2_center_y)
         print(f"moveto ({panel2_center_x}, {panel2_center_y}) -> {'OK' if ok else 'NG'}")
+
+        return 0
+
+    if do_summary:
+        print("\nletter_icon.png を画面全体から検索中...")
+        letter_pos = _find_letter_icon(frame, threshold=0.7)
+        if letter_pos is None:
+            print("[ERROR] letter_icon.png が画面内に見つかりませんでした", file=sys.stderr)
+            return 1
+        click_x, click_y, _ = letter_pos
+        print(f"letter_icon クリック: ({click_x}, {click_y})")
+        _click_letter_icon(click_x, click_y)
+
+        # ポップアップの位置を幾何学的に計算
+        panel2_width = dividers[2] - dividers[1]
+        popup_width = panel2_width // 3
+        target_x = dividers[2] - popup_width // 2
+        target_y = click_y  # letter_icon の中心 y と同じ
+
+        print(f"ポップアップ上段メニュー中心を計算: ({target_x}, {target_y})")
+
+        # カーソルを上段メニュー中心へ移動
+        client = _wait_for_ble_connected()
+        ok = client.switch_to_mouse_mode()
+        print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+        ok = client.move_mouse_to_position(target_x, target_y)
+        print(f"moveto ({target_x}, {target_y}) -> {'OK' if ok else 'NG'}")
+
+        # 1秒待機後、新しいポップアップが表示されるのを待つ
+        print("1.0秒待機（新ポップアップ表示待ち）...")
+        time.sleep(1.0)
+
+        # パネル2中央へ移動
+        panel2_center_x = dividers[1] + panel2_width // 2
+        panel2_center_y = target_y
+        print(f"パネル2中央へ移動: ({panel2_center_x}, {panel2_center_y})")
+        ok = client.move_mouse_to_position(panel2_center_x, panel2_center_y)
+        print(f"moveto ({panel2_center_x}, {panel2_center_y}) -> {'OK' if ok else 'NG'}")
+
+        # 0.5秒待機後、ポップアップをOCRで認識
+        print("0.5秒待機（ポップアップ安定）...")
+        time.sleep(0.5)
+
+        print("\nパネル2をEasyOCRで認識中...")
+        text_pos = _find_text_position_ocr(frame, dividers, "退院時要約")
+        if text_pos is None:
+            print("[ERROR] '退院時要約' が見つかりませんでした", file=sys.stderr)
+            return 1
+
+        text_x, text_y = text_pos
+        print(f"'退院時要約' へカーソル移動: ({text_x}, {text_y})")
+        ok = client.move_mouse_to_position(text_x, text_y)
+        print(f"moveto ({text_x}, {text_y}) -> {'OK' if ok else 'NG'}")
 
         return 0
 
