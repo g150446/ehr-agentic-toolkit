@@ -377,6 +377,70 @@ def _find_text_position_ocr(
     return None
 
 
+def _find_target_y_by_ocr(
+    frame: np.ndarray,
+    keywords: list[str] = None,
+    *,
+    min_confidence: float = 0.3,
+) -> int | None:
+    """画面全体を EasyOCR で認識し、指定キーワードの y 座標（中心）を返す。
+
+    keywords は優先順位順。先頭のキーワードから順に検索する。
+    検出できなければ None を返す。
+    """
+    if keywords is None:
+        keywords = ["担当医", "医師名"]
+
+    reader = load_ocr_reader(languages=['ja', 'en'], use_gpu=False)
+    results = run_ocr_word_split(reader, frame)
+
+    for keyword in keywords:
+        for bbox, text, conf in results:
+            if conf < min_confidence:
+                continue
+            if keyword in text:
+                ys = [p[1] for p in bbox]
+                cy = int(sum(ys) / len(ys))
+                print(f"  OCR '{keyword}' 検出: y={cy} text='{text}' conf={conf:.2f}")
+                return cy
+
+    print(f"  OCR {keywords} はいずれも見つかりませんでした")
+    return None
+
+
+def _find_word_return_mark_x(
+    frame: np.ndarray,
+    *,
+    threshold: float = 0.7,
+) -> int | None:
+    """画面全体から word_return_mark.jpg を検出し、最初にマッチした矩形の中心 x 座標を返す。"""
+    template_path = (
+        Path(__file__).resolve().parent.parent
+        / "match_templates"
+        / "word_return_mark.jpg"
+    )
+    if not template_path.exists():
+        print(f"[WARNING] テンプレート画像が見つかりません: {template_path}")
+        return None
+
+    template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
+    if template is None:
+        print(f"[WARNING] テンプレート画像の読み込みに失敗しました: {template_path}")
+        return None
+
+    result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
+    h, w = template.shape[:2]
+
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+    if max_val < threshold:
+        print(f"  word_return_mark 未検出 (最高スコア {max_val:.3f} < {threshold})")
+        return None
+
+    cx = max_loc[0] + w // 2
+    print(f"  word_return_mark 検出: ({max_loc[0]}, {max_loc[1]})〜({max_loc[0] + w}, {max_loc[1] + h}) 中心x={cx} (score={max_val:.3f})")
+    return cx
+
+
 def _save_ocr_overlay(
     panel2: np.ndarray,
     x_offset: int,
@@ -1001,6 +1065,36 @@ def main(argv: list[str] | None = None) -> int:
         # マウスモードに戻す
         ok = client.switch_to_mouse_mode()
         print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
+        # Word画面を再キャプチャ
+        print("\nWord画面をキャプチャ中...")
+        word_frame = _capture_screen_hdmi(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if word_frame is None:
+            print("[ERROR] Word画面のキャプチャに失敗しました", file=sys.stderr)
+            return 1
+        _save_debug_frame(word_frame, "word_screen")
+
+        # OCRで "担当医" または "医師名" を検索
+        print("Word画面をEasyOCRで認識中...")
+        target_y = _find_target_y_by_ocr(word_frame, keywords=["担当医", "医師名"])
+        if target_y is None:
+            print("[ERROR] '担当医'/'医師名' が見つかりませんでした", file=sys.stderr)
+            return 1
+
+        # テンプレートマッチングで word_return_mark の x 座標を検出
+        print("word_return_mark.jpg を検索中...")
+        target_x = _find_word_return_mark_x(word_frame, threshold=0.7)
+        if target_x is None:
+            print("[ERROR] 'word_return_mark.jpg' が見つかりませんでした", file=sys.stderr)
+            return 1
+
+        print(f"最終カーソル位置: ({target_x}, {target_y})")
+        ok = client.move_mouse_to_position(target_x, target_y)
+        print(f"moveto ({target_x}, {target_y}) -> {'OK' if ok else 'NG'}")
 
         return 0
 
