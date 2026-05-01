@@ -18,6 +18,8 @@
   python scripts/test_asthma_input.py --openrouter --novita
   python scripts/test_asthma_input.py --openrouter --novita deepseek/deepseek-vl2
   python scripts/test_asthma_input.py --google-ai-studio
+  python scripts/test_asthma_input.py --omlx
+  python scripts/test_asthma_input.py --omlx google/gemma-4-26b-a4b-it
   python scripts/test_asthma_input.py --dry-run        # 行と Enter の並びを表示
 """
 
@@ -33,6 +35,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 _PATIENT_RECORDS_DIR = _PROJECT_ROOT / "data" / "patient_records"
 _DEFAULT_RECORD = "asthma_1"
 _DEFAULT_NOVITA_MODEL = "google/gemma-4-31b-it"
+_OMLX_DEFAULT_MODEL = "gemma-4-26b-a4b-it-4bit"
 _SUPPORTED_RECORDS = ("asthma_1", "asthma_2", "asthma_3")
 
 
@@ -109,6 +112,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="ehr_input に --openrouter [MODEL] を渡す（--novita 併用時は省略可）",
     )
     parser.add_argument("--google-ai-studio", action="store_true", help="ehr_input に --google-ai-studio を渡す")
+    parser.add_argument(
+        "--omlx",
+        nargs="?",
+        const=_OMLX_DEFAULT_MODEL,
+        metavar="MODEL",
+        help=f"ehr_input に --omlx [MODEL] を渡す（省略時: {_OMLX_DEFAULT_MODEL}）",
+    )
     parser.add_argument("--delay", type=float, default=2.0, metavar="SEC", help="フラグメント間の待機秒数（デフォルト: 2.0）")
     parser.add_argument("--clear", action="store_true", help="各フラグメント前にフィールドをクリアする（--clear を ehr_input に渡す）")
     return parser
@@ -122,6 +132,7 @@ def _build_ehr_input_command(
     novita_model: str | None = None,
     openrouter_model: str | None = None,
     google_ai_studio: bool = False,
+    omlx_model: str | None = None,
 ) -> list[str]:
     if openrouter_model == "__shared__":
         if novita_model:
@@ -129,11 +140,16 @@ def _build_ehr_input_command(
         else:
             raise ValueError("--openrouter 単独時はモデルIDが必要です")
     dual_provider = bool(openrouter_model and novita_model)
-    external_count = int(bool(google_ai_studio)) + int(bool(fireworks_model)) + int(bool(openrouter_model or novita_model))
+    external_count = (
+        int(bool(google_ai_studio))
+        + int(bool(fireworks_model))
+        + int(bool(openrouter_model or novita_model))
+        + int(bool(omlx_model))
+    )
     if dual_provider and openrouter_model != novita_model:
         raise ValueError("--openrouter と --novita を併用する場合は同じモデルIDを指定してください")
     if external_count > 1:
-        raise ValueError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
+        raise ValueError("--google-ai-studio / --novita / --openrouter / --fireworks / --omlx は同時に指定できません")
     cmd = [_PYTHON, "-m", "automation.ehr_input"]
     if fireworks_model:
         cmd.extend(["--fireworks", fireworks_model])
@@ -146,6 +162,8 @@ def _build_ehr_input_command(
     if novita_model:
         cmd.append("--novita")
         cmd.append(novita_model)
+    if omlx_model:
+        cmd.extend(["--omlx", omlx_model])
     if clear:
         cmd.append("--clear")
     cmd.append(fragment)
@@ -182,6 +200,7 @@ def _run_fragment(
     novita_model: str | None = None,
     openrouter_model: str | None = None,
     google_ai_studio: bool = False,
+    omlx_model: str | None = None,
 ) -> bool:
     """1フラグメントを ehr_input で実行する。成功時は True を返す。
 
@@ -199,6 +218,7 @@ def _run_fragment(
         novita_model=novita_model,
         openrouter_model=openrouter_model,
         google_ai_studio=google_ai_studio,
+        omlx_model=omlx_model,
     )
     result = subprocess.run(
         cmd,
@@ -236,9 +256,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.fragment is not None and (args.start is not None or args.end is not None):
         parser.error("--fragment は --start/--end と同時に使えません")
-    external_count = int(bool(args.google_ai_studio)) + int(bool(args.fireworks)) + int(bool(args.openrouter or args.novita))
+    external_count = (
+        int(bool(args.google_ai_studio))
+        + int(bool(args.fireworks))
+        + int(bool(args.openrouter or args.novita))
+        + int(bool(args.omlx))
+    )
     if external_count > 1:
-        parser.error("--google-ai-studio / --novita / --openrouter / --fireworks は同時に使えません")
+        parser.error("--google-ai-studio / --novita / --openrouter / --fireworks / --omlx は同時に使えません")
     if args.openrouter and args.novita and args.openrouter not in {"__shared__", args.novita}:
         parser.error("--openrouter と --novita を併用する場合は同じモデルIDを使ってください")
     if args.openrouter == "__shared__":
@@ -276,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
                 novita_model=args.novita,
                 openrouter_model=args.openrouter,
                 google_ai_studio=args.google_ai_studio,
+                omlx_model=args.omlx,
             )
         except subprocess.TimeoutExpired:
             print(f"[{abs_i}/{total}] ⏰ TIMEOUT (900s)")

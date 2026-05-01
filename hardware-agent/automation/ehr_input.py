@@ -157,7 +157,8 @@ _TEXT_NORMALIZATION_MAP = str.maketrans({
 _MULTI_CHAR_REPLACEMENTS = {
     "→": "->",
     "⇒": "=>",
-    "℃": "度",
+    "℃": "C",
+    "×": "x",
 }
 _ASCII_SPECIAL_KEYS = {
     "\n": "enter",
@@ -208,6 +209,9 @@ _NOVITA_CHAT_URL = "https://api.novita.ai/openai/chat/completions"
 _NOVITA_DEFAULT_MODEL = "google/gemma-4-31b-it"
 _GOOGLE_AI_STUDIO_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _GOOGLE_AI_STUDIO_MODEL = "gemma-4-26b-a4b-it"
+_OMLX_CHAT_URL = "http://localhost:8000/v1/chat/completions"
+_OMLX_DEFAULT_MODEL = "gemma-4-26b-a4b-it-4bit"
+_OMLX_API_KEY = "penguin"
 _RUNTIME_OPTIONS = SimpleNamespace(
     dual_provider_model=None,
     dual_provider_turn=0,
@@ -215,6 +219,8 @@ _RUNTIME_OPTIONS = SimpleNamespace(
     novita_model=None,
     fireworks_model=None,
     google_ai_studio=False,
+    omlx=False,
+    omlx_model=None,
 )
 _DEFAULT_SEGMENTATION_RUNTIME = {
     "url": mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL,
@@ -298,6 +304,8 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
     novita_model: Optional[str] = None
     fireworks_model: Optional[str] = None
     google_ai_studio = False
+    omlx = False
+    omlx_model: Optional[str] = None
     filtered_args: list[str] = []
     index = 0
     while index < len(args):
@@ -331,6 +339,17 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         elif arg.startswith("--openrouter="):
             openrouter_requested = True
             openrouter_model = _parse_inline_provider_model(arg, option_name="--openrouter")
+        elif arg == "--omlx":
+            omlx = True
+            omlx_model, index = _parse_optional_provider_model(
+                args,
+                index,
+                option_name="--omlx",
+                default_model=_OMLX_DEFAULT_MODEL,
+            )
+        elif arg.startswith("--omlx="):
+            omlx = True
+            omlx_model = _parse_inline_provider_model(arg, option_name="--omlx")
         elif arg.startswith("--"):
             raise RuntimeError(f"不明なオプション: {arg}")
         else:
@@ -350,9 +369,10 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         int(bool(google_ai_studio))
         + int(bool(fireworks_model))
         + int(bool(openrouter_model or novita_model))
+        + int(bool(omlx))
     )
     if conflicting_provider_count > 1:
-        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
+        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks / --omlx は同時に指定できません")
 
     option_summary = {
         "clear_field": clear_field,
@@ -360,6 +380,8 @@ def _parse_cli_options(args: list[str]) -> tuple[list[str], dict[str, object]]:
         "fireworks_model": fireworks_model,
         "google_ai_studio": google_ai_studio,
         "novita_model": novita_model,
+        "omlx": omlx,
+        "omlx_model": omlx_model,
         "openrouter_model": openrouter_model,
     }
     return filtered_args, option_summary
@@ -487,14 +509,17 @@ def _configure_runtime(
     novita_model: Optional[str] = None,
     fireworks_model: Optional[str] = None,
     google_ai_studio: bool = False,
+    omlx: bool = False,
+    omlx_model: Optional[str] = None,
 ) -> None:
     conflicting_provider_count = (
         int(bool(google_ai_studio))
         + int(bool(fireworks_model))
         + int(bool(openrouter_model or novita_model))
+        + int(bool(omlx))
     )
     if conflicting_provider_count > 1:
-        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks は同時に指定できません")
+        raise RuntimeError("--google-ai-studio / --novita / --openrouter / --fireworks / --omlx は同時に指定できません")
 
     if openrouter_model and novita_model and openrouter_model != novita_model:
         raise RuntimeError("--openrouter と --novita を併用する場合は同じモデルIDを指定してください")
@@ -512,6 +537,8 @@ def _configure_runtime(
     _RUNTIME_OPTIONS.novita_model = novita_model
     _RUNTIME_OPTIONS.fireworks_model = fireworks_model
     _RUNTIME_OPTIONS.google_ai_studio = google_ai_studio
+    _RUNTIME_OPTIONS.omlx = omlx
+    _RUNTIME_OPTIONS.omlx_model = omlx_model
 
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _DEFAULT_SEGMENTATION_RUNTIME["url"]
     mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = _DEFAULT_SEGMENTATION_RUNTIME["model"]
@@ -577,6 +604,17 @@ def _configure_runtime(
         mlx_vlm_ime.MLX_VLM_TEXT_URL = _OPENROUTER_CHAT_URL
         mlx_vlm_ime.MLX_VLM_TEXT_MODEL = openrouter_model
         mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = api_key
+    elif omlx:
+        model = omlx_model or _OMLX_DEFAULT_MODEL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_URL = _OMLX_CHAT_URL
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_MODEL = model
+        mlx_vlm_segmentation.MLX_VLM_SEGMENTATION_API_KEY = _OMLX_API_KEY
+        mlx_vlm_ime.MLX_VLM_IME_URL = _OMLX_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_IME_MODEL = model
+        mlx_vlm_ime.MLX_VLM_IME_API_KEY = _OMLX_API_KEY
+        mlx_vlm_ime.MLX_VLM_TEXT_URL = _OMLX_CHAT_URL
+        mlx_vlm_ime.MLX_VLM_TEXT_MODEL = model
+        mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = _OMLX_API_KEY
 
 
 def _runtime_label(*, url: str, model: str, default_kind: str = "VLM") -> str:
@@ -759,7 +797,9 @@ def _capture_helper_reset_compare_frame(
     if cropped.size == 0:
         return None
     active_line_hint = line_hint or mlx_vlm_ime.get_active_typing_line_hint()
-    line_cropped = mlx_vlm_ime.crop_to_active_typing_line(cropped, active_line_hint)
+    line_cropped = None
+    if _resolved_screen_type != "notepad":
+        line_cropped = mlx_vlm_ime.crop_to_active_typing_line(cropped, active_line_hint)
     if line_cropped is not None:
         cropped = line_cropped
     elif _resolved_screen_type == "patient_record":
@@ -771,38 +811,6 @@ def _capture_helper_reset_compare_frame(
     if debug_name:
         _save_debug_image(cropped, f"{debug_name}_compare_crop")
     return cropped
-
-
-def _capture_helper_reset_baseline(
-    config,
-    *,
-    anchor_text: str = "",
-    debug_name: str = "helper_reset_baseline",
-) -> Optional[dict[str, object]]:
-    required_attrs = ("capture_device_index", "capture_width", "capture_height")
-    if any(not hasattr(config, attr) for attr in required_attrs):
-        return None
-    frame = _capture_frame(config)
-    if frame is None:
-        return None
-    screen_type = mlx_vlm_ime.classify_helper_reset_screen(
-        frame,
-        debug_name=f"{debug_name}_classify",
-    )
-    cropped = _capture_helper_reset_compare_frame(
-        frame,
-        debug_name=debug_name,
-        screen_type=screen_type,
-        line_hint=mlx_vlm_ime.get_active_typing_line_hint(),
-    )
-    if cropped is None:
-        return None
-    return {
-        "cropped_frame": cropped,
-        "anchor_text": anchor_text,
-        "screen_type": screen_type,
-        "line_hint": mlx_vlm_ime.get_active_typing_line_hint(),
-    }
 
 
 def _prime_helper_reset_panel_cache(config) -> None:
@@ -1418,9 +1426,11 @@ def open_test_patient_chart() -> None:
     ok = client.switch_to_keyboard_mode()
     print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
 
-    # Step 2: 患者一覧が表示されるまで待ってから Enter で先頭患者を選択
+    # Step 2: 患者一覧が表示されるまで待ってから、下矢印で2番目の患者を選択して Enter
     print("患者一覧の表示を待機中 (0.5秒)...")
     time.sleep(0.5)
+    ok = client.press_key("down")
+    print(f"key:down (select 2nd patient) -> {'OK' if ok else 'NG'}")
     ok = client.press_key("enter")
     print(f"key:enter (select patient) -> {'OK' if ok else 'NG'}")
 
@@ -1781,7 +1791,6 @@ def type_kanji_via_ime(
     _strict: bool = False,
     _typed_prefix_context: str = "",
     _helper_anchor_text: str = "",
-    _helper_reset_baseline: Optional[dict[str, object]] = None,
 ) -> None:
     """
     ローマ字を入力し、IME 変換で目的の漢字を確定させる。
@@ -2157,7 +2166,6 @@ def type_kanji_via_ime(
             romaji=romaji,
             left_context=_typed_prefix_context,
             anchor_text=_helper_anchor_text,
-            baseline_state=_helper_reset_baseline,
         ):
             return
 
@@ -2463,40 +2471,31 @@ def _cancel_ime_popup_safe(
     time.sleep(0.25)
 
     # Step 3: ひらがな組成を Backspace で削除
-    # VLM-guided path: VLM 偽陰性で BS ループが早期終了する問題を防ぐため、
-    # 最低でも conservative 回数（hira_len-1）の BS を無条件で送信し、
-    # その後 VLM で残存を 1 回だけ確認する。
-    if config is not None:
-        time.sleep(0.4)
-        first_frame = _capture_frame(config)
-        vlm_sees = first_frame is not None and _has_ime_composition(first_frame)
-        conservative = max(hira_len - 1, 1)
-        if vlm_sees:
-            # Phase 1: conservative floor (VLM 偽陰性でも最低限の削除を保証)
-            for _ in range(conservative):
-                client.press_key("backspace")
-                time.sleep(0.12)
-            # Phase 2: VLM で残存組成を 1 回だけ確認
-            time.sleep(0.15)
-            extra = 0
-            frame = _capture_frame(config)
-            if frame is not None and _has_ime_composition(frame):
-                client.press_key("backspace")
-                time.sleep(0.12)
-                extra = 1
-            total = conservative + extra
-            print(f"  [cancel_safe] VLM検出 → BS×{total} (conservative={conservative}, vlm_extra={extra}, hira_len={hira_len})")
-        else:
-            # VLM が Esc+F6 直後の組成を検出できない場合（偽陰性の可能性）
-            # conservative の固定 BS で過削除リスクを最小化しつつ未削除を抑える。
-            print(f"  [cancel_safe] VLM偽陰性 → 控えめBS×{conservative} (hira_len={hira_len})")
-            for _ in range(conservative):
-                client.press_key("backspace")
-                time.sleep(0.12)
-    else:
-        for _ in range(hira_len):
+    # 常に VLM 確認を行う。config がない場合はエラー。
+    if config is None:
+        raise RuntimeError("config is required for cancel_ime_popup_safe")
+
+    time.sleep(0.4)
+    first_frame = _capture_frame(config)
+    vlm_sees = first_frame is not None and _has_ime_composition(first_frame)
+    conservative = max(hira_len - 1, 1)
+    if vlm_sees:
+        # Phase 1: conservative floor
+        for _ in range(conservative):
             client.press_key("backspace")
             time.sleep(0.12)
+        # Phase 2: VLM で残存組成を 1 回だけ確認
+        time.sleep(0.15)
+        extra = 0
+        frame = _capture_frame(config)
+        if frame is not None and _has_ime_composition(frame):
+            client.press_key("backspace")
+            time.sleep(0.12)
+            extra = 1
+        total = conservative + extra
+        print(f"  [cancel_safe] VLM検出 → BS×{total} (conservative={conservative}, vlm_extra={extra}, hira_len={hira_len})")
+    else:
+        print(f"  [cancel_safe] VLM検出なし → Backspace 送信スキップ (hira_len={hira_len})")
 
 def _clear_pending_ime_composition(
     client: "BLEClient",
@@ -2559,22 +2558,6 @@ def _next_segment_uses_ime_conversion(
     return _segment_uses_ime_conversion(segments[index + 1]["text"])
 
 
-def _capture_helper_reset_baseline_if_needed(
-    config,
-    *,
-    anchor_text: str,
-    should_capture: bool,
-    debug_name: str,
-) -> Optional[dict[str, object]]:
-    if not should_capture or not anchor_text:
-        return None
-    return _capture_helper_reset_baseline(
-        config,
-        anchor_text=anchor_text,
-        debug_name=debug_name,
-    )
-
-
 def _reset_ime_before_helper_lookup(
     client: "BLEClient",
     config,
@@ -2582,96 +2565,18 @@ def _reset_ime_before_helper_lookup(
     target_kanji: str,
     left_context: str = "",
     anchor_text: str = "",
-    baseline_state: Optional[dict[str, object]] = None,
-    max_escape_count: int = 4,
-    wait: float = 0.5,
+    wait: float = 0.1,
 ) -> bool:
-    """Cancel helper-word precomposition with per-attempt baseline/VLM verification."""
+    """Cancel helper-word precomposition by sending Escape 5 times."""
     if config is None:
-        ok = client.press_key("escape")
-        print(f"  [helper reset] key:escape -> {'OK' if ok else 'NG'} (configなし)")
-        time.sleep(wait)
-        return True
+        raise RuntimeError("config is required for IME reset")
 
-    trimmed_left_context = _trim_helper_left_context(left_context)
-    baseline_frame = None
-    if baseline_state is not None:
-        baseline_frame = baseline_state.get("cropped_frame")
-    if isinstance(baseline_frame, np.ndarray):
-        print(
-            "  [helper reset] baseline image ready: "
-            f"shape={baseline_frame.shape} anchor={anchor_text or baseline_state.get('anchor_text', '')!r}"
-        )
-    baseline_screen_type = baseline_state.get("screen_type") if isinstance(baseline_state, dict) else None
-    baseline_line_hint = baseline_state.get("line_hint") if isinstance(baseline_state, dict) else None
-    for attempt in range(1, max_escape_count + 1):
+    for attempt in range(1, 6):
         ok = client.press_key("escape")
-        print(f"  [helper reset] key:escape ({attempt}/{max_escape_count}) -> {'OK' if ok else 'NG'}")
+        print(f"  [helper reset] key:escape ({attempt}/5) -> {'OK' if ok else 'NG'}")
         time.sleep(wait)
-        frame = _capture_frame(config)
-        if frame is None:
-            print("  [helper reset] フレーム取得失敗 → 次の Escape を試します")
-            continue
-        if isinstance(baseline_frame, np.ndarray):
-            current_frame = _capture_helper_reset_compare_frame(
-                frame,
-                debug_name=f"helper_reset_compare_attempt_{attempt}",
-                screen_type=baseline_screen_type if isinstance(baseline_screen_type, str) else None,
-                line_hint=baseline_line_hint if isinstance(baseline_line_hint, dict) else None,
-            )
-            if current_frame is None:
-                print("  [helper reset] 比較用クロップ取得失敗 → 次の Escape を試します")
-                continue
-            try:
-                ready = compare_helper_reset_images(
-                    baseline_frame,
-                    current_frame,
-                    left_context=trimmed_left_context,
-                    anchor_text=anchor_text,
-                    target_text=target_kanji,
-                    screen_type=baseline_screen_type if isinstance(baseline_screen_type, str) else "",
-                )
-            except MlxVlmImeError as exc:
-                print(f"  [helper reset] 二画像VLM比較失敗 → 次の Escape を試します: {exc}")
-                continue
-            print(f"  [helper reset][compare] baseline_vs_current={'yes' if ready else 'no'}")
-            if ready:
-                print("  [helper reset][compare] baseline と一致 → Escape 停止")
-                return True
-            if attempt < max_escape_count:
-                print(
-                    "  [helper reset][compare] baseline と未一致でリセット未完了 → "
-                    "次の Escape を送ります"
-                )
-            continue
-        try:
-            state = assess_helper_reset_state(
-                frame,
-                left_context=trimmed_left_context,
-                anchor_text=anchor_text,
-                target_text=target_kanji,
-            )
-        except MlxVlmImeError as exc:
-            print(f"  [helper reset] VLM判定失敗 → 次の Escape を試します: {exc}")
-            continue
-        print(
-            "  [helper reset] 判定: "
-            f"left_context_preserved={state['left_context_preserved']} "
-            f"composition_cleared={state['composition_cleared']} ready={state['ready']}"
-        )
-        if state["ready"]:
-            print("  [helper reset] ready=true → Escape 停止")
-            return True
-        if not state["left_context_preserved"]:
-            print("  [helper reset] 左側の既入力文字が壊れた可能性あり → これ以上の Escape は中止")
-            return False
-        if attempt < max_escape_count:
-            print(
-                "  [helper reset] ready=false のためリセット未完了 → "
-                "次の Escape を送ります"
-            )
-    print(f"  [helper reset] {max_escape_count} 回の Escape 後も安全なキャンセル完了を確認できませんでした")
-    return False
+
+    return True
 
 
 def _cleanup_after_helper_backspace(
@@ -2709,11 +2614,6 @@ def _fallback_remaining_after_prefix(
         max_backspaces=max(_text_to_hiragana_len(remaining_target) + 2, 4),
     )
     time.sleep(0.3)
-    helper_reset_baseline = _capture_helper_reset_baseline(
-        config,
-        anchor_text=helper_anchor_text,
-        debug_name=f"helper_reset_baseline_{helper_anchor_text or 'remaining'}",
-    )
     type_kanji_via_ime(
         _kanji_to_romaji(remaining_target),
         remaining_target,
@@ -2721,7 +2621,6 @@ def _fallback_remaining_after_prefix(
         _current_ime_mode="japanese",
         _typed_prefix_context=typed_prefix_context,
         _helper_anchor_text=helper_anchor_text,
-        _helper_reset_baseline=helper_reset_baseline,
     )
 
 
@@ -2889,7 +2788,6 @@ def _try_helper_word_fallback(
     romaji: str = "",
     left_context: str = "",
     anchor_text: str = "",
-    baseline_state: Optional[dict[str, object]] = None,
 ) -> bool:
     """ヘルパー単語フォールバック: テキストモデルにヘルパー単語を問い合わせ、
     変換後に余分な文字を削除して目標漢字を入力する。
@@ -2918,14 +2816,13 @@ def _try_helper_word_fallback(
     # エントリー状態: target_kanji に対応するIMEポップアップが開いている
     # コミットなしでキャンセルしてから問い合わせに入る。問い合わせ待ちの間に
     # 誤候補（例: 「化」）を残したままにしないため、先に IME 組成を必ずクリアする。
-    print("  [ヘルパー単語] IMEポップアップをキャンセルし、各 Esc 後に baseline 画像と比較します...")
+    print("  [ヘルパー単語] IMEポップアップをキャンセルします...")
     if not _reset_ime_before_helper_lookup(
         client,
         config,
         target_kanji=target_kanji,
         left_context=left_context,
         anchor_text=anchor_text,
-        baseline_state=baseline_state,
     ):
         print("  [ヘルパー単語] IME キャンセル完了を安全に確認できませんでした → フォールバック失敗")
         return False
@@ -3087,11 +2984,6 @@ def _try_helper_word_fallback(
                     print(f"  [ヘルパー単語] 残り「{remaining}」を続けて入力します...")
                     remaining_romaji = _kanji_to_romaji(remaining)
                     time.sleep(1.0)
-                    helper_reset_baseline = _capture_helper_reset_baseline(
-                        config,
-                        anchor_text=covered_prefix,
-                        debug_name=f"helper_reset_baseline_{covered_prefix}",
-                    )
                     type_kanji_via_ime(
                         remaining_romaji,
                         remaining,
@@ -3099,7 +2991,6 @@ def _try_helper_word_fallback(
                         _current_ime_mode="japanese",
                         _typed_prefix_context=f"{left_context}{covered_prefix}",
                         _helper_anchor_text=covered_prefix,
-                        _helper_reset_baseline=helper_reset_baseline,
                     )
                 return True
             print(f"  [ヘルパー単語] 「{helper_word}」がハイライト候補に見つかりません → 次の提案を試みます")
@@ -3133,11 +3024,6 @@ def _try_helper_word_fallback(
             remaining_romaji = _kanji_to_romaji(remaining)
             # ESP32がBackspace処理を完了するまで待機してから次のセグメントへ
             time.sleep(1.0)
-            helper_reset_baseline = _capture_helper_reset_baseline(
-                config,
-                anchor_text=covered_prefix,
-                debug_name=f"helper_reset_baseline_{covered_prefix}",
-            )
             type_kanji_via_ime(
                 remaining_romaji,
                 remaining,
@@ -3145,7 +3031,6 @@ def _try_helper_word_fallback(
                 _current_ime_mode="japanese",
                 _typed_prefix_context=f"{left_context}{covered_prefix}",
                 _helper_anchor_text=covered_prefix,
-                _helper_reset_baseline=helper_reset_baseline,
             )
 
         return True
@@ -3404,10 +3289,10 @@ def detect_ime_mode(
     config=None,
 ) -> Optional[str]:
     """
-    'a' を1文字入力し、Qwen3-VL でスクリーンを読んで IME モードを検出する。
+    'a' を1文字入力し、VLM でスクリーンを読んで IME モードを検出する。
 
     英語入力モードなら 'a' が、日本語（ひらがな）入力モードなら「あ」が表示される。
-    VLM で判定後に Backspace で入力した文字を削除する。
+    日本語モードなら Backspace × 2、英語モードなら Backspace × 3 で入力を取り消す。
 
     Args:
         client: BLEClient インスタンス（キー送信に使用）
@@ -3432,6 +3317,11 @@ def detect_ime_mode(
 
     # 'a' を1文字入力してIMEの反応を確認
     client.type_text("a")
+    time.sleep(0.2)
+    # Enter × 2 でカーソルを入力位置から離し、OCR の誤認識を防ぐ
+    client.press_key("enter")
+    time.sleep(0.2)
+    client.press_key("enter")
     time.sleep(0.4)
 
     post_frame = capture_screen(
@@ -3443,42 +3333,17 @@ def detect_ime_mode(
     result: Optional[str] = None
     if post_frame is not None:
         result = detect_ime_mode_from_typed_a(post_frame, pre_frame=pre_frame)
-        print(f"  [IME検出/VLM] 結果: {result!r}")
+        print(f"  [IME検出] 結果: {result!r}")
     else:
         print("  [IME検出] キャプチャ失敗")
 
-    def _cleanup_probe_after_escape(wait: float) -> None:
-        client.press_key("escape")
-        time.sleep(wait)
-        cleanup_frame = _capture_frame(config)
-        if cleanup_frame is None:
-            print("  [IME検出/cleanup] キャプチャ失敗")
-            return
-        if result is None:
-            committed_probe_remains = _frame_has_meaningful_diff(pre_frame, cleanup_frame)
-            print(f"  [IME検出/cleanup] probe残存: {committed_probe_remains}")
-            if committed_probe_remains:
-                client.press_key("backspace")
-                time.sleep(0.2)
-            return
-
-        composition_active = _has_ime_composition(cleanup_frame)
-        print(f"  [IME検出/cleanup] 組成残存: {composition_active}")
-        if composition_active:
-            client.press_key("backspace")
-            time.sleep(0.2)
-
-    # 入力した 'a' または 'あ' を削除する
-    if result == "japanese":
-        # 日本語モード: IME の未確定「あ」を Escape でキャンセル（確実）
-        _cleanup_probe_after_escape(0.25)
-    elif result == "english":
-        # 英語モード: 'a' を Backspace で削除
+    # 日本語モード: Enter × 1 が変換確定に使われるため backspace × 2
+    # 英語モード/判定不能: backspace × 3
+    backspace_count = 2 if result == "japanese" else 3
+    print(f"  [IME検出/cleanup] backspace × {backspace_count}")
+    for i in range(backspace_count):
         client.press_key("backspace")
-        time.sleep(0.2)
-    else:
-        # 判定不能: Escape で未確定組成を消し、残っている場合のみ Backspace を送る
-        _cleanup_probe_after_escape(0.15)
+        time.sleep(0.15)
 
     return result
 
@@ -3600,7 +3465,6 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
     segments = list(_iter_segments_for_input(text))
     typed_prefix_context = ""
     helper_anchor_text = ""
-    helper_reset_baseline: Optional[dict[str, object]] = None
     for index, seg in enumerate(segments):
         seg_text = seg["text"]
         seg_romaji = seg["romaji"]
@@ -3644,7 +3508,6 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                     _current_ime_mode=current_mode,
                     _typed_prefix_context=typed_prefix_context,
                     _helper_anchor_text=helper_anchor_text,
-                    _helper_reset_baseline=helper_reset_baseline,
                 )
             time.sleep(0.25)
 
@@ -3678,7 +3541,6 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
             # ASCII 部分は英数字モードで直接入力、特殊記号は IME で読み変換
             segment_prefix_context = typed_prefix_context
             segment_anchor_text = helper_anchor_text
-            segment_baseline_state = helper_reset_baseline
             for char_index, ch in enumerate(seg_text):
                 if ch in _JP_SYMBOL_IME_READINGS:
                     reading = _JP_SYMBOL_IME_READINGS[ch]
@@ -3689,7 +3551,6 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                         _current_ime_mode=current_mode,
                         _typed_prefix_context=segment_prefix_context,
                         _helper_anchor_text=segment_anchor_text,
-                        _helper_reset_baseline=segment_baseline_state,
                     )
                 elif ch in _CHAR_ASCII_FALLBACK:
                     # μ など BLE 経由で直接送れない文字は ASCII 代替文字で入力
@@ -3710,22 +3571,8 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
                         client.press_key("enter")
                 segment_prefix_context += ch
                 segment_anchor_text = _update_helper_anchor_text(segment_anchor_text, ch)
-                is_last_char = char_index + 1 == len(seg_text)
-                next_char_uses_ime = (
-                    not is_last_char
-                    and seg_text[char_index + 1] in _JP_SYMBOL_IME_READINGS
-                )
-                segment_baseline_state = _capture_helper_reset_baseline_if_needed(
-                    config,
-                    anchor_text=segment_anchor_text,
-                    should_capture=next_char_uses_ime or (
-                        is_last_char and _next_segment_uses_ime_conversion(segments, index)
-                    ),
-                    debug_name=f"helper_reset_baseline_{segment_anchor_text or 'segment'}",
-                )
             typed_prefix_context = segment_prefix_context
             helper_anchor_text = segment_anchor_text
-            helper_reset_baseline = segment_baseline_state
             continue
 
         else:
@@ -3741,12 +3588,6 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
 
         typed_prefix_context += seg_text
         helper_anchor_text = _update_helper_anchor_text(helper_anchor_text, seg_text)
-        helper_reset_baseline = _capture_helper_reset_baseline_if_needed(
-            config,
-            anchor_text=helper_anchor_text,
-            should_capture=_next_segment_uses_ime_conversion(segments, index),
-            debug_name=f"helper_reset_baseline_{helper_anchor_text or 'segment'}",
-        )
 
     print("\n文章入力完了")
 
@@ -3794,6 +3635,7 @@ def _print_usage() -> None:
     print(f"  --novita [model]     文節分割・IME候補読取・ヘルパー単語提案を Novita AI のモデルで実行する（省略時: {_NOVITA_DEFAULT_MODEL}）")
     print("  --openrouter [model] 文節分割・IME候補読取・ヘルパー単語提案を OpenRouter のモデルで実行する（要: vision対応モデル）")
     print(f"                      --novita と併用した場合は OpenRouter / Novita を交互に使う（共有モデル省略時: {_NOVITA_DEFAULT_MODEL}）")
+    print(f"  --omlx [model]       文節分割・IME候補読取・ヘルパー単語提案をローカル omlx サーバーで実行する（省略時: {_OMLX_DEFAULT_MODEL}）")
     print("  --help, -h, help     このヘルプを表示")
     print()
     print("コマンド:")
@@ -3820,6 +3662,8 @@ def _print_usage() -> None:
     print('  python -m automation.ehr_input --openrouter qwen/qwen3.5-35b-a3b "聴診"')
     print('  python -m automation.ehr_input --openrouter --novita "両肺野に"')
     print('  python -m automation.ehr_input --openrouter --novita deepseek/deepseek-vl2 "聴診"')
+    print('  python -m automation.ehr_input --omlx "両肺野に"')
+    print(f'  python -m automation.ehr_input --omlx={_OMLX_DEFAULT_MODEL} "聴診"')
     print('  python -m automation.ehr_input "COVID-19の検査"')
     print('  python -m automation.ehr_input note.txt')
     print('  python -m automation.ehr_input "open test" 肺炎')
@@ -3834,12 +3678,16 @@ def _run_cli_with_parsed_args(args: list[str], option_summary: dict[str, object]
     fireworks_model = option_summary["fireworks_model"]
     google_ai_studio = bool(option_summary["google_ai_studio"])
     clear_field = bool(option_summary["clear_field"])
+    omlx = bool(option_summary["omlx"])
+    omlx_model = option_summary["omlx_model"]
 
     _configure_runtime(
         openrouter_model=openrouter_model,
         novita_model=novita_model,
         fireworks_model=fireworks_model,
         google_ai_studio=google_ai_studio,
+        omlx=omlx,
+        omlx_model=omlx_model,
     )
 
     if not args:

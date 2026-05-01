@@ -300,7 +300,13 @@ def _cluster_x_positions(xs: list[int], *, max_gap: int = 20) -> list[int]:
     return clusters
 
 
-def _find_gray_divider_candidates(frame: np.ndarray) -> list[int]:
+def _find_gray_divider_candidates(
+    frame: np.ndarray,
+    *,
+    spread_max: int = 14,
+    value_min: int = 120,
+    coverage_ratio: float = 0.45,
+) -> list[int]:
     h, w = frame.shape[:2]
     y1 = int(h * 0.05)
     y2 = int(h * 0.95)
@@ -310,13 +316,13 @@ def _find_gray_divider_candidates(frame: np.ndarray) -> list[int]:
     r = band[:, :, 2].astype(np.int16)
     spread = np.maximum(np.maximum(b, g), r) - np.minimum(np.minimum(b, g), r)
     value = ((b + g + r) / 3.0)
-    mask = ((spread <= 14) & (value >= 120) & (value <= 235)).astype(np.uint8) * 255
+    mask = ((spread <= spread_max) & (value >= value_min) & (value <= 235)).astype(np.uint8) * 255
     vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(25, (y2 - y1) // 6)))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, vertical_kernel)
     mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 15)))
 
     col_strength = np.count_nonzero(mask, axis=0)
-    threshold = max(int((y2 - y1) * 0.45), 40)
+    threshold = max(int((y2 - y1) * coverage_ratio), 40)
     candidates: list[int] = []
     start: Optional[int] = None
     for x, strength in enumerate(col_strength):
@@ -914,25 +920,153 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
             best = (x, y, w, h)
 
     if best is None:
+        print(f"  [popup_crop] 水色選択行を検出できませんでした (frame={fw}x{fh})")
         return None
 
     x, y, w, h = best
+    print(f"  [popup_crop] 水色選択行: x={x}, y={y}, w={w}, h={h} (frame={fw}x{fh})")
+    # 選択行が1番目とは限らないため、上方向へ十分に拡張して
+    # ポップアップの先頭候補を含むようにする。
+    # 各行の高さは約 h と同等なので、上方向へ 5 行分、下方向へ 12 行分確保する。
     roi_x1 = max(0, x - 5)
-    roi_y1 = max(0, y - int(h * 1.5))
+    roi_y1 = max(0, y - int(h * 5))
     roi_x2 = min(fw, roi_x1 + w + 10)
-    roi_y2 = min(fh, roi_y1 + int(h * 9.5))
+    roi_y2 = min(fh, roi_y1 + int(h * 12))
+    print(f"  [popup_crop] クロップ範囲: x=[{roi_x1}:{roi_x2}], y=[{roi_y1}:{roi_y2}]")
     if roi_x2 - roi_x1 < 60 or roi_y2 - roi_y1 < 40:
         return None
     return frame[roi_y1:roi_y2, roi_x1:roi_x2]
+
+
+def crop_to_ime_popup_by_corner(frame: np.ndarray, *, debug_name: str = "") -> Optional[np.ndarray]:
+    """IME ポップアップの右下端 >> アイコンをテンプレートマッチングで検出し、
+    輪郭抽出でポップアップ外枠を切り出す。
+    """
+    fh, fw = frame.shape[:2]
+
+    # 1. テンプレート読み込み
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "match_templates", "ime_right_corner.png"
+    )
+    tmpl = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+    if tmpl is None:
+        print(f"  [popup_crop_corner] テンプレートを読み込めません: {template_path}")
+        return None
+
+    # 2. テンプレートマッチング
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    result = cv2.matchTemplate(gray, tmpl, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+    print(f"  [popup_crop_corner] テンプレートマッチング スコア: {max_val:.3f}")
+    if max_val < 0.5:
+        print(f"  [popup_crop_corner] スコアが低すぎます (閾値 0.5)")
+        return None
+
+    mx, my = max_loc
+    tw, th = tmpl.shape[::-1]
+    print(f"  [popup_crop_corner] >> 検出: x={mx}, y={my}, w={tw}, h={th}")
+
+    # >> の中心座標
+    cx = mx + tw // 2
+    cy = my + th // 2
+
+    # 3. ROI 設定: >> の左上方向にポップアップが広がる
+    roi_x1 = max(0, cx - 400)
+    roi_y1 = max(0, cy - 500)
+    roi_x2 = min(fw, cx + 30)
+    roi_y2 = min(fh, cy + 30)
+
+    roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+    if roi.size == 0:
+        print(f"  [popup_crop_corner] ROI が空です")
+        return None
+
+    print(f"  [popup_crop_corner] ROI: x=[{roi_x1}:{roi_x2}], y=[{roi_y1}:{roi_y2}]")
+
+    # 4. 輪郭抽出で外枠を検出
+    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+    # ガウシアンブラーでノイズ除去
+    blurred = cv2.GaussianBlur(roi_gray, (5, 5), 0)
+
+    # Cannyエッジ検出
+    edges = cv2.Canny(blurred, 30, 100)
+
+    # エッジを少し太くして連続性を持たせる
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edges = cv2.dilate(edges, kernel, iterations=1)
+
+    # 輪郭検出
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        # ROI内の座標をフレーム座標に変換
+        abs_x = roi_x1 + x
+        abs_y = roi_y1 + y
+        abs_x2 = abs_x + w
+        abs_y2 = abs_y + h
+
+        # フィルタ条件
+        if w < 60 or w > 500:
+            continue
+        if h < 100 or h > 600:
+            continue
+        if h < w * 0.3:  # あまり横長すぎるものは除外（入力欄等）
+            continue
+
+        # >> の位置を含むかチェック（右下端付近）
+        contains_corner = (abs_x <= cx <= abs_x2) and (abs_y <= cy <= abs_y2)
+
+        # 右下端から >> までの距離
+        dist_to_corner = ((abs_x2 - cx) ** 2 + (abs_y2 - cy) ** 2) ** 0.5
+
+        candidates.append({
+            'rect': (abs_x, abs_y, w, h),
+            'contains_corner': contains_corner,
+            'dist_to_corner': dist_to_corner,
+            'area': w * h,
+        })
+
+    if not candidates:
+        print(f"  [popup_crop_corner] 輪郭から有効な矩形が見つかりませんでした")
+        return None
+
+    # 優先: >> を含む矩形 > >> に最も近い右下端 > 面積最大
+    candidates_with_corner = [c for c in candidates if c['contains_corner']]
+    if candidates_with_corner:
+        best = max(candidates_with_corner, key=lambda c: c['area'])
+        print(f"  [popup_crop_corner] >> を含む矩形を選択: {best['rect']}")
+    else:
+        best = min(candidates, key=lambda c: c['dist_to_corner'])
+        print(f"  [popup_crop_corner] >> に最も近い矩形を選択: {best['rect']}")
+
+    x, y, w, h = best['rect']
+
+    # 少し余裕を持たせてクロップ
+    pad = 5
+    crop_x1 = max(0, x - pad)
+    crop_y1 = max(0, y - pad)
+    crop_x2 = min(fw, x + w + pad)
+    crop_y2 = min(fh, y + h + pad)
+
+    print(f"  [popup_crop_corner] クロップ範囲: x=[{crop_x1}:{crop_x2}], y=[{crop_y1}:{crop_y2}]")
+
+    return frame[crop_y1:crop_y2, crop_x1:crop_x2]
 
 
 def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
     """IME ポップアップ候補リストの領域を切り出す。
 
     1. patient_record では第3ペイン + 中央帯に限定
-    2. そのスコープ内で水色の選択行を検出し、候補ウィンドウ全体を推定
-    3. 失敗時は入力領域で暗い反転候補を検出
-    4. 最後は中央帯クロップ
+    2. そのスコープ内で >> コーナーアイコンを検出し、輪郭抽出でウィンドウ全体を推定
+    3. フォールバック: 水色の選択行を検出
+    4. さらにフォールバック: 入力領域で暗い反転候補を検出
+    5. 最後は中央帯クロップ
     """
     popup_search_region = frame
     panel_bounds = _helper_reset_panel_bounds or detect_patient_record_panel3(frame)
@@ -947,6 +1081,12 @@ def _crop_popup_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray
             top_ratio=0.25,
             bottom_ratio=0.85,
         )
+
+    popup = crop_to_ime_popup_by_corner(popup_search_region, debug_name=debug_name)
+    if popup is not None:
+        if debug_name:
+            _save_debug_popup(popup, debug_name)
+        return popup
 
     popup = crop_to_ime_popup_by_blue(popup_search_region)
     if popup is not None:
@@ -1076,6 +1216,38 @@ def _find_notepad_document_top(frame: np.ndarray) -> int:
     return min(max_scan, int(h * 0.12))
 
 
+def _crop_notepad_menu_bar(frame: np.ndarray) -> np.ndarray:
+    """Notepad のメニュー行を水色領域の B-R 色差で検出して除外する。
+
+    Windows 11 Notepad のメニューバーは薄い水色（B > R）で、
+    ドキュメント本文は純白（B ≈ R ≈ G）であるため、
+    行ごとの B-R 差分が閾値を下回る位置をメニュー下端として検出する。
+    """
+    h, w = frame.shape[:2]
+    if h < 20 or w < 20:
+        return frame
+
+    # 画面上部 20% までをスキャン（メニューは通常 10% 以内）
+    max_scan = min(int(h * 0.20), h)
+    window = 5  # スムージング用の行ウィンドウ
+
+    for y in range(0, max_scan - window):
+        row_window = frame[y:y+window, :, :]
+        mean_b = row_window[:, :, 0].mean()
+        mean_r = row_window[:, :, 2].mean()
+        br_diff = mean_b - mean_r
+
+        # B-R 差分が 3.0 未満ならドキュメント本文と判定
+        if br_diff < 3.0:
+            menu_bottom = y
+            print(f"  [Notepad menu detection] color-based boundary at row {menu_bottom} (B-R={br_diff:.1f})")
+            return frame[menu_bottom:, :]
+
+    # 検出できなかった場合はフレーム全体を返す
+    print(f"  [Notepad menu detection] color-based detection failed, returning full frame")
+    return frame
+
+
 def crop_notepad_document_region(frame: np.ndarray, *, debug_name: str = "") -> np.ndarray:
     """Crop the Notepad document body, excluding the top menu and Windows taskbar."""
     h, w = frame.shape[:2]
@@ -1113,6 +1285,9 @@ def crop_notepad_document_region(frame: np.ndarray, *, debug_name: str = "") -> 
     doc_top = _find_notepad_document_top(crop)
     if 0 < doc_top < crop.shape[0]:
         crop = crop[doc_top:, :]
+
+    # setting_icon テンプレートでメニュー行を検出して除外
+    crop = _crop_notepad_menu_bar(crop)
 
     if debug_name:
         _save_debug_frame(crop, name=debug_name, prefix="debug_notepad_crop")
@@ -1805,6 +1980,7 @@ def _extract_diff_crop(
     min_change_px: int = 12,
     pad: int = 30,
     max_y_fraction: float = 0.82,
+    min_y_px: int = 0,
 ) -> Optional[np.ndarray]:
     """2フレームの差分から変化した矩形領域を切り出す。
 
@@ -1812,6 +1988,7 @@ def _extract_diff_crop(
     周辺領域のみを返す。既存テキストの影響を排除するためのヘルパー。
 
     max_y_fraction: 画面下部（IME クラウド候補等）を除外するための上限 (0〜1)。
+    min_y_px: 画面上部（メニューバー等）を除外するための下限（ピクセル）。
     Windows IME のクラウド候補パネルは画面下部に表示されることが多いため、
     その領域を差分検索から除外することで誤検出を防ぐ。
 
@@ -1820,9 +1997,11 @@ def _extract_diff_crop(
     """
     h = min(pre_frame.shape[0], post_frame.shape[0])
     w = min(pre_frame.shape[1], post_frame.shape[1])
+    # 画面上部（メニューバー等）を除外
+    y_start = max(0, min_y_px)
     # 画面下部（IMEクラウド候補/ツールバーエリア）を除外
     h_limit = int(h * max_y_fraction)
-    diff = cv2.absdiff(pre_frame[:h_limit, :w], post_frame[:h_limit, :w])
+    diff = cv2.absdiff(pre_frame[y_start:h_limit, :w], post_frame[y_start:h_limit, :w])
     gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
     _, thresh = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
@@ -1832,18 +2011,68 @@ def _extract_diff_crop(
         return None
     largest = max(contours, key=cv2.contourArea)
     x, y, bw, bh = cv2.boundingRect(largest)
+    actual_y = y + y_start
     if bw < min_change_px or bh < min_change_px:
         return None
     _store_active_typing_line_hint(
         frame_height=post_frame.shape[0],
-        center_y=y + (bh / 2.0),
+        center_y=actual_y + (bh / 2.0),
         char_height=bh,
     )
     x1 = max(0, x - pad)
-    y1 = max(0, y - pad)
+    y1 = max(0, actual_y - pad)
     x2 = min(post_frame.shape[1], x + bw + pad)
-    y2 = min(post_frame.shape[0], y + bh + pad)
+    y2 = min(post_frame.shape[0], actual_y + bh + pad)
     return post_frame[y1:y2, x1:x2]
+
+
+def _detect_ime_mode_by_vlm(
+    image: np.ndarray,
+    *,
+    debug_name: str = "",
+) -> Optional[str]:
+    """VLM で画像内の文字を読み取り、IME モードを判定する。
+
+    半角英字の 'a' または 'A' であれば 'english'、
+    それ以外であれば 'japanese' を返す。
+
+    Args:
+        image: BGR 画像（差分クロップまたは入力エリア全体）
+        debug_name: デバッグ保存用の名前
+
+    Returns:
+        'japanese', 'english', または None（判定不能時）
+    """
+    data_url = _encode_image_data_url(
+        image, debug_name=f"{debug_name}_vlm" if debug_name else "ime_mode_vlm"
+    )
+    prompt = (
+        "この画像は 'a' キーを1回押した直後に変化した部分だけを切り抜いたものです。"
+        "新しく追加された1文字を特定してください。"
+        "半角英字の 'a' または 'A' であれば 'english'、"
+        "それ以外（ひらがな「あ」など）であれば 'japanese' とだけ答えてください。"
+        "それ以外の説明は不要です。"
+    )
+    try:
+        content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    except MlxVlmImeError as exc:
+        print(f"  [VLM IME検出] 失敗: {exc}")
+        return None
+
+    print(f"  [VLM IME検出] 応答: {content!r}")
+
+    if "english" in content.lower():
+        mode = "english"
+    elif "japanese" in content.lower() or "あ" in content:
+        mode = "japanese"
+    else:
+        print(f"  [VLM IME検出] 判定不能")
+        return None
+
+    print(f"  [VLM IME検出] 判定: {mode}")
+
+    return mode
 
 
 def detect_ime_mode_from_typed_a(
@@ -1868,57 +2097,46 @@ def detect_ime_mode_from_typed_a(
     """
     # --- 差分クロップ優先 (pre_frame 提供時) ---
     if pre_frame is not None:
-        diff_crop = _extract_diff_crop(pre_frame, frame)
+        # Notepad メニュー下限を検出して差分探索領域を限定
+        # 1) setting_icon テンプレートでアイコン下端を検出
+        menu_bar_cropped = _crop_notepad_menu_bar(frame)
+        menu_bottom = frame.shape[0] - menu_bar_cropped.shape[0]
+        is_notepad = menu_bottom > 0
+        print(f"  [IME mode detection] notepad detected: {is_notepad} (menu_bottom={menu_bottom}px)")
+        if is_notepad:
+            # 2) 輝度ベースでドキュメント本文上端を検出し、
+            #    アイコン下端と比較してより下（安全な）方を採用
+            #    これで「ファイル」「編集」などのメニュー文字列も確実に除外できる
+            doc_top = _find_notepad_document_top(frame)
+            print(f"  [IME mode detection] doc_top={doc_top}px")
+            menu_bottom = max(menu_bottom, doc_top)
+            # 安全マージン: メニュー文字下端が少し残ることがあるため、
+            # 本文上端よりもさらに 15px 下から diff 探索を開始する
+            menu_bottom += 15
+            menu_bottom = min(menu_bottom, int(frame.shape[0] * 0.25))
+            print(f"  [IME mode detection] final menu_bottom={menu_bottom}px")
+        diff_crop = _extract_diff_crop(pre_frame, frame, min_y_px=menu_bottom)
         if diff_crop is not None:
             diff_crop = _ensure_min_size(diff_crop)
+            # Notepad の場合はメニュー行を除外（二重ガード）
+            diff_crop = _crop_notepad_menu_bar(diff_crop)
             # デバッグ用に差分クロップを保存
             _save_debug_popup(diff_crop, "ime_mode_diff")
-            data_url = _encode_image_data_url(diff_crop, debug_name="ime_mode_diff")
-            prompt = (
-                "この画像は 'a' キーを1回押した直後に画面で変化した部分だけを切り抜いたものです。"
-                "新しく追加された1文字を特定してください。"
-                "平仮名の「あ」（曲線的な日本語文字）であれば 'japanese'、"
-                "半角英字の 'a'（単純なラテン文字）であれば 'english' とだけ答えてください。"
-                "それ以外の説明は不要です。"
-            )
-            try:
-                content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
-                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-                print(f"  [VLM IME検出/diff] 応答: {content!r}")
-                if "japanese" in content.lower() or "あ" in content:
-                    return "japanese"
-                if "english" in content.lower():
-                    return "english"
-                # 判定できなかった場合はフォールバックへ
-                print("  [VLM IME検出/diff] 判定不能 → 全体フレームで再試行")
-            except MlxVlmImeError as exc:
-                print(f"  [VLM IME検出/diff] 失敗: {exc} → 全体フレームで再試行")
+            mode = _detect_ime_mode_by_vlm(diff_crop, debug_name="ime_mode_diff")
+            if mode is not None:
+                return mode
+            print("  [VLM IME検出/diff] 判定不能 → 全体フレームで再試行")
         else:
             print("  [VLM IME検出/diff] 差分なし → 全体フレームで再試行")
 
-    # --- フォールバック: 入力エリア全体を VLM で判定 ---
-    cropped = crop_to_input_region(frame, debug_name="ime_mode_typed_a_panel")
+    # --- フォールバック: 画面左上1/4領域を VLM で判定 ---
+    # Enter × 2 後に crop_to_input_region が空領域を返すことがあるため、
+    # 画面左上1/4を直接クロップして使用する
+    h, w = frame.shape[:2]
+    cropped = frame[: h // 2, : w // 2]
     cropped = _ensure_min_size(cropped)
-    data_url = _encode_image_data_url(cropped, debug_name="ime_mode_typed_a")
-    prompt = (
-        "テキスト入力フィールドに 'a' というキーを1回押しました。"
-        "直前に入力した最後の1文字だけに注目してください。"
-        "その文字が平仮名の「あ」なら 'japanese'、半角の 'a' なら 'english' とだけ答えてください。"
-        "既存のテキストは無視して、最後に追加された文字だけを判定してください。"
-        "それ以外のテキストや説明は不要です。"
-    )
-    try:
-        content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_IME_TIMEOUT)
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        print(f"  [VLM IME検出/typed-a] 応答: {content!r}")
-        if "japanese" in content.lower() or "あ" in content:
-            return "japanese"
-        if "english" in content.lower():
-            return "english"
-        return None
-    except MlxVlmImeError as exc:
-        print(f"  [VLM IME検出/typed-a] 失敗: {exc}")
-        return None
+    mode = _detect_ime_mode_by_vlm(cropped, debug_name="ime_mode_typed_a")
+    return mode
 
 
 # ---------------------------------------------------------------------------
@@ -2164,7 +2382,12 @@ def assess_helper_reset_state(
         ' 形式: {"left_context_preserved": true|false, "composition_cleared": true|false, "ready": true|false}'
     )
     data_url = _encode_image_data_url(cropped, debug_name="helper_reset_state")
-    content = _call_mlx_vlm_with_image(data_url, prompt, timeout=MLX_VLM_INLINE_TIMEOUT)
+    content = _call_mlx_vlm_with_image(
+        data_url,
+        prompt,
+        system_prompt="<|think|>\nステップバイステップで考えろ。",
+        timeout=MLX_VLM_INLINE_TIMEOUT,
+    )
     return _parse_helper_reset_state_response(content)
 
 

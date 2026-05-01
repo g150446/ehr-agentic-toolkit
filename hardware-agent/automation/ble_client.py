@@ -93,6 +93,10 @@ class BLEClient:
     def send_command(self, command: str) -> bool:
         return self._send({"cmd": "send_command", "command": command})["ok"]
 
+    def alt_tab(self) -> bool:
+        """Alt+Tab ショートカットを送る"""
+        return self._send({"cmd": "alt_tab"})["ok"]
+
     def clear_editor_document(self, max_chars: int = 200, delay: float = 0.12) -> None:
         """エディターの全テキストを削除する。
 

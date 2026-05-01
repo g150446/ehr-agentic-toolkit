@@ -83,6 +83,22 @@ CLI は以下の入力を `move:DX,DY`（HID単位）に自動変換して送信
 | `key:lparen` / `key:rparen` | `(` / `)` を入力 | `key:lparen` |
 | `key:percent` | `%` を入力 | `key:percent` |
 | `key:colon` | `:` を入力 | `key:colon` |
+| `key:up` / `key:down` / `key:left` / `key:right` | 矢印キー | `key:up` |
+| `key:alt_tab` | Alt+Tab（ウィンドウ切替） | `key:alt_tab` |
+| `key:win` | Windowsキー単体押下 | `key:win` |
+| `key:win_up` | Win+↑（ウィンドウ最大化） | `key:win_up` |
+
+### CLI専用ショートカットコマンド
+
+`run_ble_test.sh` のインタラクティブCLIで使えるショートカットコマンドです。
+
+| CLIコマンド | 説明 | 例 |
+|------------|------|-----|
+| `scroll_up [N]` | 上にスクロール（デフォルト3単位） | `scroll_up` / `scroll_up 5` |
+| `scroll_down [N]` | 下にスクロール（デフォルト3単位） | `scroll_down` / `scroll_down 2` |
+| `win` | Windowsキーを押す | `win` |
+| `win_up` | Win+↑ ショートカット | `win_up` |
+| `alt_tab` | Alt+Tab ショートカット | `alt_tab` |
 
 ---
 
@@ -151,10 +167,15 @@ moveto 960 540       # 画面中央へ（絶対座標）
 move 100 0           # 右へ100px（相対移動）
 move -100 50         # 左100px・下50px（相対移動）
 click                # 左クリック
+scroll_up 3          # 上に3単位スクロール
+scroll_down 2        # 下に2単位スクロール
 rclick               # 右クリック
 keyboard
 type hello
 key:enter
+win                  # Windowsキー
+win_up               # Win+↑（最大化）
+alt_tab              # ウィンドウ切替
 ```
 
 ### スマートフォンアプリ
@@ -224,6 +245,31 @@ dns-sd -B _arduino._tcp local
 # IPを直接指定
 ./scripts/upload_firmware_ota.sh 192.168.x.x
 ```
+
+### OTAアップロードが失敗する場合（USBシリアルなしでデバッグ）
+
+ファームウェアはBLE TX特性（Notify）経由でWiFi/OTA関連のログをリアルタイム送信しています。
+USB接続なしで、BLE接続中にログを確認できます。
+
+```bash
+./scripts/run_ble_test.sh
+(BLE Test) connect
+(BLE Test) logs
+# → [BLE] [LOG] WiFi connected, IP: 10.56.155.191
+# → [BLE] [LOG] OTA ready — hostname: ble-hid-bridge
+```
+
+表示されるログの例：
+
+| ログメッセージ | 意味 |
+|-------------|------|
+| `[LOG] BLE client connected` | MacからBLE接続された |
+| `[LOG] WiFi connected, IP: xxx` | WiFi接続成功、IPアドレス |
+| `[LOG] WiFi not connected — OTA unavailable` | WiFi接続失敗、OTA不可 |
+| `[LOG] OTA ready — hostname: ble-hid-bridge` | OTAサーバー起動完了 |
+| `[ERR] OTA Error[N]: ...` | OTAエラー発生 |
+
+**注意**: ログはBLE接続後からのリアルタイム配信のみです。過去のログ（電源投入直後のWiFi接続試行など）は接続前のため取得できません。デバッグ時は、ESP32の電源投入後すぐにBLE接続してください。
 
 ### OTA後にBLEが切断される場合
 

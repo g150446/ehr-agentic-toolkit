@@ -3,16 +3,23 @@ BLE Test CLI - Interactive testing tool for ESP32 BLE keyboard and mouse.
 
 Provides a REPL-style interface for manually sending BLE commands to the ESP32
 wireless input bridge for testing keyboard and mouse control.
+
+Supports two connection modes:
+  --direct  : Connect directly to ESP32 via BLE (default)
+  --socket  : Connect via ble_server Unix socket (when ble_server is running)
 """
 
 import cmd
 import sys
 import asyncio
 import argparse
+import json
+import socket
 from pathlib import Path
 from typing import Optional
 
 from automation.ble_controller import BLEController
+from automation.ble_client import BLEClient as SocketBLEClient
 from automation.config import AutomationConfig
 
 
@@ -59,6 +66,96 @@ class ColoredOutput:
         """Format header with border."""
         border = "━" * width
         return f"\n{border}\n{text}\n{border}\n"
+
+
+class SocketBLERunner:
+    """
+    Bridges synchronous CLI commands with ble_server Unix socket.
+
+    Uses BLEClient to communicate with a running ble_server process.
+    """
+
+    def __init__(self):
+        self.client = SocketBLEClient()
+
+    def connect(self, timeout: float = 10.0) -> bool:
+        """Check if ble_server is running and connected."""
+        del timeout
+        return self.client.is_server_running()
+
+    def disconnect(self) -> None:
+        """No-op for socket mode."""
+        pass
+
+    def is_connected(self) -> bool:
+        """Check if ble_server is running."""
+        return self.client.is_server_running()
+
+    def scan_devices(self, timeout: float = 10.0) -> Optional[str]:
+        """Not available in socket mode."""
+        del timeout
+        return None
+
+    def send_command(self, command: str) -> bool:
+        """Send raw command via ble_server."""
+        return self.client.send_command(command)
+
+    def switch_to_keyboard_mode(self) -> bool:
+        return self.client.send_command("mode:keyboard")
+
+    def switch_to_mouse_mode(self) -> bool:
+        return self.client.send_command("mode:mouse")
+
+    def type_text(self, text: str) -> bool:
+        return self.client.type_text(text)
+
+    def press_key(self, key: str) -> bool:
+        return self.client.press_key(key)
+
+    def click(self) -> bool:
+        return self.client.click()
+
+    def double_click(self) -> bool:
+        return self.client.double_click()
+
+    def right_click(self) -> bool:
+        return self.client.right_click()
+
+    def move_mouse(self, x: int, y: int) -> bool:
+        return self.client.move_mouse(x, y)
+
+    def move_mouse_absolute(self, x: int, y: int,
+                             screen_width: int = 1920, screen_height: int = 1080) -> bool:
+        return self.client.move_mouse_absolute(x, y)
+
+    def move_mouse_to_position(self, x: int, y: int,
+                                screen_width: int = 1920, screen_height: int = 1080) -> bool:
+        return self.client.move_mouse_to_position(x, y, screen_width, screen_height)
+
+    def scroll(self, amount: int) -> bool:
+        return self.client.scroll(amount)
+
+    def alt_tab(self) -> bool:
+        """Send Alt+Tab shortcut."""
+        return self.client.alt_tab()
+
+    def start_logs(self, callback) -> bool:
+        """Not available in socket mode."""
+        print(ColoredOutput.warning("Log streaming is not available in socket mode. Use direct BLE connection."))
+        return False
+
+    def stop_logs(self) -> bool:
+        """No-op for socket mode."""
+        return True
+
+    def get_device_address(self) -> Optional[str]:
+        return "ble_server"
+
+    def get_current_mode(self) -> str:
+        return "unknown"
+
+    def cleanup(self):
+        pass
 
 
 class AsyncBLERunner:
@@ -162,6 +259,18 @@ class AsyncBLERunner:
     def scroll(self, amount: int) -> bool:
         """Scroll mouse wheel."""
         return self.run_async(self.ble.scroll(amount))
+
+    def alt_tab(self) -> bool:
+        """Send Alt+Tab shortcut."""
+        return self.run_async(self.ble.alt_tab())
+
+    def start_logs(self, callback) -> bool:
+        """Subscribe to BLE TX notifications for firmware logs."""
+        return self.run_async(self.ble.start_logs(callback))
+
+    def stop_logs(self) -> bool:
+        """Unsubscribe from BLE TX notifications."""
+        return self.run_async(self.ble.stop_logs())
 
     def get_device_address(self) -> Optional[str]:
         """Get connected device address."""
@@ -459,6 +568,117 @@ class BLETestShell(cmd.Cmd):
         print("Usage: esc")
         print("\nEquivalent to: press esc")
 
+    def do_alt_tab(self, arg):
+        """Send Alt+Tab shortcut to switch windows."""
+        del arg
+        if not self._check_connection():
+            return
+        try:
+            if hasattr(self.runner, 'alt_tab') and self.runner.alt_tab():
+                print(ColoredOutput.success("Sent: Alt+Tab"))
+            else:
+                print(ColoredOutput.error("Failed to send Alt+Tab"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Alt+Tab error: {e}"))
+
+    def help_alt_tab(self):
+        """Help for alt_tab command."""
+        print("\nSend Alt+Tab shortcut to switch windows")
+        print("Usage: alt_tab")
+
+    def do_logs(self, arg):
+        """Stream firmware logs via BLE TX notifications."""
+        del arg
+        if not self._check_connection():
+            return
+        try:
+            if hasattr(self.runner, 'start_logs') and self.runner.start_logs(lambda msg: print(f"  [BLE] {msg}")):
+                print(ColoredOutput.info("Listening for logs... Press Enter to stop."))
+                input()
+                self.runner.stop_logs()
+                print(ColoredOutput.success("Stopped log streaming"))
+            else:
+                print(ColoredOutput.error("Failed to start log streaming"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Log streaming error: {e}"))
+
+    def help_logs(self):
+        """Help for logs command."""
+        print("\nStream firmware logs via BLE TX notifications")
+        print("Usage: logs")
+        print("Requires direct BLE connection (not socket mode).")
+        print("Shows WiFi connection status, OTA readiness, and other boot logs.")
+
+    def do_scroll_up(self, arg):
+        """Scroll up (default 3 units)."""
+        amount = 3
+        if arg.strip():
+            try:
+                amount = int(arg.strip())
+            except ValueError:
+                print(ColoredOutput.error("Invalid scroll amount"))
+                return
+        self.do_scroll(str(-abs(amount)))
+
+    def help_scroll_up(self):
+        """Help for scroll_up command."""
+        print("\nScroll up")
+        print("Usage: scroll_up [amount]")
+        print("Default amount: 3")
+
+    def do_scroll_down(self, arg):
+        """Scroll down (default 3 units)."""
+        amount = 3
+        if arg.strip():
+            try:
+                amount = int(arg.strip())
+            except ValueError:
+                print(ColoredOutput.error("Invalid scroll amount"))
+                return
+        self.do_scroll(str(abs(amount)))
+
+    def help_scroll_down(self):
+        """Help for scroll_down command."""
+        print("\nScroll down")
+        print("Usage: scroll_down [amount]")
+        print("Default amount: 3")
+
+    def do_win(self, arg):
+        """Press Windows key."""
+        del arg
+        if not self._check_connection():
+            return
+        try:
+            if self.runner.press_key("win"):
+                print(ColoredOutput.success("Pressed: Win"))
+            else:
+                print(ColoredOutput.error("Failed to press Win"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Win key error: {e}"))
+
+    def help_win(self):
+        """Help for win command."""
+        print("\nPress Windows key")
+        print("Usage: win")
+
+    def do_win_up(self, arg):
+        """Press Win+Up Arrow shortcut (maximize window)."""
+        del arg
+        if not self._check_connection():
+            return
+        try:
+            if self.runner.press_key("win_up"):
+                print(ColoredOutput.success("Sent: Win+Up"))
+            else:
+                print(ColoredOutput.error("Failed to send Win+Up"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Win+Up error: {e}"))
+
+    def help_win_up(self):
+        """Help for win_up command."""
+        print("\nPress Win+Up Arrow shortcut (maximize window)")
+        print("Usage: win_up")
+
     # ========== Mouse Commands ==========
 
     def do_move(self, arg):
@@ -745,6 +965,12 @@ def main():
         help='Connection timeout in seconds (default: 10)'
     )
 
+    parser.add_argument(
+        '--socket',
+        action='store_true',
+        help='Connect via ble_server Unix socket instead of direct BLE'
+    )
+
     args = parser.parse_args()
 
     # Load configuration
@@ -761,6 +987,11 @@ def main():
 
     # Create and run shell
     shell = BLETestShell(config)
+
+    # Switch to socket mode if requested
+    if args.socket:
+        shell.runner = SocketBLERunner()
+        shell.prompt = f"{ColoredOutput.CYAN}(BLE Test/socket){ColoredOutput.RESET} "
 
     try:
         shell.cmdloop()

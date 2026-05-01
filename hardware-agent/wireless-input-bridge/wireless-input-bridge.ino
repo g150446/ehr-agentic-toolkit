@@ -29,6 +29,9 @@
   - "key:lparen" / "key:rparen" / "key:percent" / "key:colon" / "key:newline"
   - "key:up" / "key:down" / "key:left" / "key:right" (arrow keys)
   - "key:shift_right" : Shift+Right (IME segment extension)
+  - "key:alt_tab" : Alt+Tab (window switch)
+  - "key:win" : Windows key (single press)
+  - "key:win_up" : Win+Up Arrow (snap window to maximize)
 
   OTA Update:
   - Connect to WiFi defined in wifi_config.h
@@ -80,16 +83,37 @@ bool oldDeviceConnected = false;
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
+// Forward declaration — defined later in the file.
+void bleLog(const String &msg);
+
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *pServer) {
     deviceConnected = true;
     Serial.println("BLE client connected");
+    bleLog("[LOG] BLE client connected");
   }
   void onDisconnect(BLEServer *pServer) {
     deviceConnected = false;
     Serial.println("BLE client disconnected");
+    bleLog("[LOG] BLE client disconnected");
   }
 };
+
+// Send a log message via BLE TX characteristic (Notify).
+// If no BLE client is connected the message is silently dropped.
+void bleLog(const String &msg) {
+  if (deviceConnected && pTxCharacteristic != NULL) {
+    // BLE Notify MTU is typically 20 bytes; chunk longer messages.
+    const size_t chunkSize = 20;
+    size_t len = msg.length();
+    for (size_t i = 0; i < len; i += chunkSize) {
+      String chunk = msg.substring(i, min(i + chunkSize, len));
+      pTxCharacteristic->setValue(chunk.c_str());
+      pTxCharacteristic->notify();
+      delay(5);
+    }
+  }
+}
 
 // Scroll in int8_t chunks (scroll wheel is still relative)
 void mouseScroll(int amount) {
@@ -276,6 +300,31 @@ bool pressNamedKey(const String &keyName) {
     Serial.println("-> key: Ctrl+Z");
     return true;
   }
+  if (keyName == "alt_tab") {
+    Keyboard.press(KEY_LEFT_ALT);
+    delay(50);
+    Keyboard.press(KEY_TAB);
+    delay(200);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Alt+Tab");
+    return true;
+  }
+  if (keyName == "win") {
+    Keyboard.press(KEY_LEFT_GUI);
+    delay(100);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Win (Windows key)");
+    return true;
+  }
+  if (keyName == "win_up") {
+    Keyboard.press(KEY_LEFT_GUI);
+    delay(5);
+    Keyboard.press(KEY_UP_ARROW);
+    delay(5);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Win+Up");
+    return true;
+  }
   return false;
 }
 
@@ -370,7 +419,9 @@ class MyCallbacks : public BLECharacteristicCallbacks {
 };
 
 void setupWiFiOTA() {
-  Serial.print("Connecting to WiFi: "); Serial.println(WIFI_SSID);
+  String msg = "Connecting to WiFi: " + String(WIFI_SSID);
+  Serial.println(msg);
+  bleLog("[LOG] " + msg);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int attempts = 0;
@@ -382,34 +433,42 @@ void setupWiFiOTA() {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\nWiFi not connected — OTA unavailable");
+    bleLog("[LOG] WiFi not connected — OTA unavailable");
     return;
   }
 
-  Serial.print("\nWiFi connected, IP: ");
-  Serial.println(WiFi.localIP());
+  String ip = WiFi.localIP().toString();
+  Serial.print("\nWiFi connected, IP: "); Serial.println(ip);
+  bleLog("[LOG] WiFi connected, IP: " + ip);
 
   ArduinoOTA.setHostname("ble-hid-bridge");
 
   ArduinoOTA.onStart([]() {
     Serial.println("OTA update starting...");
+    bleLog("[LOG] OTA update starting...");
   });
   ArduinoOTA.onEnd([]() {
     Serial.println("\nOTA update complete. Rebooting...");
+    bleLog("[LOG] OTA update complete. Rebooting...");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     Serial.printf("OTA: %u%%\r", (progress * 100) / total);
   });
   ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("OTA Error[%u]: ", error);
-    if      (error == OTA_AUTH_ERROR)    Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR)   Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR)     Serial.println("End Failed");
+    String errMsg = "OTA Error[" + String(error) + "]: ";
+    if      (error == OTA_AUTH_ERROR)    errMsg += "Auth Failed";
+    else if (error == OTA_BEGIN_ERROR)   errMsg += "Begin Failed";
+    else if (error == OTA_CONNECT_ERROR) errMsg += "Connect Failed";
+    else if (error == OTA_RECEIVE_ERROR) errMsg += "Receive Failed";
+    else if (error == OTA_END_ERROR)     errMsg += "End Failed";
+    else                                 errMsg += "Unknown";
+    Serial.println(errMsg);
+    bleLog("[ERR] " + errMsg);
   });
 
   ArduinoOTA.begin();
   Serial.println("OTA ready — hostname: ble-hid-bridge");
+  bleLog("[LOG] OTA ready — hostname: ble-hid-bridge");
 }
 
 void setup() {
@@ -454,6 +513,7 @@ void setup() {
   Serial.println("BLE advertising started");
   Serial.println("Device: BLE Mouse & Keyboard");
   Serial.println("================================\n");
+  bleLog("[LOG] BLE advertising started");
 }
 
 void loop() {
