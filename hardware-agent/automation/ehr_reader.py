@@ -12,6 +12,7 @@ HDMI キャプチャで取得した患者カルテ画面を解析し、
   python -m automation.ehr_reader --omlx --scroll 5      # スクロール回数指定
   python -m automation.ehr_reader --scroll-only           # スクロールのみテスト (デフォルト3回)
   python -m automation.ehr_reader --scroll-only 5         # スクロール回数指定
+  python -m automation.ehr_reader --letter                # letter_icon.png を検出してクリック
 """
 
 from __future__ import annotations
@@ -279,6 +280,68 @@ def _detect_edit_button_bottom(
 
     print(f"  edit_button 検出: ({best_x + x_start}, {best_y})〜({best_x + x_start + w}, {bottom_y}) (score={result[best_y, best_x]:.3f})")
     return bottom_y
+
+
+def _find_letter_icon(
+    frame: np.ndarray,
+    *,
+    threshold: float = 0.7,
+) -> tuple[int, int] | None:
+    """画面全体から letter_icon.png を検出し、一致矩形の中心座標 (x, y) を返す。"""
+    template_path = (
+        Path(__file__).resolve().parent.parent
+        / "match_templates"
+        / "letter_icon.png"
+    )
+    if not template_path.exists():
+        print(f"[WARNING] テンプレート画像が見つかりません: {template_path}")
+        return None
+
+    template = cv2.imread(str(template_path), cv2.IMREAD_UNCHANGED)
+    if template is None:
+        print(f"[WARNING] テンプレート画像の読み込みに失敗しました: {template_path}")
+        return None
+
+    # アルファチャンネルがある場合は透過背景を白に置き換えて BGR に変換
+    if template.shape[2] == 4:
+        b, g, r, a = cv2.split(template)
+        alpha = a.astype(np.float32) / 255.0
+        white_bg = np.full_like(b, 255, dtype=np.uint8)
+        b = (b.astype(np.float32) * alpha + white_bg.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+        g = (g.astype(np.float32) * alpha + white_bg.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+        r = (r.astype(np.float32) * alpha + white_bg.astype(np.float32) * (1 - alpha)).astype(np.uint8)
+        template = cv2.merge([b, g, r])
+
+    result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
+    h, w = template.shape[:2]
+
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+    if max_val < threshold:
+        print(f"  letter_icon 未検出 (最高スコア {max_val:.3f} < {threshold})")
+        return None
+
+    cx = max_loc[0] + w // 2
+    cy = max_loc[1] + h // 2
+    print(f"  letter_icon 検出: ({max_loc[0]}, {max_loc[1]})〜({max_loc[0] + w}, {max_loc[1] + h}) 中心=({cx}, {cy}) (score={max_val:.3f})")
+    return (cx, cy)
+
+
+def _click_letter_icon(
+    click_x: int,
+    click_y: int,
+) -> bool:
+    """letter_icon の中心座標にマウスを移動してクリックする。"""
+    client = _wait_for_ble_connected()
+
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
+    ok = client.move_mouse_to_position(click_x, click_y)
+    print(f"moveto ({click_x}, {click_y}) -> {'OK' if ok else 'NG'}")
+
+    ok = client.click()
+    print(f"click (letter_icon) -> {'OK' if ok else 'NG'}")
+    return ok
 
 
 def _extract_past_chart_region(
@@ -579,13 +642,14 @@ def _build_runtime_config(
     }
 
 
-def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Optional[int], bool]:
+def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Optional[int], bool, bool]:
     """CLI オプションをパースする。"""
     omlx = False
     omlx_model: Optional[str] = None
     do_scroll = False
     scroll_count: Optional[int] = None
     scroll_only = False
+    do_letter = False
     filtered_args: list[str] = []
     index = 0
     while index < len(args):
@@ -645,26 +709,29 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, Opti
                     scroll_count = None
             else:
                 scroll_count = None
+        elif arg == "--letter":
+            do_letter = True
         elif arg.startswith("--"):
             raise RuntimeError(f"不明なオプション: {arg}")
         else:
             filtered_args.append(arg)
         index += 1
-    return omlx, omlx_model, do_scroll, scroll_count, scroll_only
+    return omlx, omlx_model, do_scroll, scroll_count, scroll_only, do_letter
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     try:
-        omlx, omlx_model, do_scroll, scroll_count, scroll_only = _parse_cli_options(args)
+        omlx, omlx_model, do_scroll, scroll_count, scroll_only, do_letter = _parse_cli_options(args)
     except RuntimeError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
 
-    if not omlx and not scroll_only:
-        print("[ERROR] --omlx または --scroll-only のいずれかのオプションが必要です", file=sys.stderr)
+    if not omlx and not scroll_only and not do_letter:
+        print("[ERROR] --omlx または --scroll-only または --letter のいずれかのオプションが必要です", file=sys.stderr)
         print("使用例: python -m automation.ehr_reader --omlx", file=sys.stderr)
         print("       python -m automation.ehr_reader --scroll-only", file=sys.stderr)
+        print("       python -m automation.ehr_reader --letter", file=sys.stderr)
         return 1
 
     runtime = _build_runtime_config(omlx_model=omlx_model) if omlx else {"model": "", "url": "", "api_key": ""}
@@ -695,6 +762,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  パネル1 (過去カルテ): {dividers[0]} 〜 {dividers[1]}")
     print(f"  パネル2: {dividers[1]} 〜 {dividers[2]}")
     print(f"  パネル3 (右端): {dividers[2]} 〜 {frame.shape[1]}")
+
+    if do_letter:
+        print("\nletter_icon.png を画面全体から検索中...")
+        pos = _find_letter_icon(frame, threshold=0.7)
+        if pos is None:
+            print("[ERROR] letter_icon.png が画面内に見つかりませんでした", file=sys.stderr)
+            return 1
+        click_x, click_y = pos
+        print(f"letter_icon クリック: ({click_x}, {click_y})")
+        _click_letter_icon(click_x, click_y)
+        return 0
 
     if scroll_only:
         prev_frame = frame.copy()
