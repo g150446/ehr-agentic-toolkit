@@ -1186,6 +1186,30 @@ def main(argv: list[str] | None = None) -> int:
         ok = client.press_key("backspace")
         print(f"press_key(backspace) -> {'OK' if ok else 'NG'}")
 
+        # Ctrl+L (左寄せ)
+        ok = client.press_key("ctrl_l")
+        print(f"press_key(ctrl_l) -> {'OK' if ok else 'NG'}")
+
+        # Windows キー
+        ok = client.press_key("win")
+        print(f"press_key(win) -> {'OK' if ok else 'NG'}")
+
+        # 1.0秒待機
+        print("1.0秒待機...")
+        time.sleep(1.0)
+
+        # "note" テキスト入力
+        ok = client.type_text("note")
+        print(f"type_text(note) -> {'OK' if ok else 'NG'}")
+
+        # 0.5秒待機
+        print("0.5秒待機...")
+        time.sleep(0.5)
+
+        # Enter 送信
+        ok = client.press_key("enter")
+        print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
+
         return 0
 
     if scroll_only:

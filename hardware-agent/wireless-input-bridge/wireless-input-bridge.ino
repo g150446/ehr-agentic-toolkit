@@ -300,6 +300,14 @@ bool pressNamedKey(const String &keyName) {
     Serial.println("-> key: Ctrl+Z");
     return true;
   }
+  if (keyName == "ctrl_l") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press('l');
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+L");
+    return true;
+  }
   if (keyName == "alt_tab") {
     Keyboard.press(KEY_LEFT_ALT);
     delay(50);
