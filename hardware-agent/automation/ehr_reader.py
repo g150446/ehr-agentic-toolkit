@@ -8,10 +8,10 @@ HDMI キャプチャで取得した患者カルテ画面を解析し、
 実行方法:
   python -m automation.ehr_reader --omlx
   python -m automation.ehr_reader --omlx gemma-4-26b-a4b-it-4bit
-  python -m automation.ehr_reader --omlx --scroll        # 読み取り後にスクロール
-  python -m automation.ehr_reader --omlx --scroll 20     # スクロール量指定
-  python -m automation.ehr_reader --scroll-only           # スクロールのみテスト
-  python -m automation.ehr_reader --scroll-only 10        # スクロール量指定
+  python -m automation.ehr_reader --omlx --scroll        # 読み取り後にスクロール (デフォルト3回)
+  python -m automation.ehr_reader --omlx --scroll 5      # スクロール回数指定
+  python -m automation.ehr_reader --scroll-only           # スクロールのみテスト (デフォルト3回)
+  python -m automation.ehr_reader --scroll-only 5         # スクロール回数指定
 """
 
 from __future__ import annotations
@@ -374,7 +374,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                     scroll_count = int(args[next_index])
                     index += 1
                 except ValueError:
-                    pass
+                    scroll_count = 3
+            else:
+                scroll_count = 3
         elif arg.startswith("--scroll="):
             do_scroll = True
             _, _, val = arg.partition("=")
@@ -382,7 +384,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                 try:
                     scroll_count = int(val)
                 except ValueError:
-                    pass
+                    scroll_count = 3
+            else:
+                scroll_count = 3
         elif arg == "--scroll-only":
             scroll_only = True
             next_index = index + 1
@@ -391,7 +395,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                     scroll_count = int(args[next_index])
                     index += 1
                 except ValueError:
-                    pass
+                    scroll_count = 3
+            else:
+                scroll_count = 3
         elif arg.startswith("--scroll-only="):
             scroll_only = True
             _, _, val = arg.partition("=")
@@ -399,7 +405,9 @@ def _parse_cli_options(args: list[str]) -> tuple[bool, Optional[str], bool, int,
                 try:
                     scroll_count = int(val)
                 except ValueError:
-                    pass
+                    scroll_count = 3
+            else:
+                scroll_count = 3
         elif arg.startswith("--"):
             raise RuntimeError(f"不明なオプション: {arg}")
         else:
