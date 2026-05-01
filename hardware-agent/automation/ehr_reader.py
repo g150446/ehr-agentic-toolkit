@@ -413,7 +413,7 @@ def _find_word_return_mark_x(
     *,
     threshold: float = 0.7,
 ) -> int | None:
-    """画面全体から word_return_mark.jpg を検出し、最初にマッチした矩形の中心 x 座標を返す。"""
+    """画面全体から word_return_mark.jpg を検出し、マッチ位置のうち x 座標が最も大きい矩形の中心 x 座標を返す。"""
     template_path = (
         Path(__file__).resolve().parent.parent
         / "match_templates"
@@ -431,13 +431,18 @@ def _find_word_return_mark_x(
     result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
     h, w = template.shape[:2]
 
-    _, max_val, _, max_loc = cv2.minMaxLoc(result)
-    if max_val < threshold:
-        print(f"  word_return_mark 未検出 (最高スコア {max_val:.3f} < {threshold})")
+    # threshold 以上の全ピークを取得
+    loc = np.where(result >= threshold)
+    points = list(zip(*loc[::-1]))  # [(x, y), ...]
+
+    if not points:
+        print(f"  word_return_mark 未検出 (最高スコア {cv2.minMaxLoc(result)[1]:.3f} < {threshold})")
         return None
 
-    cx = max_loc[0] + w // 2
-    print(f"  word_return_mark 検出: ({max_loc[0]}, {max_loc[1]})〜({max_loc[0] + w}, {max_loc[1] + h}) 中心x={cx} (score={max_val:.3f})")
+    # x 座標が最大のものを選ぶ（最も右側）
+    best_x, best_y = max(points, key=lambda p: p[0])
+    cx = best_x + w // 2
+    print(f"  word_return_mark 検出（最右）: ({best_x}, {best_y})〜({best_x + w}, {best_y + h}) 中心x={cx} (score={result[best_y, best_x]:.3f}, total={len(points)})")
     return cx
 
 
