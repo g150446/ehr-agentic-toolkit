@@ -982,6 +982,26 @@ def main(argv: list[str] | None = None) -> int:
         ok = client.move_mouse_to_position(text_x, text_y)
         print(f"moveto ({text_x}, {text_y}) -> {'OK' if ok else 'NG'}")
 
+        # 0.5秒待機後にクリック
+        print("0.5秒待機...")
+        time.sleep(0.5)
+        ok = client.click()
+        print(f"click (退院時要約) -> {'OK' if ok else 'NG'}")
+
+        # 5.0秒待機（Microsoft Word が開くのを待つ）
+        print("5.0秒待機（Word起動待ち）...")
+        time.sleep(5.0)
+
+        # キーボードモードに切り替えて Alt+Tab
+        ok = client.switch_to_keyboard_mode()
+        print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+        ok = client.alt_tab()
+        print(f"alt_tab -> {'OK' if ok else 'NG'}")
+
+        # マウスモードに戻す
+        ok = client.switch_to_mouse_mode()
+        print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
         return 0
 
     if scroll_only:
