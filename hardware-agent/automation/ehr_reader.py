@@ -789,6 +789,17 @@ def main(argv: list[str] | None = None) -> int:
         ok = client.move_mouse_to_position(target_x, target_y)
         print(f"moveto ({target_x}, {target_y}) -> {'OK' if ok else 'NG'}")
 
+        # 1秒待機後、新しいポップアップが表示されるのを待つ
+        print("1.0秒待機（新ポップアップ表示待ち）...")
+        time.sleep(1.0)
+
+        # パネル2中央へ移動
+        panel2_center_x = dividers[1] + panel2_width // 2
+        panel2_center_y = target_y
+        print(f"パネル2中央へ移動: ({panel2_center_x}, {panel2_center_y})")
+        ok = client.move_mouse_to_position(panel2_center_x, panel2_center_y)
+        print(f"moveto ({panel2_center_x}, {panel2_center_y}) -> {'OK' if ok else 'NG'}")
+
         return 0
 
     if scroll_only:
