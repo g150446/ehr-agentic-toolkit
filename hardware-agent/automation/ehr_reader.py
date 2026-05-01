@@ -346,21 +346,17 @@ def _click_letter_icon(
 
 
 def _find_text_position_ocr(
-    frame: np.ndarray,
-    dividers: list[int],
+    panel2: np.ndarray,
+    x_offset: int,
     search_text: str = "退院時要約",
     *,
     min_confidence: float = 0.3,
 ) -> tuple[int, int] | None:
-    """パネル2（左から3番目）を EasyOCR で認識し、指定テキストの画面全体座標の中心を返す。
+    """パネル2画像を EasyOCR で認識し、指定テキストの画面全体座標の中心を返す。
 
     search_text の部分一致でテキストを検索する。
     検出できなければ None を返す。
     """
-    x_start = dividers[1]
-    x_end = dividers[2]
-    panel2 = frame[:, x_start:x_end]
-
     reader = load_ocr_reader(languages=['ja', 'en'], use_gpu=False)
     results = run_ocr_word_split(reader, panel2)
 
@@ -372,13 +368,84 @@ def _find_text_position_ocr(
             # 中心座標を計算し、画面全体座標に変換
             xs = [p[0] for p in bbox]
             ys = [p[1] for p in bbox]
-            cx = x_start + int(sum(xs) / len(xs))
+            cx = x_offset + int(sum(xs) / len(xs))
             cy = int(sum(ys) / len(ys))
             print(f"  OCR '{search_text}' 検出: bbox中心=({cx}, {cy}) text='{text}' conf={conf:.2f}")
             return (cx, cy)
 
     print(f"  OCR '{search_text}' は見つかりませんでした")
     return None
+
+
+def _save_ocr_overlay(
+    panel2: np.ndarray,
+    x_offset: int,
+    search_text: str = "退院時要約",
+    *,
+    min_confidence: float = 0.3,
+) -> str:
+    """OCR結果をバウンディングボックス+テキストラベルでオーバーレイした画像を captures/ に保存する。"""
+    reader = load_ocr_reader(languages=['ja', 'en'], use_gpu=False)
+    results = run_ocr_word_split(reader, panel2)
+
+    overlay = panel2.copy()
+    h, w = overlay.shape[:2]
+
+    # フォントサイズを画像サイズに応じて調整
+    font_scale = max(0.4, min(w, h) / 1500)
+    thickness = max(1, int(min(w, h) / 500))
+
+    for bbox, text, conf in results:
+        if conf < min_confidence:
+            continue
+        pts = np.array(bbox, np.int32).reshape((-1, 1, 2))
+        # search_text を含む場合は赤、それ以外は緑
+        color = (0, 0, 255) if search_text in text else (0, 255, 0)
+        cv2.polylines(overlay, [pts], True, color, thickness)
+
+        # テキストラベルを左上に描画
+        label = f"{text} ({conf:.2f})"
+        x, y = int(bbox[0][0]), int(bbox[0][1])
+        # 背景矩形
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        cv2.rectangle(overlay, (x, y - th - 4), (x + tw + 4, y), color, -1)
+        cv2.putText(overlay, label, (x + 2, y - 2), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+
+    _CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = _CAPTURES_DIR / f"ehr_reader_ocr_overlay_{ts}.png"
+    cv2.imwrite(str(path), overlay)
+    print(f"  [debug] OCRオーバーレイ保存: {path}")
+    return str(path)
+
+
+def _save_ocr_text_log(
+    panel2: np.ndarray,
+    *,
+    min_confidence: float = 0.3,
+) -> str:
+    """OCRテキストを logs/ に保存する。"""
+    reader = load_ocr_reader(languages=['ja', 'en'], use_gpu=False)
+    results = run_ocr_word_split(reader, panel2)
+
+    lines = []
+    for bbox, text, conf in results:
+        if conf < min_confidence:
+            continue
+        y = min(p[1] for p in bbox)
+        lines.append((y, text, conf))
+
+    lines.sort(key=lambda x: x[0])
+
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = _LOGS_DIR / f"ehr_reader_ocr_{ts}.txt"
+    with open(path, "w", encoding="utf-8") as f:
+        for _, text, conf in lines:
+            f.write(f"[{conf:.2f}] {text}\n")
+
+    print(f"  [debug] OCRテキストログ保存: {path}")
+    return str(path)
 
 
 def _extract_past_chart_region(
@@ -882,8 +949,30 @@ def main(argv: list[str] | None = None) -> int:
         print("0.5秒待機（ポップアップ安定）...")
         time.sleep(0.5)
 
+        # クリック後の画面を再キャプチャ（ポップアップが表示された状態）
+        print("ポップアップ表示後の画面をキャプチャ中...")
+        popup_frame = _capture_screen_hdmi(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if popup_frame is None:
+            print("[ERROR] ポップアップ表示後のキャプチャに失敗しました", file=sys.stderr)
+            return 1
+        _save_debug_frame(popup_frame, "full_screen_with_popup")
+
+        # パネル2を切り出し
+        x_start = dividers[1]
+        x_end = dividers[2]
+        panel2 = popup_frame[:, x_start:x_end]
+
         print("\nパネル2をEasyOCRで認識中...")
-        text_pos = _find_text_position_ocr(frame, dividers, "退院時要約")
+        # OCRテキストログ保存
+        _save_ocr_text_log(panel2)
+        # OCRオーバーレイ画像保存
+        _save_ocr_overlay(panel2, x_offset=x_start, search_text="退院時要約")
+
+        text_pos = _find_text_position_ocr(panel2, x_offset=x_start, search_text="退院時要約")
         if text_pos is None:
             print("[ERROR] '退院時要約' が見つかりませんでした", file=sys.stderr)
             return 1
