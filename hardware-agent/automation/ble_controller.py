@@ -227,6 +227,14 @@ class BLEController:
         """Perform left mouse click."""
         return await self.send_command("click")
 
+    async def mouse_down(self) -> bool:
+        """Press left mouse button without releasing (drag start)."""
+        return await self.send_command("mdown")
+
+    async def mouse_up(self) -> bool:
+        """Release left mouse button (drag end)."""
+        return await self.send_command("mup")
+
     async def double_click(self) -> bool:
         """Perform double left mouse click."""
         ok1 = await self.send_command("click")

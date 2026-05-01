@@ -337,6 +337,14 @@ void processCommand(String command) {
     AbsMouse.click(MOUSE_LEFT);
     Serial.println("-> click");
 
+  } else if (command == "mdown") {
+    AbsMouse.press(MOUSE_LEFT);
+    Serial.println("-> mdown");
+
+  } else if (command == "mup") {
+    AbsMouse.release(MOUSE_LEFT);
+    Serial.println("-> mup");
+
   } else if (command == "rclick") {
     AbsMouse.click(MOUSE_RIGHT);
     Serial.println("-> rclick");

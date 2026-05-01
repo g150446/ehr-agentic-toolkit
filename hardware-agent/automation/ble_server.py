@@ -72,6 +72,10 @@ async def dispatch(ble: BLEController, ble_lock: asyncio.Lock, req: dict) -> dic
                 return {"ok": await ble.move_mouse(req["x"], req["y"])}
             if cmd == "click":
                 return {"ok": await ble.click()}
+            if cmd == "mouse_down":
+                return {"ok": await ble.mouse_down()}
+            if cmd == "mouse_up":
+                return {"ok": await ble.mouse_up()}
             if cmd == "double_click":
                 return {"ok": await ble.double_click()}
             if cmd == "right_click":
