@@ -246,6 +246,73 @@ def _read_past_chart_with_vlm(
     return result["choices"][0]["message"]["content"]
 
 
+def _read_past_chart_with_vlm_merge(
+    cropped: np.ndarray,
+    current_json: list[dict],
+    *,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> str:
+    """VLM に新しい画像と現在のJSONを渡して統合した診療録データを作成する。"""
+    data_url = _encode_image_data_url(cropped, debug_name="vlm_past_chart_merge")
+
+    current_json_str = json.dumps(current_json, ensure_ascii=False, indent=2)
+
+    prompt = (
+        "### 指示\n"
+        "添付された「新しい画像」の内容を読み取り、以下の【現在のJSONデータ】と統合して、最新の診療録データを作成してください。\n\n"
+        "### 現在のJSONデータ\n"
+        f"{current_json_str}\n\n"
+        "### 統合のルール\n"
+        "1. **内容の同期と結合**:\n"
+        "   - 画像内の日付を確認し、すでにJSON内にその日付が存在する場合は、画像から得られた「続きの文章」や「より詳細な記述」を既存の `content` 内の適切な位置に追記・統合してください。\n"
+        "   - 文章が途切れている場合は、自然に繋がるように結合してください。\n\n"
+        "2. **新規データの追加**:\n"
+        "   - JSONに含まれていない新しい日付の診療録が画像内にある場合は、新しいオブジェクトとして末尾に追加してください。\n\n"
+        "3. **出力フォーマット**:\n"
+        "   - 以下の構造を維持したJSON形式のみを出力してください。\n"
+        "[\n"
+        '  {\n'
+        '    "date": "YYYY年MM月DD日(曜日)",\n'
+        '    "content": "統合された本文テキスト"\n'
+        "  }\n"
+        "]\n\n"
+        "### 出力\n"
+        "統合が完了した最新のJSONデータのみを出力してください。"
+    )
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+        "stream": False,
+        "max_tokens": 4096,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers=headers,
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read())
+
+    return result["choices"][0]["message"]["content"]
+
+
 def _parse_vlm_response(raw: str) -> list[dict]:
     """VLM の応答から JSON 配列を抽出・パースする。"""
     content = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
@@ -500,13 +567,62 @@ def main(argv: list[str] | None = None) -> int:
         print("\n過去カルテにテキストが見つかりませんでした。")
 
     if do_scroll:
-        print(f"\n過去カルテ領域をスクロール中...")
-        _scroll_past_chart_down(
-            dividers=dividers,
-            screen_width=config.capture_width,
-            screen_height=config.capture_height,
-            scroll_count=scroll_count,
-        )
+        for iteration in range(scroll_count):
+            print(f"\n[セット {iteration + 1}/{scroll_count}] 過去カルテ領域をスクロール中...")
+            _scroll_past_chart_down(
+                dividers=dividers,
+                screen_width=config.capture_width,
+                screen_height=config.capture_height,
+                scroll_count=3,
+            )
+
+            # スクロール後に再キャプチャ
+            print("スクロール後の画面をキャプチャ中...")
+            frame = _capture_screen_hdmi(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if frame is None:
+                print("[WARNING] 再キャプチャに失敗しました。現在の結果で終了します。", file=sys.stderr)
+                break
+
+            _save_debug_frame(frame, f"full_screen_scroll_{iteration + 1}")
+            print("画面を解析中...")
+
+            dividers = _detect_all_dividers(frame, debug=True)
+            if dividers is None:
+                print("[ERROR] スクロール後の画面で区切り線を検出できませんでした", file=sys.stderr)
+                break
+
+            print(f"区切り線検出: x={dividers}")
+            past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+            print(f"\n[セット {iteration + 1}/{scroll_count}] VLM で統合読み取り中...")
+            raw_response = _read_past_chart_with_vlm_merge(
+                past_chart,
+                structured,
+                model=runtime["model"],
+                url=runtime["url"],
+                api_key=runtime["api_key"],
+                timeout=MLX_VLM_IME_TIMEOUT,
+            )
+
+            print(f"\n--- VLM 生応答 (セット {iteration + 1}) ---\n{raw_response}\n--- 終了 ---\n")
+
+            try:
+                structured = _parse_vlm_response(raw_response)
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                break
+
+            print("--- 構造化出力 (JSON) ---")
+            print(json.dumps(structured, ensure_ascii=False, indent=2))
+            print("--- 終了 ---")
+
+            if structured:
+                print(f"\n過去カルテ {len(structured)} 件を読み取りました。")
+            else:
+                print("\n過去カルテにテキストが見つかりませんでした。")
 
     return 0
 
