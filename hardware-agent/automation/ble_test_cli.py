@@ -139,6 +139,15 @@ class SocketBLERunner:
         """Send Alt+Tab shortcut."""
         return self.client.alt_tab()
 
+    def start_logs(self, callback) -> bool:
+        """Not available in socket mode."""
+        print(ColoredOutput.warning("Log streaming is not available in socket mode. Use direct BLE connection."))
+        return False
+
+    def stop_logs(self) -> bool:
+        """No-op for socket mode."""
+        return True
+
     def get_device_address(self) -> Optional[str]:
         return "ble_server"
 
@@ -254,6 +263,14 @@ class AsyncBLERunner:
     def alt_tab(self) -> bool:
         """Send Alt+Tab shortcut."""
         return self.run_async(self.ble.alt_tab())
+
+    def start_logs(self, callback) -> bool:
+        """Subscribe to BLE TX notifications for firmware logs."""
+        return self.run_async(self.ble.start_logs(callback))
+
+    def stop_logs(self) -> bool:
+        """Unsubscribe from BLE TX notifications."""
+        return self.run_async(self.ble.stop_logs())
 
     def get_device_address(self) -> Optional[str]:
         """Get connected device address."""
@@ -568,6 +585,29 @@ class BLETestShell(cmd.Cmd):
         """Help for alt_tab command."""
         print("\nSend Alt+Tab shortcut to switch windows")
         print("Usage: alt_tab")
+
+    def do_logs(self, arg):
+        """Stream firmware logs via BLE TX notifications."""
+        del arg
+        if not self._check_connection():
+            return
+        try:
+            if hasattr(self.runner, 'start_logs') and self.runner.start_logs(lambda msg: print(f"  [BLE] {msg}")):
+                print(ColoredOutput.info("Listening for logs... Press Enter to stop."))
+                input()
+                self.runner.stop_logs()
+                print(ColoredOutput.success("Stopped log streaming"))
+            else:
+                print(ColoredOutput.error("Failed to start log streaming"))
+        except Exception as e:
+            print(ColoredOutput.error(f"Log streaming error: {e}"))
+
+    def help_logs(self):
+        """Help for logs command."""
+        print("\nStream firmware logs via BLE TX notifications")
+        print("Usage: logs")
+        print("Requires direct BLE connection (not socket mode).")
+        print("Shows WiFi connection status, OTA readiness, and other boot logs.")
 
     def do_scroll_up(self, arg):
         """Scroll up (default 3 units)."""

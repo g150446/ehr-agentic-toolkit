@@ -323,6 +323,37 @@ class BLEController:
         """Send Alt+Tab shortcut to switch windows."""
         return await self.send_command("key:alt_tab")
 
+    async def start_logs(self, callback) -> bool:
+        """Subscribe to BLE TX notifications for firmware logs."""
+        if not self.client or not self.client.is_connected:
+            logger.error("Not connected to BLE device")
+            return False
+        try:
+            def _on_notify(sender, data):
+                try:
+                    msg = data.decode('utf-8', errors='replace')
+                    callback(msg)
+                except Exception as e:
+                    logger.error(f"Log notify error: {e}")
+            await self.client.start_notify(self.tx_char_uuid, _on_notify)
+            logger.info("Started BLE log notifications")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start log notifications: {e}")
+            return False
+
+    async def stop_logs(self) -> bool:
+        """Unsubscribe from BLE TX notifications."""
+        if not self.client or not self.client.is_connected:
+            return False
+        try:
+            await self.client.stop_notify(self.tx_char_uuid)
+            logger.info("Stopped BLE log notifications")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to stop log notifications: {e}")
+            return False
+
     def is_connected(self) -> bool:
         """
         Check if connected to BLE device.

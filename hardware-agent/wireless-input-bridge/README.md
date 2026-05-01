@@ -246,6 +246,31 @@ dns-sd -B _arduino._tcp local
 ./scripts/upload_firmware_ota.sh 192.168.x.x
 ```
 
+### OTAアップロードが失敗する場合（USBシリアルなしでデバッグ）
+
+ファームウェアはBLE TX特性（Notify）経由でWiFi/OTA関連のログをリアルタイム送信しています。
+USB接続なしで、BLE接続中にログを確認できます。
+
+```bash
+./scripts/run_ble_test.sh
+(BLE Test) connect
+(BLE Test) logs
+# → [BLE] [LOG] WiFi connected, IP: 10.56.155.191
+# → [BLE] [LOG] OTA ready — hostname: ble-hid-bridge
+```
+
+表示されるログの例：
+
+| ログメッセージ | 意味 |
+|-------------|------|
+| `[LOG] BLE client connected` | MacからBLE接続された |
+| `[LOG] WiFi connected, IP: xxx` | WiFi接続成功、IPアドレス |
+| `[LOG] WiFi not connected — OTA unavailable` | WiFi接続失敗、OTA不可 |
+| `[LOG] OTA ready — hostname: ble-hid-bridge` | OTAサーバー起動完了 |
+| `[ERR] OTA Error[N]: ...` | OTAエラー発生 |
+
+**注意**: ログはBLE接続後からのリアルタイム配信のみです。過去のログ（電源投入直後のWiFi接続試行など）は接続前のため取得できません。デバッグ時は、ESP32の電源投入後すぐにBLE接続してください。
+
 ### OTA後にBLEが切断される場合
 
 OTAアップデート中はBLE接続が一時切断されます。アップデート完了後に自動的に再起動し、
