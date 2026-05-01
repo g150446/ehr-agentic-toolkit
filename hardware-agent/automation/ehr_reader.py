@@ -448,10 +448,14 @@ def _find_word_return_mark_x(
 
 def _find_word_return_mark_bottom(
     frame: np.ndarray,
+    screen_width: int,
     *,
     threshold: float = 0.7,
 ) -> tuple[int, int] | None:
-    """画面全体から word_return_mark.jpg を検出し、y 座標が最も大きい矩形の中心座標を返す。"""
+    """画面全体から word_return_mark.jpg を検出し、y 座標が最も大きい矩形の中心座標を返す。
+
+    検出範囲は x 座標が screen_width * 1/4 から screen_width * 3/4 の間に限定する。
+    """
     template_path = (
         Path(__file__).resolve().parent.parent
         / "match_templates"
@@ -477,11 +481,20 @@ def _find_word_return_mark_bottom(
         print(f"  word_return_mark 未検出 (最高スコア {cv2.minMaxLoc(result)[1]:.3f} < {threshold})")
         return None
 
+    # x 座標が screen_width * 1/4 から screen_width * 3/4 の範囲内のみを抽出
+    x_min = screen_width // 4
+    x_max = screen_width * 3 // 4
+    filtered = [(x, y) for x, y in points if x_min <= x <= x_max]
+
+    if not filtered:
+        print(f"  word_return_mark 未検出 (範囲内: {x_min}〜{x_max} に {len(points)} 件中 0 件)")
+        return None
+
     # y 座標が最大のものを選ぶ（最も下側）
-    best_x, best_y = max(points, key=lambda p: p[1])
+    best_x, best_y = max(filtered, key=lambda p: p[1])
     cx = int(best_x + w // 2)
     cy = int(best_y + h // 2)
-    print(f"  word_return_mark 検出（最下）: ({best_x}, {best_y})〜({best_x + w}, {best_y + h}) 中心=({cx}, {cy}) (score={result[best_y, best_x]:.3f}, total={len(points)})")
+    print(f"  word_return_mark 検出（最下）: ({best_x}, {best_y})〜({best_x + w}, {best_y + h}) 中心=({cx}, {cy}) (score={result[best_y, best_x]:.3f}, total={len(points)}, filtered={len(filtered)})")
     return (cx, cy)
 
 
@@ -1142,7 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # 最も下の word_return_mark を検索（ドラッグ先）
         print("\n最下 word_return_mark を検索中...")
-        bottom_pos = _find_word_return_mark_bottom(word_frame, threshold=0.7)
+        bottom_pos = _find_word_return_mark_bottom(word_frame, screen_width=config.capture_width, threshold=0.7)
         if bottom_pos is None:
             print("[ERROR] ドラッグ先が見つかりませんでした", file=sys.stderr)
             return 1
@@ -1158,6 +1171,10 @@ def main(argv: list[str] | None = None) -> int:
         ok = client.move_mouse_to_position(bottom_x, bottom_y)
         print(f"moveto ({bottom_x}, {bottom_y}) -> {'OK' if ok else 'NG'}")
         time.sleep(0.1)
+
+        # 2秒待機（ドラッグ範囲を目視確認）
+        print("2.0秒待機（ドラッグ範囲確認）...")
+        time.sleep(2.0)
 
         # ドラッグ範囲を削除（backspace）
         ok = client.switch_to_keyboard_mode()
