@@ -30,7 +30,7 @@ import cv2
 import numpy as np
 
 from automation.config import load_config
-from automation.screen_analyzer import capture_screen as _capture_screen_hdmi
+from automation.screen_analyzer import capture_screen as _capture_screen_hdmi, load_ocr_reader, run_ocr_word_split
 from automation.mlx_vlm_ime import (
     _encode_image_data_url,
     _find_gray_divider_candidates,
@@ -47,6 +47,23 @@ _OMLX_API_KEY = "penguin"
 
 _CAPTURES_DIR = Path(__file__).resolve().parent.parent / "captures"
 _LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
+def _extract_ocr_text(image: np.ndarray) -> str:
+    """EasyOCRで画像からテキストを抽出し、整形して返す。"""
+    reader = load_ocr_reader(languages=['ja', 'en'], use_gpu=False)
+    results = run_ocr_word_split(reader, image)
+    
+    # Y座標でソートして上から下に並べる
+    lines = []
+    for bbox, text, conf in results:
+        if conf < 0.3:  # 低信頼度はスキップ
+            continue
+        y = min(p[1] for p in bbox)
+        lines.append((y, text))
+    
+    lines.sort(key=lambda x: x[0])
+    return "\n".join(text for _, text in lines)
 
 
 def _save_debug_frame(frame: np.ndarray, name: str) -> str:
@@ -177,6 +194,7 @@ def _extract_past_chart_region(
 
 def _read_past_chart_with_vlm(
     cropped: np.ndarray,
+    ocr_text: str,
     *,
     model: str,
     url: str,
@@ -193,9 +211,14 @@ def _read_past_chart_with_vlm(
         "### 指示\n"
         "添付された画像は電子カルテシステムの「過去カルテ」領域のスクリーンショットです。\n"
         "画像の内容を読み取り、日付ごとに整理された診療録データ（JSON形式）を作成してください。\n\n"
+        "### EasyOCR認識結果（参考）\n"
+        "以下は画像からEasyOCRで抽出したテキストです。レイアウト情報は失われている可能性があるため、画像も併せて確認してください。\n"
+        "```\n"
+        f"{ocr_text}\n"
+        "```\n\n"
         "### 処理のガイドライン\n"
         "1. **情報の抽出（すべての医療情報を漏らさず）**:\n"
-        "   - 画像から「日付」と、それに対応する診療録の本文を「すべて」抽出してください。\n"
+        "   - 画像とOCR結果の両方を参考にし、「日付」とそれに対応する診療録の本文を「すべて」抽出してください。\n"
         "   - [S][O][A][P]の各セクションに加え、『血液検査』『生化学検査』『尿検査』『画像検査』『胸部X線』『動脈血ガス』など、明示的にラベル付けされたすべての検査結果・所見を抽出してください。\n"
         "   - 『自由』『自由記載』などのラベルが付いた欄の内容も、診療録の一部として漏らさず抽出してください。\n"
         "   - Vitals、身体所見の間や前後に記載されている検査数値・結果（WBC、CRP、Hbなど）も見逃さずに抽出してください。\n"
@@ -254,6 +277,7 @@ def _read_past_chart_with_vlm(
 def _read_past_chart_with_vlm_merge(
     cropped: np.ndarray,
     current_json: list[dict],
+    ocr_text: str,
     *,
     model: str,
     url: str,
@@ -268,6 +292,11 @@ def _read_past_chart_with_vlm_merge(
     prompt = (
         "### 指示\n"
         "添付された「新しい画像」の内容を読み取り、以下の【現在のJSONデータ】と統合して、最新の診療録データを作成してください。\n\n"
+        "### EasyOCR認識結果（参考）\n"
+        "以下は新しい画像からEasyOCRで抽出したテキストです。レイアウト情報は失われている可能性があるため、画像も併せて確認してください。\n"
+        "```\n"
+        f"{ocr_text}\n"
+        "```\n\n"
         "### 現在のJSONデータ\n"
         f"{current_json_str}\n\n"
         "### 統合のルール\n"
@@ -276,7 +305,7 @@ def _read_past_chart_with_vlm_merge(
         "   - 既存の `content` はそのまま保持し、画像から得られた「追加情報」や「続きの文章」のみを追記・統合してください。\n"
         "   - 既存の文章を短くしたり、別の表現に言い換えたりしないでください。\n\n"
         "2. **内容の同期と結合（すべての医療情報を漏らさず）**:\n"
-        "   - 画像内の日付を確認し、すでにJSON内にその日付が存在する場合は、画像から得られた情報を既存の `content` の末尾や適切な位置に追記してください。\n"
+        "   - 画像とOCR結果の両方を参考にし、日付を確認してください。すでにJSON内にその日付が存在する場合は、画像から得られた情報を既存の `content` の末尾や適切な位置に追記してください。\n"
         "   - [S][O][A][P]の各セクションに加え、『血液検査』『生化学検査』『尿検査』『画像検査』『胸部X線』『動脈血ガス』など、明示的にラベル付けされたすべての検査結果・所見を抽出してください。\n"
         "   - 『自由』『自由記載』などのラベルが付いた欄の内容も、診療録の一部として漏らさず抽出してください。\n"
         "   - Vitals、身体所見の間や前後に記載されている検査数値・結果（WBC、CRP、Hbなど）も見逃さずに抽出してください。\n"
@@ -558,9 +587,14 @@ def main(argv: list[str] | None = None) -> int:
     past_chart = _extract_past_chart_region(frame, dividers, debug=True)
     print(f"切り出しサイズ: {past_chart.shape[1]}x{past_chart.shape[0]} px")
 
+    print("\nEasyOCR でテキスト抽出中...")
+    ocr_text = _extract_ocr_text(past_chart)
+    print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
+
     print("\nVLM で過去カルテの内容を読み取り中...")
     raw_response = _read_past_chart_with_vlm(
         past_chart,
+        ocr_text,
         model=runtime["model"],
         url=runtime["url"],
         api_key=runtime["api_key"],
@@ -615,10 +649,16 @@ def main(argv: list[str] | None = None) -> int:
 
             print(f"区切り線検出: x={dividers}")
             past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+
+            print("\nEasyOCR でテキスト抽出中...")
+            ocr_text = _extract_ocr_text(past_chart)
+            print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
+
             print(f"\n[セット {iteration + 1}/{scroll_count}] VLM で統合読み取り中...")
             raw_response = _read_past_chart_with_vlm_merge(
                 past_chart,
                 structured,
+                ocr_text,
                 model=runtime["model"],
                 url=runtime["url"],
                 api_key=runtime["api_key"],
