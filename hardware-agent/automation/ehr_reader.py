@@ -162,6 +162,51 @@ def _detect_all_dividers(
     return accepted
 
 
+def _detect_edit_button_bottom(
+    frame: np.ndarray,
+    x_start: int,
+    x_end: int,
+    *,
+    threshold: float = 0.7,
+) -> int | None:
+    """過去カルテパネル内の edit_button.jpg（ペンアイコン）を検出し、下側一致位置の下端 y 座標を返す。"""
+    template_path = (
+        Path(__file__).resolve().parent.parent
+        / "match_templates"
+        / "edit_button.jpg"
+    )
+    if not template_path.exists():
+        print(f"[WARNING] テンプレート画像が見つかりません: {template_path}")
+        return None
+
+    template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
+    if template is None:
+        print(f"[WARNING] テンプレート画像の読み込みに失敗しました: {template_path}")
+        return None
+
+    roi = frame[:, x_start:x_end]
+    if roi.size == 0:
+        return None
+
+    # BGR でテンプレートマッチング
+    result = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+    h, w = template.shape[:2]
+
+    # threshold 以上の全ピークを取得
+    loc = np.where(result >= threshold)
+    points = list(zip(*loc[::-1]))  # (x, y)
+
+    if not points:
+        return None
+
+    # 下側（y が最大）の一致位置を選ぶ
+    best_x, best_y = max(points, key=lambda p: p[1])
+    bottom_y = best_y + h
+
+    print(f"  edit_button 検出: ({best_x + x_start}, {best_y})〜({best_x + x_start + w}, {bottom_y}) (score={result[best_y, best_x]:.3f})")
+    return bottom_y
+
+
 def _extract_past_chart_region(
     frame: np.ndarray,
     dividers: list[int],
@@ -175,17 +220,27 @@ def _extract_past_chart_region(
     パネル1: d[0] 〜 d[1]  ← 過去カルテ（対象）
     パネル2: d[1] 〜 d[2]
     パネル3: d[2] 〜 右端
+
+    edit_button.jpg（ペンアイコン）を検出し、その下端より下の領域のみを対象とする。
     """
     x_start = dividers[0]
     x_end = dividers[1]
-    cropped = frame[:, x_start:x_end]
+
+    y_start = _detect_edit_button_bottom(frame, x_start, x_end)
+    if y_start is None:
+        raise RuntimeError(
+            "過去カルテ領域内に edit_button（ペンアイコン）を検出できませんでした。"
+        )
+
+    y_start = max(0, y_start)
+    cropped = frame[y_start:, x_start:x_end]
 
     if debug:
         overlay = frame.copy()
         h = overlay.shape[0]
         for x in dividers:
             cv2.line(overlay, (x, 0), (x, h - 1), (0, 255, 0), 2)
-        cv2.rectangle(overlay, (x_start, 0), (x_end, h - 1), (0, 0, 255), 2)
+        cv2.rectangle(overlay, (x_start, y_start), (x_end, h - 1), (0, 0, 255), 2)
         _save_debug_frame(overlay, "past_chart_region")
         _save_debug_frame(cropped, "past_chart_crop")
 
@@ -584,7 +639,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print("\n過去カルテ領域を切り出し中...")
-    past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+    try:
+        past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+    except RuntimeError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
     print(f"切り出しサイズ: {past_chart.shape[1]}x{past_chart.shape[0]} px")
 
     print("\nEasyOCR でテキスト抽出中...")
@@ -648,7 +707,11 @@ def main(argv: list[str] | None = None) -> int:
                 break
 
             print(f"区切り線検出: x={dividers}")
-            past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+            try:
+                past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+            except RuntimeError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                break
 
             print("\nEasyOCR でテキスト抽出中...")
             ocr_text = _extract_ocr_text(past_chart)
