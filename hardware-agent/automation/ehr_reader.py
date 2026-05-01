@@ -344,6 +344,77 @@ def _click_letter_icon(
     return ok
 
 
+def _detect_popup_region(
+    before: np.ndarray,
+    after: np.ndarray,
+    *,
+    min_area: int = 5000,
+    diff_threshold: int = 30,
+    debug: bool = True,
+) -> tuple[int, int, int, int] | None:
+    """クリック前後のフレームを比較し、ポップアップ領域の矩形 (x, y, w, h) を返す。
+
+    差分画像から変化領域を抽出し、面積が最大の矩形をポップアップとみなす。
+    """
+    if before.shape != after.shape:
+        print("[WARNING] クリック前後のフレームサイズが一致しません")
+        return None
+
+    diff = cv2.absdiff(before, after)
+    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, diff_threshold, 255, cv2.THRESH_BINARY)
+
+    # ノイズ除去（小さな点を消してから、近接領域を結合）
+    kernel = np.ones((5, 5), np.uint8)
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("  差分から輪郭を検出できませんでした")
+        return None
+
+    best_rect = None
+    best_area = 0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        # 縦長矩形を優先（ポップアップは縦長のはず）
+        if w > h * 3:
+            continue
+        if area > best_area:
+            best_area = area
+            best_rect = (x, y, w, h)
+
+    if debug:
+        overlay = after.copy()
+        if best_rect:
+            x, y, w, h = best_rect
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 0, 255), 3)
+            print(f"  ポップアップ候補: ({x}, {y}) {w}x{h} (area={best_area:.0f})")
+        else:
+            print(f"  ポップアップ候補なし (最大輪郭面積 < {min_area})")
+        # 差分画像も保存
+        diff_color = cv2.cvtColor(cleaned, cv2.COLOR_GRAY2BGR)
+        combined = np.hstack((diff_color, overlay))
+        _save_debug_frame(combined, "popup_diff")
+
+    return best_rect
+
+
+def _calculate_top_menu_center(
+    popup_rect: tuple[int, int, int, int],
+) -> tuple[int, int]:
+    """ポップアップ矩形を7等分し、一番上のメニューの中心座標 (cx, cy) を返す。"""
+    x, y, w, h = popup_rect
+    cx = x + w // 2
+    # 7分割の上段の中心 = y + (h/7)/2 = y + h/14
+    cy = y + h // 14
+    return (cx, cy)
+
+
 def _extract_past_chart_region(
     frame: np.ndarray,
     dividers: list[int],
@@ -772,6 +843,44 @@ def main(argv: list[str] | None = None) -> int:
         click_x, click_y = pos
         print(f"letter_icon クリック: ({click_x}, {click_y})")
         _click_letter_icon(click_x, click_y)
+
+        # ポップアップが表示されるのを待機
+        print("ポップアップ表示待機中 (1.0秒)...")
+        time.sleep(1.0)
+
+        # クリック後の画面をキャプチャ
+        print("クリック後の画面をキャプチャ中...")
+        after_frame = _capture_screen_hdmi(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if after_frame is None:
+            print("[ERROR] クリック後のキャプチャに失敗しました", file=sys.stderr)
+            return 1
+        _save_debug_frame(after_frame, "full_screen_after_click")
+
+        # ポップアップ領域を差分検出
+        print("ポップアップ領域を差分検出中...")
+        popup_rect = _detect_popup_region(frame, after_frame, debug=True)
+        if popup_rect is None:
+            print("[ERROR] ポップアップ領域を検出できませんでした", file=sys.stderr)
+            return 1
+
+        x, y, w, h = popup_rect
+        print(f"  ポップアップ検出: ({x}, {y}) サイズ={w}x{h}")
+
+        # 上段メニューの中心を計算
+        top_cx, top_cy = _calculate_top_menu_center(popup_rect)
+        print(f"  上段メニュー中心: ({top_cx}, {top_cy})")
+
+        # カーソルを上段メニュー中心へ移動
+        client = _wait_for_ble_connected()
+        ok = client.switch_to_mouse_mode()
+        print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+        ok = client.move_mouse_to_position(top_cx, top_cy)
+        print(f"moveto ({top_cx}, {top_cy}) -> {'OK' if ok else 'NG'}")
+
         return 0
 
     if scroll_only:
