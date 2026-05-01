@@ -79,6 +79,10 @@ def _save_debug_frame(frame: np.ndarray, name: str) -> str:
 def _measure_divider_thicknesses(
     frame: np.ndarray,
     candidates: list[int],
+    *,
+    spread_max: int = 14,
+    value_min: int = 120,
+    coverage_ratio: float = 0.45,
 ) -> list[tuple[int, int]]:
     """各候補線の太さを測定し、(x座標, 太さ) のリストを返す。"""
     h, w = frame.shape[:2]
@@ -90,14 +94,14 @@ def _measure_divider_thicknesses(
     r = band[:, :, 2].astype(np.int16)
     spread = np.maximum(np.maximum(b, g), r) - np.minimum(np.minimum(b, g), r)
     value = ((b + g + r) / 3.0)
-    mask = ((spread <= 14) & (value >= 120) & (value <= 235)).astype(np.uint8) * 255
+    mask = ((spread <= spread_max) & (value >= value_min) & (value <= 235)).astype(np.uint8) * 255
 
     result = []
     for x in candidates:
         left = max(0, x - 15)
         right = min(w, x + 15)
         col_strength = np.count_nonzero(mask[:, left:right], axis=0)
-        threshold = max(int((y2 - y1) * 0.45), 40)
+        threshold = max(int((y2 - y1) * coverage_ratio), 40)
         active = col_strength >= threshold
         if active.any():
             indices = np.where(active)[0]
@@ -113,13 +117,27 @@ def _select_thick_gray_dividers(
     *,
     num_lines: int = 3,
     min_gap: int = 80,
+    spread_max: int = 14,
+    value_min: int = 120,
+    coverage_ratio: float = 0.45,
 ) -> list[int]:
     """太いグレーの縦線を優先して num_lines 本を選ぶ。"""
-    gray_candidates = _find_gray_divider_candidates(frame)
+    gray_candidates = _find_gray_divider_candidates(
+        frame,
+        spread_max=spread_max,
+        value_min=value_min,
+        coverage_ratio=coverage_ratio,
+    )
     if not gray_candidates:
         return []
 
-    thicknesses = _measure_divider_thicknesses(frame, gray_candidates)
+    thicknesses = _measure_divider_thicknesses(
+        frame,
+        gray_candidates,
+        spread_max=spread_max,
+        value_min=value_min,
+        coverage_ratio=coverage_ratio,
+    )
     thicknesses.sort(key=lambda t: t[1], reverse=True)
 
     selected = []
@@ -134,22 +152,33 @@ def _select_thick_gray_dividers(
     return sorted(selected)
 
 
-def _detect_all_dividers(
+def _try_detect_dividers(
     frame: np.ndarray,
     *,
+    spread_max: int = 14,
+    value_min: int = 120,
+    coverage_ratio: float = 0.45,
     debug: bool = False,
 ) -> Optional[list[int]]:
-    """画面の太いグレーの縦線を3本検出する。
-
-    Returns:
-        検出された3本の x 座標（左から昇順）、または検出失敗時 None
-    """
-    h, w = frame.shape[:2]
-    accepted = _select_thick_gray_dividers(frame, num_lines=3, min_gap=80)
+    """指定パラメータで区切り線を検出し、3本見つかれば座標を返す。"""
+    accepted = _select_thick_gray_dividers(
+        frame,
+        num_lines=3,
+        min_gap=80,
+        spread_max=spread_max,
+        value_min=value_min,
+        coverage_ratio=coverage_ratio,
+    )
 
     if debug:
+        h = frame.shape[0]
         overlay = frame.copy()
-        gray_candidates = _find_gray_divider_candidates(frame)
+        gray_candidates = _find_gray_divider_candidates(
+            frame,
+            spread_max=spread_max,
+            value_min=value_min,
+            coverage_ratio=coverage_ratio,
+        )
         for x in gray_candidates:
             cv2.line(overlay, (x, 0), (x, h - 1), (0, 215, 255), 1)
         if accepted:
@@ -157,9 +186,41 @@ def _detect_all_dividers(
                 cv2.line(overlay, (x, 0), (x, h - 1), (0, 255, 0), 2)
         _save_debug_frame(overlay, "dividers")
 
-    if len(accepted) < 3:
-        return None
-    return accepted
+    if len(accepted) >= 3:
+        return accepted
+    return None
+
+
+def _detect_all_dividers(
+    frame: np.ndarray,
+    *,
+    debug: bool = False,
+) -> Optional[list[int]]:
+    """画面の太いグレーの縦線を3本検出する（2段階フォールバック）。
+
+    Returns:
+        検出された3本の x 座標（左から昇順）、または検出失敗時 None
+    """
+    # 第1段階: 通常パラメータ
+    print("  区切り線検出 第1段階（通常パラメータ: spread≤14, value≥120, カバレッジ45%）...")
+    accepted = _try_detect_dividers(
+        frame, spread_max=14, value_min=120, coverage_ratio=0.45, debug=debug,
+    )
+    if accepted is not None:
+        print(f"    第1段階で成功: {accepted[:3]}")
+        return accepted[:3]
+
+    # 第2段階: 緩和パラメータ
+    print("  区切り線検出 第2段階（緩和パラメータ: spread≤25, value≥100, カバレッジ30%）...")
+    accepted = _try_detect_dividers(
+        frame, spread_max=25, value_min=100, coverage_ratio=0.30, debug=debug,
+    )
+    if accepted is not None:
+        print(f"    第2段階で成功: {accepted[:3]}")
+        return accepted[:3]
+
+    print("    検出失敗")
+    return None
 
 
 def _detect_edit_button_bottom(

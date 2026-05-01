@@ -300,7 +300,13 @@ def _cluster_x_positions(xs: list[int], *, max_gap: int = 20) -> list[int]:
     return clusters
 
 
-def _find_gray_divider_candidates(frame: np.ndarray) -> list[int]:
+def _find_gray_divider_candidates(
+    frame: np.ndarray,
+    *,
+    spread_max: int = 14,
+    value_min: int = 120,
+    coverage_ratio: float = 0.45,
+) -> list[int]:
     h, w = frame.shape[:2]
     y1 = int(h * 0.05)
     y2 = int(h * 0.95)
@@ -310,13 +316,13 @@ def _find_gray_divider_candidates(frame: np.ndarray) -> list[int]:
     r = band[:, :, 2].astype(np.int16)
     spread = np.maximum(np.maximum(b, g), r) - np.minimum(np.minimum(b, g), r)
     value = ((b + g + r) / 3.0)
-    mask = ((spread <= 14) & (value >= 120) & (value <= 235)).astype(np.uint8) * 255
+    mask = ((spread <= spread_max) & (value >= value_min) & (value <= 235)).astype(np.uint8) * 255
     vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(25, (y2 - y1) // 6)))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, vertical_kernel)
     mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 15)))
 
     col_strength = np.count_nonzero(mask, axis=0)
-    threshold = max(int((y2 - y1) * 0.45), 40)
+    threshold = max(int((y2 - y1) * coverage_ratio), 40)
     candidates: list[int] = []
     start: Optional[int] = None
     for x, strength in enumerate(col_strength):
