@@ -1210,6 +1210,12 @@ def main(argv: list[str] | None = None) -> int:
         ok = client.press_key("enter")
         print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
 
+        # 0.5秒待機後、ウィンドウ最大化 (Win+Up)
+        print("0.5秒待機...")
+        time.sleep(0.5)
+        ok = client.press_key("win_up")
+        print(f"press_key(win_up) -> {'OK' if ok else 'NG'}")
+
         return 0
 
     if scroll_only:
