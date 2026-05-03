@@ -22,9 +22,9 @@ class ChatViewController: NSViewController {
     private var isStreaming = false
     private var debugMode = false
 
-    private let apiBase = "http://localhost:8000/v1"
-    private let apiKey = "penguin"
-    private var currentModel = "gemma-4-26b-a4b-it-4bit"
+    private var apiBase = "http://localhost:11434/v1"
+    private var apiKey = "ollama"
+    private var currentModel = "gemma4:26b"
 
     override func loadView() {
         view = NSView()
@@ -180,6 +180,17 @@ class ChatViewController: NSViewController {
     }
 
     private func fetchModels() {
+        // ollama は固定モデルを使用
+        if apiBase.contains(":11434") {
+            DispatchQueue.main.async { [weak self] in
+                self?.modelSelector.removeAllItems()
+                self?.modelSelector.addItem(withTitle: "gemma4:26b")
+                self?.currentModel = "gemma4:26b"
+            }
+            return
+        }
+
+        // omlx は /v1/models から取得
         guard let url = URL(string: "\(apiBase)/models") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
@@ -214,6 +225,20 @@ class ChatViewController: NSViewController {
                 }
             }
         }.resume()
+    }
+
+    func switchServer(to type: String) {
+        if type == "ollama" {
+            apiBase = "http://localhost:11434/v1"
+            apiKey = "ollama"
+            currentModel = "gemma4:26b"
+        } else {
+            apiBase = "http://localhost:8000/v1"
+            apiKey = "penguin"
+            currentModel = "gemma-4-26b-a4b-it-4bit"
+        }
+        modelSelector.removeAllItems()
+        fetchModels()
     }
 
     @objc private func sendMessage() {
@@ -476,6 +501,9 @@ class ChatViewController: NSViewController {
         logger.log("PNG conversion OK: \(croppedData.count) bytes")
 
         logger.log("Calling VLM (initial read)...")
+        await MainActor.run {
+            appendMessage(role: "assistant", content: "VLMへ送信中（1回目）... 画面を操作しないでください")
+        }
         let rawResponse = try await callVLM(imageDataList: [croppedData], ocrText: ocrText, currentJSON: nil)
         logger.log("VLM raw response length: \(rawResponse.count) characters")
         logger.log("VLM raw response preview: \(String(rawResponse.prefix(500)).replacingOccurrences(of: "\n", with: " "))")
@@ -485,10 +513,6 @@ class ChatViewController: NSViewController {
             throw NSError(domain: "EHRReader", code: 17, userInfo: [NSLocalizedDescriptionKey: "VLM応答のJSON解析に失敗しました"])
         }
         logger.log("Initial parse OK: \(structured.count) records")
-
-        await MainActor.run {
-            appendMessage(role: "assistant", content: "初回読み取り完了: \(structured.count) 件の診療録を検出")
-        }
 
         let maxIterations = 20
         var prevFrame = frame
@@ -525,9 +549,6 @@ class ChatViewController: NSViewController {
             let statusText = isUnchanged ? "変化なし (\(unchangedCount + 1)/2)" : "変化あり"
             let logLine = "[Set \(iteration)] 画面変化率: \(String(format: "%.4f", changePercent))% → \(statusText)"
             logger.log(logLine)
-            await MainActor.run {
-                appendMessage(role: "assistant", content: logLine)
-            }
 
             if isUnchanged {
                 unchangedCount += 1
@@ -614,6 +635,9 @@ class ChatViewController: NSViewController {
             logger.log("Current JSON records: \(structured.count)")
 
             logger.log("Calling VLM (scroll \(iteration)) with \(imageDataList.count) images...")
+            await MainActor.run {
+                appendMessage(role: "assistant", content: "VLMへ送信中（\(iteration + 1)回目）... 画面を操作しないでください")
+            }
             let mergeResponse = try await callVLM(imageDataList: imageDataList, ocrText: newOcrText, currentJSON: currentJSONStr)
             logger.log("VLM merge response length: \(mergeResponse.count) characters")
 
@@ -653,6 +677,10 @@ class ChatViewController: NSViewController {
         await MainActor.run {
             appendMessage(role: "assistant", content: "過去診療録のスクロール読み取りが完了しました:\n```json\n\(finalJSONStr)\n```")
         }
+
+        logger.log("Sending Command+Tab to switch to previous app...")
+        postCommandTab()
+        logger.log("Command+Tab sent.")
     }
 
     private func postCommandTab() {
@@ -1311,6 +1339,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
 
+        // Server submenu
+        let serverMenuItem = NSMenuItem(title: "Server", action: nil, keyEquivalent: "")
+        let serverMenu = NSMenu()
+
+        let ollxItem = NSMenuItem(title: "Use Omlx", action: #selector(switchToOmlx(_:)), keyEquivalent: "")
+        ollxItem.target = self
+        serverMenu.addItem(ollxItem)
+
+        let ollamaItem = NSMenuItem(title: "Use Ollama", action: #selector(switchToOllama(_:)), keyEquivalent: "")
+        ollamaItem.target = self
+        serverMenu.addItem(ollamaItem)
+
+        serverMenuItem.submenu = serverMenu
+        appMenu.addItem(serverMenuItem)
+
+        appMenu.addItem(NSMenuItem.separator())
+
         debugMenuItem = NSMenuItem(
             title: "Debug Mode",
             action: #selector(toggleDebugMode(_:)),
@@ -1331,6 +1376,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appMenuItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func switchToOmlx(_ sender: NSMenuItem) {
+        chatVC?.switchServer(to: "omlx")
+    }
+
+    @objc private func switchToOllama(_ sender: NSMenuItem) {
+        chatVC?.switchServer(to: "ollama")
     }
 
     @objc private func toggleDebugMode(_ sender: NSMenuItem) {
