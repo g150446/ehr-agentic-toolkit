@@ -1007,7 +1007,7 @@ class ChatViewController: NSViewController {
         return lines.map { $0.text }.joined(separator: "\n")
     }
 
-    private func logVLMRequest(prompt: String, ocrText: String, response: String) {
+    private func logVLMRequest(prompt: String, ocrText: String, response: String, error: String? = nil) {
         let logsDir = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("logs")
         try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
         let logFile = logsDir.appendingPathComponent("vlm_requests.log")
@@ -1016,17 +1016,23 @@ class ChatViewController: NSViewController {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let timestamp = formatter.string(from: Date())
 
-        let entry = """
+        var entry = """
         === VLM Request @ \(timestamp) ===
+        [API Base]: \(apiBase)
+        [Model]: \(currentModel)
         [Prompt]:
         \(prompt)
         [OCR Text]:
         \(ocrText)
-        [Response]:
-        \(response)
-        === End ===
-
         """
+        
+        if let error = error {
+            entry += "\n[ERROR]:\n\(error)\n"
+        } else {
+            entry += "\n[Response]:\n\(response)\n"
+        }
+        
+        entry += "=== End ===\n\n"
 
         if FileManager.default.fileExists(atPath: logFile.path) {
             if let data = try? Data(contentsOf: logFile),
@@ -1149,9 +1155,18 @@ class ChatViewController: NSViewController {
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw NSError(domain: "EHRReader", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP Error \(statusCode)"])
+        guard let httpResponse = response as? HTTPURLResponse else {
+            let errorMsg = "Invalid response type"
+            logVLMRequest(prompt: prompt, ocrText: ocrText, response: "", error: errorMsg)
+            throw NSError(domain: "EHRReader", code: 3, userInfo: [NSLocalizedDescriptionKey: errorMsg])
+        }
+
+        let responseString = String(data: data, encoding: .utf8) ?? "<binary data>"
+
+        guard httpResponse.statusCode == 200 else {
+            let errorMsg = "HTTP Error \(httpResponse.statusCode)\nResponse: \(responseString)"
+            logVLMRequest(prompt: prompt, ocrText: ocrText, response: "", error: errorMsg)
+            throw NSError(domain: "EHRReader", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP Error \(httpResponse.statusCode)"])
         }
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1159,6 +1174,8 @@ class ChatViewController: NSViewController {
               let first = choices.first,
               let message = first["message"] as? [String: Any],
               let contentStr = message["content"] as? String else {
+            let errorMsg = "Invalid response format\nResponse: \(responseString)"
+            logVLMRequest(prompt: prompt, ocrText: ocrText, response: "", error: errorMsg)
             throw NSError(domain: "EHRReader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])
         }
 
