@@ -431,6 +431,10 @@ class ChatViewController: NSViewController {
         }
         logger.log("Initial screenshot captured: \(frame.width)x\(frame.height)")
 
+        logger.log("Switching back to AI chat window...")
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
         logger.log("Detecting vertical divider...")
         guard let dividerX = detectVerticalDivider(image: frame) else {
             logger.log("ERROR: Vertical divider detection failed")
@@ -494,6 +498,10 @@ class ChatViewController: NSViewController {
         for iteration in 1...maxIterations {
             logger.log("\n--- Scroll Set \(iteration) ---")
             try await Task.sleep(nanoseconds: 300_000_000)
+
+            logger.log("Switching to EHR window for scroll...")
+            postCommandTab()
+            try await Task.sleep(nanoseconds: 500_000_000)
 
             let scrollAmount = Int32(bounds.height / 3)
             logger.log("Scrolling down by \(scrollAmount)px (screen height / 3)...")
@@ -562,6 +570,10 @@ class ChatViewController: NSViewController {
                 let overlayPath = saveDebugImage(overlay, name: "ehr_reader_overlay_scroll_\(iteration)")
                 logger.log("Saved overlay: \(overlayPath ?? "FAILED")")
             }
+
+            logger.log("Switching back to AI chat window...")
+            postCommandTab()
+            try await Task.sleep(nanoseconds: 500_000_000)
 
             logger.log("Extracting past chart region: dividerX=\(newDividerX), topY=\(newTopY)")
             guard let newCropped = extractPastChartRegion(image: newFrame, dividerX: newDividerX, topY: newTopY) else {
@@ -641,10 +653,6 @@ class ChatViewController: NSViewController {
         await MainActor.run {
             appendMessage(role: "assistant", content: "過去診療録のスクロール読み取りが完了しました:\n```json\n\(finalJSONStr)\n```")
         }
-
-        logger.log("Sending Command+Tab to switch to previous app...")
-        postCommandTab()
-        logger.log("Command+Tab sent.")
     }
 
     private func postCommandTab() {
