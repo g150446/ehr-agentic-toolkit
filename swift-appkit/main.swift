@@ -22,9 +22,9 @@ class ChatViewController: NSViewController {
     private var isStreaming = false
     private var debugMode = false
 
-    private var apiBase = "http://localhost:11434/v1"
-    private var apiKey = "ollama"
-    private var currentModel = "gemma4:26b"
+    private var apiBase = "http://localhost:8000/v1"
+    private var apiKey = "penguin"
+    private var currentModel = "gemma-4-26b-a4b-it-4bit"
 
     override func loadView() {
         view = NSView()
