@@ -249,6 +249,59 @@ class ChatViewController: NSViewController {
         inputView.string = ""
         appendMessage(role: "user", content: text)
 
+        // Handle click(x,y) command
+        if let clickMatch = text.range(of: "^click\\((\\d+),\\s*(\\d+)\\)$", options: .regularExpression) {
+            let matchedText = String(text[clickMatch])
+            // Extract x and y using NSRegularExpression for reliability
+            let regex = try! NSRegularExpression(pattern: "click\\((\\d+),\\s*(\\d+)\\)")
+            let nsRange = NSRange(matchedText.startIndex..., in: matchedText)
+            if let result = regex.firstMatch(in: matchedText, range: nsRange),
+               let xRange = Range(result.range(at: 1), in: matchedText),
+               let yRange = Range(result.range(at: 2), in: matchedText),
+               let x = Int(matchedText[xRange]),
+               let y = Int(matchedText[yRange]) {
+                isStreaming = true
+                sendButton.isEnabled = false
+                inputView.isEditable = false
+                appendMessage(role: "assistant", content: "")
+                Task {
+                    await performClickAt(x: x, y: y)
+                    await MainActor.run {
+                        isStreaming = false
+                        sendButton.isEnabled = true
+                        inputView.isEditable = true
+                        inputView.becomeFirstResponder()
+                    }
+                }
+                return
+            }
+        }
+
+        if text.contains("サマリ") {
+            isStreaming = true
+            sendButton.isEnabled = false
+            inputView.isEditable = false
+
+            appendMessage(role: "assistant", content: "")
+
+            Task {
+                do {
+                    try await runSummaryAction()
+                } catch {
+                    await MainActor.run {
+                        updateLastMessage(content: "Error: \(error.localizedDescription)")
+                    }
+                }
+                await MainActor.run {
+                    isStreaming = false
+                    sendButton.isEnabled = true
+                    inputView.isEditable = true
+                    inputView.becomeFirstResponder()
+                }
+            }
+            return
+        }
+
         isStreaming = true
         sendButton.isEnabled = false
         inputView.isEditable = false
@@ -681,6 +734,158 @@ class ChatViewController: NSViewController {
         logger.log("Sending Command+Tab to switch to previous app...")
         postCommandTab()
         logger.log("Command+Tab sent.")
+    }
+
+    // MARK: - Manual Click Action
+
+    private func performClickAt(x: Int, y: Int) async {
+        let logger = EHRLogger()
+        defer { logger.saveToFile() }
+        logger.log("===== Manual Click Action Started =====")
+        logger.log("Clicking at screen point coords: (\(x)pt, \(y)pt)")
+
+        let point = CGPoint(x: x, y: y)
+        let mainDisplay = CGMainDisplayID()
+
+        CGDisplayMoveCursorToPoint(mainDisplay, point)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+              let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create click events")
+            await MainActor.run {
+                updateLastMessage(content: "クリックイベントの作成に失敗しました")
+            }
+            return
+        }
+        clickDown.post(tap: .cghidEventTap)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        clickUp.post(tap: .cghidEventTap)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        logger.log("Click posted at (\(x), \(y))")
+
+        await MainActor.run {
+            updateLastMessage(content: "(\(x), \(y)) をクリックしました")
+        }
+    }
+
+    // MARK: - Summary Action
+
+    private func runSummaryAction() async throws {
+        let logger = EHRLogger()
+        defer { logger.saveToFile() }
+        logger.log("===== Summary Action Started =====")
+
+        await MainActor.run {
+            updateLastMessage(content: "サマリボタンを検索・クリックします...")
+        }
+
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+        let centerPoint = CGPoint(x: bounds.width / 2, y: bounds.height / 2)
+
+        logger.log("Clicking center of screen to activate window: \(centerPoint)")
+
+        CGDisplayMoveCursorToPoint(mainDisplay, centerPoint)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: centerPoint, mouseButton: .left),
+              let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: centerPoint, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create center click events")
+            throw NSError(domain: "SummaryAction", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create click events"])
+        }
+        clickDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        clickUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        logger.log("Center click posted")
+
+        logger.log("Capturing full screen...")
+        guard let (fullImage, screenBounds) = captureFullScreen() else {
+            logger.log("ERROR: Failed to capture full screen")
+            throw NSError(domain: "SummaryAction", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to capture full screen"])
+        }
+        logger.log("Full screen captured: \(fullImage.width)x\(fullImage.height)")
+
+        // Detect exact vertical divider to isolate side panel
+        let panelWidth: Int
+        if let dividerX = detectVerticalDivider(image: fullImage) {
+            panelWidth = dividerX
+            logger.log("Vertical divider detected at x=\(dividerX), cropping side panel")
+        } else {
+            panelWidth = fullImage.width / 2
+            logger.log("Vertical divider not detected, falling back to half width")
+        }
+        let panelRect = CGRect(x: 0, y: 0, width: panelWidth, height: fullImage.height)
+        guard let panelImage = fullImage.cropping(to: panelRect) else {
+            logger.log("ERROR: Failed to crop left panel")
+            throw NSError(domain: "SummaryAction", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to crop left panel"])
+        }
+        logger.log("Cropped left panel: \(panelImage.width)x\(panelImage.height)")
+
+        let fullPanelPath = saveDebugImage(fullImage, name: "summary_fullscreen")
+        let panelPath = saveDebugImage(panelImage, name: "summary_left_panel")
+        logger.log("Saved debug images: full=\(fullPanelPath ?? "FAILED"), panel=\(panelPath ?? "FAILED")")
+
+        logger.log("Searching for 'サマリ' button via Tesseract OCR...")
+        let (matchedBoxOpt, allBoxes) = findSummaryLineBoxWithTesseract(on: panelImage, logger: logger)
+
+        let overlayPath = saveTesseractOCROverlayImage(original: panelImage, boxes: allBoxes, matched: matchedBoxOpt, name: "summary_ocr_overlay")
+        logger.log("Saved OCR overlay: \(overlayPath ?? "FAILED")")
+
+        guard let matchedBox = matchedBoxOpt else {
+            logger.log("ERROR: 'サマリ' text not found in left panel.")
+            await MainActor.run {
+                updateLastMessage(content: "左側パネルに「サマリ」ボタンが見つかりませんでした")
+            }
+            return
+        }
+
+        logger.log("Found 'サマリ' line box: x=\(matchedBox.x), y=\(matchedBox.y), w=\(matchedBox.w), h=\(matchedBox.h)")
+
+        // Calculate scale: pixel -> point
+        let scaleX = CGFloat(fullImage.width) / screenBounds.width
+        let scaleY = CGFloat(fullImage.height) / screenBounds.height
+        logger.log("Scale factors: scaleX=\(scaleX), scaleY=\(scaleY)")
+        logger.log("Screen bounds: \(screenBounds) (points)")
+
+        // Click at 70% from the left of the matched line box (pixel coords)
+        let clickX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.7
+        let clickY = CGFloat(matchedBox.y) + CGFloat(matchedBox.h) * 0.5
+        logger.log("Click position in pixel coords: (\(clickX)px, \(clickY)px)")
+
+        // Convert pixel coords to screen point coords
+        let pointX = clickX / scaleX
+        let pointY = clickY / scaleY
+        logger.log("Click position in point coords: (\(pointX)pt, \(pointY)pt)")
+
+        let screenX = screenBounds.origin.x + pointX
+        let screenY = screenBounds.origin.y + pointY
+        let buttonCenter = CGPoint(x: screenX, y: screenY)
+        logger.log("Calculated button center in screen point coords: (\(screenX)pt, \(screenY)pt) (70% from left of line box)")
+
+        logger.log("Clicking 'サマリ' button at \(buttonCenter)")
+        await MainActor.run {
+            updateLastMessage(content: "「サマリ」ボタンを発見（\(Int(buttonCenter.x)), \(Int(buttonCenter.y))）、クリックします...")
+        }
+
+        CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let btnDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: buttonCenter, mouseButton: .left),
+              let btnUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: buttonCenter, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create button click events")
+            throw NSError(domain: "SummaryAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create button click events"])
+        }
+        btnDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        btnUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        logger.log("Button click posted")
+
+        await MainActor.run {
+            updateLastMessage(content: "「サマリ」ボタンをクリックしました。")
+        }
     }
 
     private func postCommandTab() {
@@ -1273,6 +1478,266 @@ class ChatViewController: NSViewController {
         image.unlockFocus()
 
         return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    private func captureFullScreen() -> (image: CGImage, screenBounds: CGRect)? {
+        let mainDisplay = CGMainDisplayID()
+        let bounds = CGDisplayBounds(mainDisplay)
+
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("full_screenshot_\(Int(Date().timeIntervalSince1970)).png")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        process.arguments = ["-x", tempFile.path]
+        try? process.run()
+        process.waitUntilExit()
+
+        guard let data = try? Data(contentsOf: tempFile),
+              let nsImage = NSImage(data: data),
+              let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        try? FileManager.default.removeItem(at: tempFile)
+        return (cgImage, bounds)
+    }
+
+    private func findTextBoundingBox(on cgImage: CGImage, searchText: String) -> CGRect? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLanguages = ["ja-JP", "en-US"]
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return nil
+        }
+
+        guard let observations = request.results else { return nil }
+
+        for observation in observations {
+            for candidate in observation.topCandidates(10) {
+                if candidate.string.contains(searchText) {
+                    return observation.boundingBox
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Tesseract OCR Helpers
+
+    struct TesseractLineBox {
+        let text: String
+        let x: Int
+        let y: Int
+        let w: Int
+        let h: Int
+    }
+
+    private func findSummaryLineBoxWithTesseract(on cgImage: CGImage, logger: EHRLogger) -> (match: TesseractLineBox?, all: [TesseractLineBox]) {
+        let uuid = UUID().uuidString
+        let tempDir = FileManager.default.temporaryDirectory
+        let inputPath = tempDir.appendingPathComponent("tess_input_\(uuid).png").path
+        let outputPrefix = tempDir.appendingPathComponent("tess_out_\(uuid)").path
+
+        logger.log("Tesseract temp files: input=\(inputPath), outputPrefix=\(outputPrefix)")
+
+        let rep = NSBitmapImageRep(cgImage: cgImage)
+        guard let data = rep.representation(using: .png, properties: [:]) else {
+            logger.log("ERROR: Failed to convert image to PNG")
+            return (nil, [])
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: inputPath))
+            logger.log("Wrote temp PNG: \(inputPath) (\(data.count) bytes)")
+        } catch {
+            logger.log("ERROR: Failed to write temp image: \(error)")
+            return (nil, [])
+        }
+
+        let process = Process()
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/tesseract")
+        process.arguments = [inputPath, outputPrefix, "-l", "jpn", "tsv"]
+        if !FileManager.default.fileExists(atPath: "/opt/homebrew/bin/tesseract") {
+            process.executableURL = URL(fileURLWithPath: "/usr/local/bin/tesseract")
+            logger.log("Tesseract not found at /opt/homebrew/bin/tesseract, trying /usr/local/bin/tesseract")
+        }
+        logger.log("Running Tesseract: \(process.executableURL?.path ?? "UNKNOWN") \(process.arguments?.joined(separator: " ") ?? "")")
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            logger.log("ERROR: Failed to run tesseract: \(error)")
+            try? FileManager.default.removeItem(atPath: inputPath)
+            return (nil, [])
+        }
+
+        let exitCode = process.terminationStatus
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrStr = String(data: stderrData, encoding: .utf8) ?? ""
+        logger.log("Tesseract exited with code \(exitCode)")
+        if !stderrStr.isEmpty {
+            logger.log("Tesseract stderr: \(stderrStr)")
+        }
+
+        guard exitCode == 0 else {
+            logger.log("ERROR: Tesseract failed with exit code \(exitCode)")
+            try? FileManager.default.removeItem(atPath: inputPath)
+            return (nil, [])
+        }
+
+        let tsvPath = outputPrefix + ".tsv"
+        guard let tsvData = try? Data(contentsOf: URL(fileURLWithPath: tsvPath)),
+              let tsvString = String(data: tsvData, encoding: .utf8) else {
+            logger.log("ERROR: Failed to read TSV output at \(tsvPath)")
+            try? FileManager.default.removeItem(atPath: inputPath)
+            try? FileManager.default.removeItem(atPath: tsvPath)
+            return (nil, [])
+        }
+        logger.log("TSV output read: \(tsvString.count) chars")
+
+        // Parse TSV words (level 5)
+        struct WordEntry {
+            let text: String
+            let left: Int
+            let top: Int
+            let width: Int
+            let height: Int
+            let block: Int
+            let par: Int
+            let line: Int
+        }
+
+        var words: [WordEntry] = []
+        var parseCount = 0
+        for line in tsvString.components(separatedBy: .newlines).dropFirst() {
+            let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map { String($0) }
+            guard cols.count >= 12 else { continue }
+            guard let level = Int(cols[0]), level == 5 else { continue }
+            guard let block = Int(cols[2]),
+                  let par = Int(cols[3]),
+                  let lineNum = Int(cols[4]),
+                  let left = Int(cols[6]),
+                  let top = Int(cols[7]),
+                  let w = Int(cols[8]),
+                  let h = Int(cols[9]),
+                  let conf = Double(cols[10]) else { continue }
+            let text = cols[11]
+            guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+            guard conf > 30 else { continue }
+
+            words.append(WordEntry(
+                text: text, left: left, top: top, width: w, height: h,
+                block: block, par: par, line: lineNum
+            ))
+            parseCount += 1
+        }
+        logger.log("Parsed \(parseCount) word entries from TSV")
+
+        // Group by line
+        var lineGroups: [String: [WordEntry]] = [:]
+        for w in words {
+            let key = "\(w.block)-\(w.par)-\(w.line)"
+            lineGroups[key, default: []].append(w)
+        }
+        logger.log("Grouped into \(lineGroups.count) lines")
+
+        var allBoxes: [TesseractLineBox] = []
+        var matched: TesseractLineBox? = nil
+
+        for (_, lineWords) in lineGroups {
+            let sorted = lineWords.sorted { $0.left < $1.left }
+            let lineText = sorted.map { $0.text }.joined(separator: " ")
+
+            let minLeft = sorted.map { $0.left }.min() ?? 0
+            let minTop = sorted.map { $0.top }.min() ?? 0
+            let maxRight = sorted.map { $0.left + $0.width }.max() ?? 0
+            let maxBottom = sorted.map { $0.top + $0.height }.max() ?? 0
+
+            let normalizedText = lineText.replacingOccurrences(of: " ", with: "")
+            let box = TesseractLineBox(
+                text: lineText,
+                x: minLeft,
+                y: minTop,
+                w: maxRight - minLeft,
+                h: maxBottom - minTop
+            )
+            allBoxes.append(box)
+
+            if matched == nil && normalizedText.contains("サマリ") {
+                matched = box
+                logger.log("MATCHED line (normalized): '\(normalizedText)' at [\(box.x), \(box.y), \(box.w), \(box.h)]")
+            }
+        }
+
+        logger.log("Total lines detected: \(allBoxes.count)")
+        if matched == nil {
+            logger.log("WARNING: 'サマリ' not found in any line. All lines:")
+            for (i, box) in allBoxes.enumerated() {
+                let normalized = box.text.replacingOccurrences(of: " ", with: "")
+                logger.log("  [\(i)] raw='\(box.text)' normalized='\(normalized)'")
+            }
+        }
+
+        try? FileManager.default.removeItem(atPath: inputPath)
+        try? FileManager.default.removeItem(atPath: tsvPath)
+
+        return (matched, allBoxes)
+    }
+
+    private func saveTesseractOCROverlayImage(original: CGImage, boxes: [TesseractLineBox], matched: TesseractLineBox?, name: String) -> String? {
+        let width = original.width
+        let height = original.height
+        let size = NSSize(width: width, height: height)
+        let image = NSImage(size: size)
+
+        image.lockFocus()
+
+        let nsOriginal = NSImage(cgImage: original, size: size)
+        nsOriginal.draw(in: NSRect(origin: .zero, size: size))
+
+        // Tesseract uses top-left origin; NSImage/CG uses bottom-left origin
+        // So we must flip Y: nsY = height - (box.y + box.h)
+
+        // Draw all detected lines in yellow
+        for box in boxes {
+            let nsY = height - box.y - box.h
+            let rect = NSRect(x: box.x, y: nsY, width: box.w, height: box.h)
+            let path = NSBezierPath(rect: rect)
+            NSColor.yellow.withAlphaComponent(0.15).setFill()
+            path.fill()
+            NSColor.yellow.withAlphaComponent(0.8).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+        }
+
+        // Highlight matched box in red
+        if let box = matched {
+            let nsY = height - box.y - box.h
+            let rect = NSRect(x: box.x, y: nsY, width: box.w, height: box.h)
+            let path = NSBezierPath(rect: rect)
+            NSColor.red.withAlphaComponent(0.35).setFill()
+            path.fill()
+            NSColor.red.setStroke()
+            path.lineWidth = 3
+            path.stroke()
+
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 16),
+                .foregroundColor: NSColor.red
+            ]
+            let label = "サマリ"
+            label.draw(at: NSPoint(x: CGFloat(box.x), y: CGFloat(nsY + box.h + 4)), withAttributes: attrs)
+        }
+
+        image.unlockFocus()
+
+        guard let cgResult = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return saveDebugImage(cgResult, name: name)
     }
 }
 
