@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>EHR-Agent</string>
+    <key>CFBundleName</key>
+    <string>EHR-Agent</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ehr-agentic-toolkit.EHR-Agent</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>EHR-Agent needs to send keyboard and mouse events for automation.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>EHR-Agent needs accessibility permission to simulate mouse clicks and keyboard input.</string>
+</dict>
+</plist>
