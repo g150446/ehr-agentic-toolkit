@@ -270,7 +270,9 @@ class ChatViewController: NSViewController {
                         isStreaming = false
                         sendButton.isEnabled = true
                         inputView.isEditable = true
-                        inputView.becomeFirstResponder()
+                        if inputView.window != nil {
+                            inputView.becomeFirstResponder()
+                        }
                     }
                 }
                 return
@@ -296,7 +298,9 @@ class ChatViewController: NSViewController {
                     isStreaming = false
                     sendButton.isEnabled = true
                     inputView.isEditable = true
-                    inputView.becomeFirstResponder()
+                    if inputView.window != nil {
+                        inputView.becomeFirstResponder()
+                    }
                 }
             }
             return
@@ -403,12 +407,16 @@ class ChatViewController: NSViewController {
                 }
             }
 
-            DispatchQueue.main.async {
-                self?.messages.append(ChatMessage(role: "assistant", content: assistantContent))
-                self?.isStreaming = false
-                self?.sendButton.isEnabled = true
-                self?.inputView.isEditable = true
-                self?.inputView.becomeFirstResponder()
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.messages.append(ChatMessage(role: "assistant", content: assistantContent))
+                self.isStreaming = false
+                self.sendButton.isEnabled = true
+                self.inputView.isEditable = true
+                // Safety check: only becomeFirstResponder if the view is in a window
+                if self.inputView.window != nil {
+                    self.inputView.becomeFirstResponder()
+                }
             }
         }
         task.resume()
@@ -503,10 +511,11 @@ class ChatViewController: NSViewController {
         }
 
         logger.log("Capturing initial screenshot...")
-        guard let frame = captureActiveWindow(windowID: windowID) else {
+        guard let captureResult = captureActiveWindow(windowID: windowID) else {
             logger.log("ERROR: Failed to capture initial screenshot")
             throw NSError(domain: "EHRReader", code: 12, userInfo: [NSLocalizedDescriptionKey: "Failed to capture initial screenshot"])
         }
+        let frame = captureResult.image
         logger.log("Initial screenshot captured: \(frame.width)x\(frame.height)")
 
         logger.log("Switching back to AI chat window...")
@@ -587,13 +596,14 @@ class ChatViewController: NSViewController {
             logger.log("Waited 1.0s after scroll")
 
             logger.log("Capturing screenshot after scroll...")
-            guard let newFrame = captureActiveWindow(windowID: windowID) else {
+            guard let newCaptureResult = captureActiveWindow(windowID: windowID) else {
                 logger.log("WARNING: Screenshot capture failed after scroll")
                 await MainActor.run {
                     appendMessage(role: "assistant", content: "[WARNING] スクリーンショット撮影に失敗しました。現在の結果で終了します。")
                 }
                 break
             }
+            let newFrame = newCaptureResult.image
             logger.log("Screenshot captured: \(newFrame.width)x\(newFrame.height)")
 
             let changeRatio = frameDiffRatio(prev: prevFrame, curr: newFrame)
@@ -764,8 +774,39 @@ class ChatViewController: NSViewController {
         try? await Task.sleep(nanoseconds: 500_000_000)
         logger.log("Click posted at (\(x), \(y))")
 
+        // Type "テスト" via paste (Cmd+V) to ensure Japanese input works regardless of IME state
+        logger.log("Typing 'テスト' via clipboard paste...")
+        let pasteboard = NSPasteboard.general
+        let oldContents = pasteboard.string(forType: .string)
+
+        pasteboard.clearContents()
+        pasteboard.setString("テスト", forType: .string)
+
+        let cmdDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: true)
+        let vDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: true)
+        let vUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: false)
+        let cmdUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: false)
+
+        cmdDown?.flags = .maskCommand
+        vDown?.flags = .maskCommand
+        vUp?.flags = .maskCommand
+
+        cmdDown?.post(tap: .cghidEventTap)
+        vDown?.post(tap: .cghidEventTap)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        vUp?.post(tap: .cghidEventTap)
+        cmdUp?.post(tap: .cghidEventTap)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // Restore original clipboard
+        pasteboard.clearContents()
+        if let old = oldContents {
+            pasteboard.setString(old, forType: .string)
+        }
+        logger.log("'テスト' typed and clipboard restored")
+
         await MainActor.run {
-            updateLastMessage(content: "(\(x), \(y)) をクリックしました")
+            updateLastMessage(content: "(\(x), \(y)) をクリックし、『テスト』を入力しました")
         }
     }
 
@@ -780,9 +821,13 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "サマリボタンを検索・クリックします...")
         }
 
+        // Switch to EHR app
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
         let mainDisplay = CGMainDisplayID()
-        let bounds = CGDisplayBounds(mainDisplay)
-        let centerPoint = CGPoint(x: bounds.width / 2, y: bounds.height / 2)
+        let displayBounds = CGDisplayBounds(mainDisplay)
+        let centerPoint = CGPoint(x: displayBounds.width / 2, y: displayBounds.height / 2)
 
         logger.log("Clicking center of screen to activate window: \(centerPoint)")
 
@@ -800,18 +845,44 @@ class ChatViewController: NSViewController {
         try await Task.sleep(nanoseconds: 1_000_000_000)
         logger.log("Center click posted")
 
-        logger.log("Capturing full screen...")
-        guard let (fullImage, screenBounds) = captureFullScreen() else {
-            logger.log("ERROR: Failed to capture full screen")
-            throw NSError(domain: "SummaryAction", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to capture full screen"])
+        // Find active window ID and bounds
+        var windowID: Int = 0
+        if let windowInfo = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+            for info in windowInfo {
+                if let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+                   let ownerName = info[kCGWindowOwnerName as String] as? String,
+                   ownerName != "Window Server",
+                   ownerName != "Dock",
+                   let winNum = info[kCGWindowNumber as String] as? Int {
+                    windowID = winNum
+                    logger.log("Found active window: \(ownerName) (ID: \(winNum))")
+                    break
+                }
+            }
         }
-        logger.log("Full screen captured: \(fullImage.width)x\(fullImage.height)")
 
-        // Detect exact vertical divider to isolate side panel
+        guard windowID != 0 else {
+            logger.log("ERROR: No active window found")
+            throw NSError(domain: "SummaryAction", code: 2, userInfo: [NSLocalizedDescriptionKey: "No active window found"])
+        }
+
+        logger.log("Capturing active window (first screenshot)...")
+        guard let firstCapture = captureActiveWindow(windowID: windowID) else {
+            logger.log("ERROR: Failed to capture active window")
+            throw NSError(domain: "SummaryAction", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to capture active window"])
+        }
+        let fullImage = firstCapture.image
+        let windowBounds = firstCapture.bounds
+        logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
+
+        // Detect exact vertical divider to isolate side panel (VLM first, fallback to pixel)
         let panelWidth: Int
-        if let dividerX = detectVerticalDivider(image: fullImage) {
+        if let dividerX = await detectVerticalDividerWithVLM(image: fullImage, logger: logger) {
             panelWidth = dividerX
-            logger.log("Vertical divider detected at x=\(dividerX), cropping side panel")
+            logger.log("VLM detected vertical divider at x=\(dividerX), cropping side panel")
+        } else if let dividerX = detectVerticalDivider(image: fullImage) {
+            panelWidth = dividerX
+            logger.log("Pixel-based vertical divider detected at x=\(dividerX), cropping side panel")
         } else {
             panelWidth = fullImage.width / 2
             logger.log("Vertical divider not detected, falling back to half width")
@@ -819,7 +890,7 @@ class ChatViewController: NSViewController {
         let panelRect = CGRect(x: 0, y: 0, width: panelWidth, height: fullImage.height)
         guard let panelImage = fullImage.cropping(to: panelRect) else {
             logger.log("ERROR: Failed to crop left panel")
-            throw NSError(domain: "SummaryAction", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to crop left panel"])
+            throw NSError(domain: "SummaryAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to crop left panel"])
         }
         logger.log("Cropped left panel: \(panelImage.width)x\(panelImage.height)")
 
@@ -828,7 +899,7 @@ class ChatViewController: NSViewController {
         logger.log("Saved debug images: full=\(fullPanelPath ?? "FAILED"), panel=\(panelPath ?? "FAILED")")
 
         logger.log("Searching for 'サマリ' button via Tesseract OCR...")
-        let (matchedBoxOpt, allBoxes) = findSummaryLineBoxWithTesseract(on: panelImage, logger: logger)
+        let (matchedBoxOpt, allBoxes) = findTextLineBoxWithTesseract(on: panelImage, searchText: "サマリ", logger: logger)
 
         let overlayPath = saveTesseractOCROverlayImage(original: panelImage, boxes: allBoxes, matched: matchedBoxOpt, name: "summary_ocr_overlay")
         logger.log("Saved OCR overlay: \(overlayPath ?? "FAILED")")
@@ -844,23 +915,19 @@ class ChatViewController: NSViewController {
         logger.log("Found 'サマリ' line box: x=\(matchedBox.x), y=\(matchedBox.y), w=\(matchedBox.w), h=\(matchedBox.h)")
 
         // Calculate scale: pixel -> point
-        let scaleX = CGFloat(fullImage.width) / screenBounds.width
-        let scaleY = CGFloat(fullImage.height) / screenBounds.height
+        let scaleX = CGFloat(fullImage.width) / windowBounds.width
+        let scaleY = CGFloat(fullImage.height) / windowBounds.height
         logger.log("Scale factors: scaleX=\(scaleX), scaleY=\(scaleY)")
-        logger.log("Screen bounds: \(screenBounds) (points)")
+        logger.log("Window bounds: \(windowBounds) (points)")
 
         // Click at 70% from the left of the matched line box (pixel coords)
-        let clickX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.7
-        let clickY = CGFloat(matchedBox.y) + CGFloat(matchedBox.h) * 0.5
-        logger.log("Click position in pixel coords: (\(clickX)px, \(clickY)px)")
+        let clickPixelX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.7
+        let clickPixelY = CGFloat(matchedBox.y) + CGFloat(matchedBox.h) * 0.5
+        logger.log("Click position in pixel coords: (\(clickPixelX)px, \(clickPixelY)px)")
 
         // Convert pixel coords to screen point coords
-        let pointX = clickX / scaleX
-        let pointY = clickY / scaleY
-        logger.log("Click position in point coords: (\(pointX)pt, \(pointY)pt)")
-
-        let screenX = screenBounds.origin.x + pointX
-        let screenY = screenBounds.origin.y + pointY
+        let screenX = windowBounds.origin.x + clickPixelX / scaleX
+        let screenY = windowBounds.origin.y + clickPixelY / scaleY
         let buttonCenter = CGPoint(x: screenX, y: screenY)
         logger.log("Calculated button center in screen point coords: (\(screenX)pt, \(screenY)pt) (70% from left of line box)")
 
@@ -875,7 +942,7 @@ class ChatViewController: NSViewController {
         guard let btnDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: buttonCenter, mouseButton: .left),
               let btnUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: buttonCenter, mouseButton: .left) else {
             logger.log("ERROR: Failed to create button click events")
-            throw NSError(domain: "SummaryAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to create button click events"])
+            throw NSError(domain: "SummaryAction", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to create button click events"])
         }
         btnDown.post(tap: .cghidEventTap)
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -884,8 +951,114 @@ class ChatViewController: NSViewController {
         logger.log("Button click posted")
 
         await MainActor.run {
-            updateLastMessage(content: "「サマリ」ボタンをクリックしました。")
+            updateLastMessage(content: "「サマリ」ボタンをクリックしました。次に「タイトル」を基準に入力エリアを検索します...")
         }
+
+        // Wait for screen transition after clicking サマリ button
+        logger.log("Waiting for screen transition after サマリ button click...")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+
+        // Switch to keep EHR in foreground before second screenshot
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        // Re-capture active window
+        logger.log("Re-capturing active window for main panel analysis...")
+        guard let captureResult2 = captureActiveWindow(windowID: windowID) else {
+            logger.log("ERROR: Failed to re-capture active window")
+            throw NSError(domain: "SummaryAction", code: 6, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window after サマリ click"])
+        }
+        let postClickImage = captureResult2.image
+        let postClickBounds = captureResult2.bounds
+        logger.log("Re-captured window: \(postClickImage.width)x\(postClickImage.height) pixels, bounds: \(postClickBounds) points")
+
+        // Recalculate scale for the new capture
+        let postScaleX = CGFloat(postClickImage.width) / postClickBounds.width
+        let postScaleY = CGFloat(postClickImage.height) / postClickBounds.height
+        logger.log("Post-click scale factors: scaleX=\(postScaleX), scaleY=\(postScaleY)")
+
+        // Crop main panel using dividerX (VLM first, fallback to pixel)
+        let mainPanelDividerX: Int
+        if let dividerX = await detectVerticalDividerWithVLM(image: postClickImage, logger: logger) {
+            mainPanelDividerX = dividerX
+            logger.log("VLM detected vertical divider at x=\(dividerX), cropping main panel")
+        } else if let dividerX = detectVerticalDivider(image: postClickImage) {
+            mainPanelDividerX = dividerX
+            logger.log("Pixel-based vertical divider detected at x=\(dividerX), cropping main panel")
+        } else {
+            mainPanelDividerX = postClickImage.width / 2
+            logger.log("Vertical divider not detected, falling back to half width for main panel")
+        }
+        let mainPanelRect = CGRect(x: mainPanelDividerX, y: 0, width: postClickImage.width - mainPanelDividerX, height: postClickImage.height)
+        guard let mainPanelImage = postClickImage.cropping(to: mainPanelRect) else {
+            logger.log("ERROR: Failed to crop main panel")
+            throw NSError(domain: "SummaryAction", code: 7, userInfo: [NSLocalizedDescriptionKey: "Failed to crop main panel"])
+        }
+        logger.log("Cropped main panel: \(mainPanelImage.width)x\(mainPanelImage.height)")
+
+        let mainPanelPath = saveDebugImage(mainPanelImage, name: "summary_main_panel")
+        logger.log("Saved main panel debug image: \(mainPanelPath ?? "FAILED")")
+
+        // Search for "タイトルを入力" in main panel
+        logger.log("Searching for 'タイトルを入力' in main panel via Tesseract OCR...")
+        let (inputAreaBoxOpt, mainPanelBoxes) = findTextLineBoxWithTesseract(on: mainPanelImage, searchText: "タイトルを入力", logger: logger)
+
+        let mainOverlayPath = saveTesseractOCROverlayImage(original: mainPanelImage, boxes: mainPanelBoxes, matched: inputAreaBoxOpt, name: "summary_main_ocr_overlay")
+        logger.log("Saved main panel OCR overlay: \(mainOverlayPath ?? "FAILED")")
+
+        guard let inputAreaBox = inputAreaBoxOpt else {
+            logger.log("ERROR: 'タイトルを入力' text not found in main panel.")
+            await MainActor.run {
+                updateLastMessage(content: "右側パネルに「タイトルを入力」が見つかりませんでした")
+            }
+            return
+        }
+
+        logger.log("Found 'タイトルを入力' line box: x=\(inputAreaBox.x), y=\(inputAreaBox.y), w=\(inputAreaBox.w), h=\(inputAreaBox.h)")
+
+        // Calculate click position
+        // X: center of bounding box
+        let inputClickPixelX = CGFloat(inputAreaBox.x) + CGFloat(inputAreaBox.w) / 2.0
+        // Y: 2/3 down from top of bounding box (slightly below center, targeting the actual input field)
+        let inputClickPixelY = CGFloat(inputAreaBox.y) + CGFloat(inputAreaBox.h) * 2.0 / 3.0
+        logger.log("Input area click position in main-panel pixel coords: (\(inputClickPixelX)px, \(inputClickPixelY)px)")
+
+        // Convert to screen point coords, adding divider offset in pixel space
+        let inputPointX = inputClickPixelX / postScaleX
+        let inputPointY = inputClickPixelY / postScaleY
+        let dividerPointX = CGFloat(mainPanelDividerX) / postScaleX
+        let finalScreenX = postClickBounds.origin.x + dividerPointX + inputPointX
+        let finalScreenY = postClickBounds.origin.y + inputPointY
+        let inputClickPoint = CGPoint(x: finalScreenX, y: finalScreenY)
+        logger.log("Final input area click in screen point coords: (\(finalScreenX)pt, \(finalScreenY)pt)")
+
+        // Click the input area
+        logger.log("Clicking input area at \(inputClickPoint)")
+        await MainActor.run {
+            updateLastMessage(content: "「タイトルを入力」を発見、入力欄をクリックします...")
+        }
+
+        CGDisplayMoveCursorToPoint(mainDisplay, inputClickPoint)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let inputDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: inputClickPoint, mouseButton: .left),
+              let inputUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: inputClickPoint, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create input area click events")
+            throw NSError(domain: "SummaryAction", code: 8, userInfo: [NSLocalizedDescriptionKey: "Failed to create input area click events"])
+        }
+        inputDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        inputUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        logger.log("Input area click posted")
+
+        await MainActor.run {
+            updateLastMessage(content: "「タイトルを入力」入力欄をクリックしました。")
+        }
+
+        // Switch back to EHR-Agent
+        postCommandTab()
+        logger.log("Switched back to EHR-Agent")
     }
 
     private func postCommandTab() {
@@ -904,7 +1077,7 @@ class ChatViewController: NSViewController {
         cmdUp?.post(tap: .cghidEventTap)
     }
 
-    private func captureActiveWindow(windowID: Int) -> CGImage? {
+    private func captureActiveWindow(windowID: Int) -> (image: CGImage, bounds: CGRect)? {
         let capturesDir = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("captures")
         try? FileManager.default.createDirectory(at: capturesDir, withIntermediateDirectories: true)
 
@@ -925,7 +1098,30 @@ class ChatViewController: NSViewController {
               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return nil
         }
-        return cgImage
+
+        // Get window bounds on screen
+        guard let windowBounds = getWindowBounds(windowID: windowID) else {
+            return nil
+        }
+
+        return (cgImage, windowBounds)
+    }
+
+    private func getWindowBounds(windowID: Int) -> CGRect? {
+        guard let windowInfo = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        for info in windowInfo {
+            if let winNum = info[kCGWindowNumber as String] as? Int, winNum == windowID,
+               let boundsDict = info[kCGWindowBounds as String] as? [String: Any],
+               let x = boundsDict["X"] as? CGFloat,
+               let y = boundsDict["Y"] as? CGFloat,
+               let width = boundsDict["Width"] as? CGFloat,
+               let height = boundsDict["Height"] as? CGFloat {
+                return CGRect(x: x, y: y, width: width, height: height)
+            }
+        }
+        return nil
     }
 
     private func postScrollEvent(at point: CGPoint, amount: Int32) {
@@ -963,10 +1159,14 @@ class ChatViewController: NSViewController {
         let yEnd = height * 95 / 100
         let bandHeight = yEnd - yStart
 
+        // Search only between 15% and 35% of screen width (left panel divider)
+        let xStart = width * 15 / 100
+        let xEnd = width * 35 / 100
+
         var candidateRanges: [(start: Int, end: Int)] = []
         var currentStart: Int? = nil
 
-        for x in 0..<width {
+        for x in xStart..<xEnd {
             var grayCount = 0
             for y in yStart..<yEnd {
                 let idx = (y * width + x) * 4
@@ -994,11 +1194,109 @@ class ChatViewController: NSViewController {
             }
         }
         if let start = currentStart {
-            candidateRanges.append((start: start, end: width - 1))
+            candidateRanges.append((start: start, end: xEnd - 1))
         }
 
-        guard let firstRange = candidateRanges.first else { return nil }
-        return (firstRange.start + firstRange.end) / 2
+        // Prefer the widest candidate (left panel divider is typically 2-5px wide)
+        guard let bestRange = candidateRanges.max(by: {
+            let w0 = $0.end - $0.start
+            let w1 = $1.end - $1.start
+            if w0 == w1 { return $0.start < $1.start }
+            return w0 < w1
+        }) else { return nil }
+        return (bestRange.start + bestRange.end) / 2
+    }
+
+    private func detectVerticalDividerWithVLM(image: CGImage, logger: EHRLogger) async -> Int? {
+        logger.log("Detecting vertical divider via VLM layout analysis...")
+        
+        // Convert CGImage to PNG Data
+        let rep = NSBitmapImageRep(cgImage: image)
+        guard let pngData = rep.representation(using: .png, properties: [:]) else {
+            logger.log("ERROR: Failed to convert image to PNG for VLM")
+            return nil
+        }
+        
+        let base64 = pngData.base64EncodedString()
+        let dataUrl = "data:image/png;base64,\(base64)"
+        
+        let prompt = """
+        以下の患者カルテ画面のレイアウトを解析し、結果を以下のJSONフォーマットで出力してください。
+        
+        {
+          "layout_analysis": {
+            "target_element": "left_side_panel",
+            "width_percentage": "数値（単位なし）"
+          }
+        }
+        
+        左サイドパネルの幅が画面全体の何%を占めるかを推定してください。例: 18, 20, 22 など。
+        """
+        
+        let content: [[String: Any]] = [
+            ["type": "text", "text": prompt],
+            ["type": "image_url", "image_url": ["url": dataUrl]]
+        ]
+        
+        let body: [String: Any] = [
+            "model": currentModel,
+            "temperature": 0,
+            "messages": [
+                ["role": "user", "content": content]
+            ],
+            "stream": false,
+            "max_tokens": 512
+        ]
+        
+        guard let url = URL(string: "\(apiBase)/chat/completions") else {
+            logger.log("ERROR: Invalid API URL")
+            return nil
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(authHeader(), forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 30
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                logger.log("ERROR: VLM request failed")
+                return nil
+            }
+            
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let first = choices.first,
+                  let message = first["message"] as? [String: Any],
+                  let contentStr = message["content"] as? String else {
+                logger.log("ERROR: Invalid VLM response format")
+                return nil
+            }
+            
+            logger.log("VLM raw response: \(contentStr)")
+            
+            // Parse JSON from response
+            guard let jsonData = contentStr.data(using: .utf8),
+                  let responseJson = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                  let layout = responseJson["layout_analysis"] as? [String: Any],
+                  let percentageStr = layout["width_percentage"] as? String,
+                  let percentage = Double(percentageStr) else {
+                logger.log("ERROR: Failed to parse width_percentage from VLM response")
+                return nil
+            }
+            
+            let dividerX = Int(Double(image.width) * percentage / 100.0)
+            logger.log("VLM detected left panel width: \(percentage)% -> divider at x=\(dividerX)")
+            return dividerX
+            
+        } catch {
+            logger.log("ERROR: VLM request exception: \(error)")
+            return nil
+        }
     }
 
     private func detectHorizontalDivider(image: CGImage) -> Int? {
@@ -1535,7 +1833,7 @@ class ChatViewController: NSViewController {
         let h: Int
     }
 
-    private func findSummaryLineBoxWithTesseract(on cgImage: CGImage, logger: EHRLogger) -> (match: TesseractLineBox?, all: [TesseractLineBox]) {
+    private func findTextLineBoxWithTesseract(on cgImage: CGImage, searchText: String, logger: EHRLogger) -> (match: TesseractLineBox?, all: [TesseractLineBox]) {
         let uuid = UUID().uuidString
         let tempDir = FileManager.default.temporaryDirectory
         let inputPath = tempDir.appendingPathComponent("tess_input_\(uuid).png").path
@@ -1668,7 +1966,7 @@ class ChatViewController: NSViewController {
             )
             allBoxes.append(box)
 
-            if matched == nil && normalizedText.contains("サマリ") {
+            if matched == nil && normalizedText.contains(searchText) {
                 matched = box
                 logger.log("MATCHED line (normalized): '\(normalizedText)' at [\(box.x), \(box.y), \(box.w), \(box.h)]")
             }
@@ -1676,7 +1974,7 @@ class ChatViewController: NSViewController {
 
         logger.log("Total lines detected: \(allBoxes.count)")
         if matched == nil {
-            logger.log("WARNING: 'サマリ' not found in any line. All lines:")
+            logger.log("WARNING: '\(searchText)' not found in any line. All lines:")
             for (i, box) in allBoxes.enumerated() {
                 let normalized = box.text.replacingOccurrences(of: " ", with: "")
                 logger.log("  [\(i)] raw='\(box.text)' normalized='\(normalized)'")

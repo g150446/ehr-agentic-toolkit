@@ -8,6 +8,8 @@
     <string>EHR-Agent</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ehr-agentic-toolkit.EHR-Agent</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>EHR-Agent needs to send keyboard and mouse events for automation.</string>
     <key>NSAccessibilityUsageDescription</key>
