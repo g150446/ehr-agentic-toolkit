@@ -33,7 +33,11 @@ codesign --force --deep --sign - EHR-Agent.app
 ./scripts/reset_permissions.sh
 ```
 
-このスクリプトは `Accessibility` と `ScreenCapture` の権限を `tccutil reset` でクリアします。
+このスクリプトは以下を行います：
+- TCC データベース内の **ゴーストエントリ**（bundle ID が空または競合する古いエントリ）を検出・削除
+- `Accessibility` と `ScreenCapture` の権限を `tccutil reset` でクリア
+
+**ゴーストエントリとは**: `Info.plist` の `CFBundleIdentifier` を追加・変更する前に起動したアプリの権限情報が、TCC データベース内に「ID なしのゴースト」として残る現象です。このゴーストが新しい ID 付きのエントリと競合し、再起動時に権限が失われる原因となります。
 
 ### Build & Run Automation
 

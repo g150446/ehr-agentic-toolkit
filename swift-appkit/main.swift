@@ -774,35 +774,9 @@ class ChatViewController: NSViewController {
         try? await Task.sleep(nanoseconds: 500_000_000)
         logger.log("Click posted at (\(x), \(y))")
 
-        // Type "テスト" via paste (Cmd+V) to ensure Japanese input works regardless of IME state
+        // Type "テスト" via paste
         logger.log("Typing 'テスト' via clipboard paste...")
-        let pasteboard = NSPasteboard.general
-        let oldContents = pasteboard.string(forType: .string)
-
-        pasteboard.clearContents()
-        pasteboard.setString("テスト", forType: .string)
-
-        let cmdDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: true)
-        let vDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: true)
-        let vUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: false)
-        let cmdUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: false)
-
-        cmdDown?.flags = .maskCommand
-        vDown?.flags = .maskCommand
-        vUp?.flags = .maskCommand
-
-        cmdDown?.post(tap: .cghidEventTap)
-        vDown?.post(tap: .cghidEventTap)
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        vUp?.post(tap: .cghidEventTap)
-        cmdUp?.post(tap: .cghidEventTap)
-        try? await Task.sleep(nanoseconds: 500_000_000)
-
-        // Restore original clipboard
-        pasteboard.clearContents()
-        if let old = oldContents {
-            pasteboard.setString(old, forType: .string)
-        }
+        await pasteText("テスト")
         logger.log("'テスト' typed and clipboard restored")
 
         await MainActor.run {
@@ -1053,10 +1027,118 @@ class ChatViewController: NSViewController {
         logger.log("Input area click posted")
 
         await MainActor.run {
-            updateLastMessage(content: "「タイトルを入力」入力欄をクリックしました。")
+            updateLastMessage(content: "「タイトルを入力」入力欄をクリックしました。テストを入力します...")
         }
 
-        // Switch back to EHR-Agent
+        // Step A: Type "テスト" after title input click
+        logger.log("Typing 'テスト' in title input field...")
+        await pasteText("テスト")
+        logger.log("'テスト' typed in title field")
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        await MainActor.run {
+            updateLastMessage(content: "テストを入力しました。次に「サマリの本文」を検索します...")
+        }
+
+        // Step B: Re-capture active window for summary body detection
+        logger.log("Re-capturing active window for 'サマリの本文' detection...")
+        guard let captureResult3 = captureActiveWindow(windowID: windowID) else {
+            logger.log("ERROR: Failed to re-capture active window for summary body")
+            throw NSError(domain: "SummaryAction", code: 9, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window for summary body"])
+        }
+        let summaryBodyImage = captureResult3.image
+        let summaryBodyBounds = captureResult3.bounds
+        logger.log("Re-captured window for summary body: \(summaryBodyImage.width)x\(summaryBodyImage.height) pixels, bounds: \(summaryBodyBounds) points")
+
+        // Recalculate scale for the new capture
+        let bodyScaleX = CGFloat(summaryBodyImage.width) / summaryBodyBounds.width
+        let bodyScaleY = CGFloat(summaryBodyImage.height) / summaryBodyBounds.height
+        logger.log("Summary body scale factors: scaleX=\(bodyScaleX), scaleY=\(bodyScaleY)")
+
+        // Step C: Crop main panel and search for "サマリの本文"
+        let bodyDividerX: Int
+        if let dividerX = await detectVerticalDividerWithVLM(image: summaryBodyImage, logger: logger) {
+            bodyDividerX = dividerX
+            logger.log("VLM detected vertical divider at x=\(dividerX) for summary body")
+        } else if let dividerX = detectVerticalDivider(image: summaryBodyImage) {
+            bodyDividerX = dividerX
+            logger.log("Pixel-based vertical divider detected at x=\(dividerX) for summary body")
+        } else {
+            bodyDividerX = summaryBodyImage.width / 2
+            logger.log("Vertical divider not detected, falling back to half width for summary body")
+        }
+        let bodyPanelRect = CGRect(x: bodyDividerX, y: 0, width: summaryBodyImage.width - bodyDividerX, height: summaryBodyImage.height)
+        guard let bodyPanelImage = summaryBodyImage.cropping(to: bodyPanelRect) else {
+            logger.log("ERROR: Failed to crop main panel for summary body")
+            throw NSError(domain: "SummaryAction", code: 10, userInfo: [NSLocalizedDescriptionKey: "Failed to crop main panel for summary body"])
+        }
+        logger.log("Cropped main panel for summary body: \(bodyPanelImage.width)x\(bodyPanelImage.height)")
+
+        let bodyPanelPath = saveDebugImage(bodyPanelImage, name: "summary_body_panel")
+        logger.log("Saved summary body panel debug image: \(bodyPanelPath ?? "FAILED")")
+
+        logger.log("Searching for 'サマリの本文' in main panel via Tesseract OCR...")
+        let (summaryBodyBoxOpt, bodyPanelBoxes) = findTextLineBoxWithTesseract(on: bodyPanelImage, searchText: "サマリの本文", logger: logger)
+
+        let bodyOverlayPath = saveTesseractOCROverlayImage(original: bodyPanelImage, boxes: bodyPanelBoxes, matched: summaryBodyBoxOpt, name: "summary_body_ocr_overlay")
+        logger.log("Saved summary body OCR overlay: \(bodyOverlayPath ?? "FAILED")")
+
+        guard let summaryBodyBox = summaryBodyBoxOpt else {
+            logger.log("ERROR: 'サマリの本文' text not found in main panel.")
+            await MainActor.run {
+                updateLastMessage(content: "メインパネルに「サマリの本文」が見つかりませんでした")
+            }
+            return
+        }
+
+        logger.log("Found 'サマリの本文' line box: x=\(summaryBodyBox.x), y=\(summaryBodyBox.y), w=\(summaryBodyBox.w), h=\(summaryBodyBox.h)")
+
+        // Step D: Calculate click position (center of bounding box)
+        let bodyClickPixelX = CGFloat(summaryBodyBox.x) + CGFloat(summaryBodyBox.w) / 2.0
+        let bodyClickPixelY = CGFloat(summaryBodyBox.y) + CGFloat(summaryBodyBox.h) / 2.0
+        logger.log("Summary body click position in main-panel pixel coords: (\(bodyClickPixelX)px, \(bodyClickPixelY)px)")
+
+        let bodyPointX = bodyClickPixelX / bodyScaleX
+        let bodyPointY = bodyClickPixelY / bodyScaleY
+        let bodyDividerPointX = CGFloat(bodyDividerX) / bodyScaleX
+        let bodyScreenX = summaryBodyBounds.origin.x + bodyDividerPointX + bodyPointX
+        let bodyScreenY = summaryBodyBounds.origin.y + bodyPointY
+        let bodyClickPoint = CGPoint(x: bodyScreenX, y: bodyScreenY)
+        logger.log("Final summary body click in screen point coords: (\(bodyScreenX)pt, \(bodyScreenY)pt)")
+
+        logger.log("Clicking 'サマリの本文' at \(bodyClickPoint)")
+        await MainActor.run {
+            updateLastMessage(content: "「サマリの本文」を発見、クリックします...")
+        }
+
+        CGDisplayMoveCursorToPoint(mainDisplay, bodyClickPoint)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let bodyDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: bodyClickPoint, mouseButton: .left),
+              let bodyUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: bodyClickPoint, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create summary body click events")
+            throw NSError(domain: "SummaryAction", code: 11, userInfo: [NSLocalizedDescriptionKey: "Failed to create summary body click events"])
+        }
+        bodyDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        bodyUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        logger.log("Summary body click posted")
+
+        await MainActor.run {
+            updateLastMessage(content: "「サマリの本文」をクリックしました。テストを入力します...")
+        }
+
+        // Step E: Type "テスト" after summary body click
+        logger.log("Typing 'テスト' in summary body field...")
+        await pasteText("テスト")
+        logger.log("'テスト' typed in summary body field")
+
+        await MainActor.run {
+            updateLastMessage(content: "テストを入力しました。")
+        }
+
+        // Step F: Switch back to EHR-Agent
         postCommandTab()
         logger.log("Switched back to EHR-Agent")
     }
@@ -1075,6 +1157,36 @@ class ChatViewController: NSViewController {
         tabDown?.post(tap: .cghidEventTap)
         tabUp?.post(tap: .cghidEventTap)
         cmdUp?.post(tap: .cghidEventTap)
+    }
+
+    private func pasteText(_ text: String) async {
+        let pasteboard = NSPasteboard.general
+        let oldContents = pasteboard.string(forType: .string)
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        let cmdDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: true)
+        let vDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: true)
+        let vUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: false)
+        let cmdUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: false)
+
+        cmdDown?.flags = .maskCommand
+        vDown?.flags = .maskCommand
+        vUp?.flags = .maskCommand
+
+        cmdDown?.post(tap: .cghidEventTap)
+        vDown?.post(tap: .cghidEventTap)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        vUp?.post(tap: .cghidEventTap)
+        cmdUp?.post(tap: .cghidEventTap)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // Restore original clipboard
+        pasteboard.clearContents()
+        if let old = oldContents {
+            pasteboard.setString(old, forType: .string)
+        }
     }
 
     private func captureActiveWindow(windowID: Int) -> (image: CGImage, bounds: CGRect)? {
