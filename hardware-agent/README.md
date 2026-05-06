@@ -4,6 +4,8 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
+![Physical Setup](images/relationships.png)
+
 **AI-powered clinical decision support bridge for on-premises Electronic Health Record systems.**
 
 EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabilities without requiring direct system integration. Using screen capture and OCR technology, it extracts clinical information and provides AI-assisted clinical summaries, differential diagnoses, and treatment suggestions.
