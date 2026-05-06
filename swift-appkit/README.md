@@ -37,19 +37,22 @@ This resets Accessibility and ScreenCapture permissions via `tccutil`.
 
 ### 4. Build & Run (automated)
 
-Use the provided script to build, re-sign, reset permissions, and launch:
+Use the provided script to build, re-sign, install to `~/Applications/`, register with Launch Services, reset permissions, and launch:
 
 ```bash
 cd swift-appkit
 ./scripts/build_and_run.sh
 ```
 
+**Why `~/Applications/`?**
+macOS Launch Services must know about the app for TCC (permission database) to track it by bundle ID. If the app stays only in the development folder, permissions may be lost on restart. The script copies the app to `~/Applications/` and runs `lsregister` to ensure proper registration.
+
 Then manually grant permissions in System Settings when prompted.
 
 ### 5. Run
 
 ```bash
-open swift-appkit/EHR-Agent.app
+open ~/Applications/EHR-Agent.app
 ```
 
 ## Debug Mode

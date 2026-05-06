@@ -1027,17 +1027,17 @@ class ChatViewController: NSViewController {
         logger.log("Input area click posted")
 
         await MainActor.run {
-            updateLastMessage(content: "「タイトルを入力」入力欄をクリックしました。テストを入力します...")
+            updateLastMessage(content: "「タイトルを入力」入力欄をクリックしました。テストタイトルを入力します...")
         }
 
-        // Step A: Type "テスト" after title input click
-        logger.log("Typing 'テスト' in title input field...")
-        await pasteText("テスト")
-        logger.log("'テスト' typed in title field")
+        // Step A: Type "テストタイトル" after title input click
+        logger.log("Typing 'テストタイトル' in title input field...")
+        await pasteText("テストタイトル")
+        logger.log("'テストタイトル' typed in title field")
         try await Task.sleep(nanoseconds: 500_000_000)
 
         await MainActor.run {
-            updateLastMessage(content: "テストを入力しました。次に「サマリの本文」を検索します...")
+            updateLastMessage(content: "テストタイトルを入力しました。次に「サマリの本文」を検索します...")
         }
 
         // Step B: Re-capture active window for summary body detection
@@ -1093,9 +1093,9 @@ class ChatViewController: NSViewController {
 
         logger.log("Found 'サマリの本文' line box: x=\(summaryBodyBox.x), y=\(summaryBodyBox.y), w=\(summaryBodyBox.w), h=\(summaryBodyBox.h)")
 
-        // Step D: Calculate click position (center of bounding box)
+        // Step D: Calculate click position (bottom of bounding box)
         let bodyClickPixelX = CGFloat(summaryBodyBox.x) + CGFloat(summaryBodyBox.w) / 2.0
-        let bodyClickPixelY = CGFloat(summaryBodyBox.y) + CGFloat(summaryBodyBox.h) / 2.0
+        let bodyClickPixelY = CGFloat(summaryBodyBox.y) + CGFloat(summaryBodyBox.h)
         logger.log("Summary body click position in main-panel pixel coords: (\(bodyClickPixelX)px, \(bodyClickPixelY)px)")
 
         let bodyPointX = bodyClickPixelX / bodyScaleX
