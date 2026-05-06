@@ -209,7 +209,6 @@ Full-width symbols that should be displayed as-is are currently given special ha
 ```bash
 python -m automation.ehr_input data/patient_records/asthma_1.txt
 python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
-python -m automation.ehr_input --win10 data/patient_records/asthma_1.txt   # Windows 10 environment
 ```
 
 To show help:
@@ -220,11 +219,10 @@ python -m automation.ehr_input --help
 
 #### IME Mode Detection
 
-During input, a single `a` is typed and a screen capture is passed to the VLM to determine whether `a` (English mode) or `あ` (Japanese mode) is displayed. Cleanup sends Backspace in English mode, and in Japanese mode sends Escape followed by **Backspace only if uncommitted composition remains**, so previously confirmed characters are not destroyed. Use the `--win10` flag for Windows version-specific behavior.
+During input, a single `a` is typed and a screen capture is passed to the VLM to determine whether `a` (English mode) or `あ` (Japanese mode) is displayed. Cleanup sends Backspace in English mode, and in Japanese mode sends Escape followed by **Backspace only if uncommitted composition remains**, so previously confirmed characters are not destroyed.
 
 | Option | Description |
 |---|---|
-| `--win10` | Enable Windows 10-specific behavior (skip inline conversion, etc.) |
 | `--clear` | Send Backspace 50 times to clear the field before input |
 | `--fireworks <model>` | Switch segmentation, IME candidate reading, and helper word suggestions to Fireworks AI model |
 | `--google-ai-studio` | Switch segmentation, IME candidate reading, and helper word suggestions to Google AI Studio `gemma-4-26b-a4b-it` |
