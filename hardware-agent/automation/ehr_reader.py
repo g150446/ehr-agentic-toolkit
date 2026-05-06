@@ -446,6 +446,58 @@ def _find_word_return_mark_x(
     return cx
 
 
+def _find_word_return_mark_bottom(
+    frame: np.ndarray,
+    screen_width: int,
+    *,
+    threshold: float = 0.7,
+) -> tuple[int, int] | None:
+    """画面全体から word_return_mark.jpg を検出し、y 座標が最も大きい矩形の中心座標を返す。
+
+    検出範囲は x 座標が screen_width * 1/4 から screen_width * 3/4 の間に限定する。
+    """
+    template_path = (
+        Path(__file__).resolve().parent.parent
+        / "match_templates"
+        / "word_return_mark.jpg"
+    )
+    if not template_path.exists():
+        print(f"[WARNING] テンプレート画像が見つかりません: {template_path}")
+        return None
+
+    template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
+    if template is None:
+        print(f"[WARNING] テンプレート画像の読み込みに失敗しました: {template_path}")
+        return None
+
+    result = cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)
+    h, w = template.shape[:2]
+
+    # threshold 以上の全ピークを取得
+    loc = np.where(result >= threshold)
+    points = list(zip(*loc[::-1]))  # [(x, y), ...]
+
+    if not points:
+        print(f"  word_return_mark 未検出 (最高スコア {cv2.minMaxLoc(result)[1]:.3f} < {threshold})")
+        return None
+
+    # x 座標が screen_width * 1/4 から screen_width * 3/4 の範囲内のみを抽出
+    x_min = screen_width // 4
+    x_max = screen_width * 3 // 4
+    filtered = [(x, y) for x, y in points if x_min <= x <= x_max]
+
+    if not filtered:
+        print(f"  word_return_mark 未検出 (範囲内: {x_min}〜{x_max} に {len(points)} 件中 0 件)")
+        return None
+
+    # y 座標が最大のものを選ぶ（最も下側）
+    best_x, best_y = max(filtered, key=lambda p: p[1])
+    cx = int(best_x + w // 2)
+    cy = int(best_y + h // 2 + 10)
+    print(f"  word_return_mark 検出（最下）: ({best_x}, {best_y})〜({best_x + w}, {best_y + h}) 中心=({cx}, {cy}) (score={result[best_y, best_x]:.3f}, total={len(points)}, filtered={len(filtered)})")
+    return (cx, cy)
+
+
 def _save_ocr_overlay(
     panel2: np.ndarray,
     x_offset: int,
@@ -1100,6 +1152,85 @@ def main(argv: list[str] | None = None) -> int:
         print(f"最終カーソル位置: ({target_x}, {target_y})")
         ok = client.move_mouse_to_position(target_x, target_y)
         print(f"moveto ({target_x}, {target_y}) -> {'OK' if ok else 'NG'}")
+
+        # 最も下の word_return_mark を検索（ドラッグ先）
+        print("\n最下 word_return_mark を検索中...")
+        bottom_pos = _find_word_return_mark_bottom(word_frame, screen_width=config.capture_width, threshold=0.7)
+        if bottom_pos is None:
+            print("[ERROR] ドラッグ先が見つかりませんでした", file=sys.stderr)
+            return 1
+
+        bottom_x, bottom_y = bottom_pos
+        print(f"ドラッグ先: ({bottom_x}, {bottom_y})")
+
+        # ドラッグ実行
+        ok = client.mouse_down()
+        print(f"mouse_down -> {'OK' if ok else 'NG'}")
+        time.sleep(0.1)
+
+        ok = client.move_mouse_to_position(bottom_x, bottom_y)
+        print(f"moveto ({bottom_x}, {bottom_y}) -> {'OK' if ok else 'NG'}")
+        time.sleep(0.1)
+
+        # 2秒待機（ドラッグ範囲を目視確認）
+        print("2.0秒待機（ドラッグ範囲確認）...")
+        time.sleep(2.0)
+
+        # 先にマウスボタンを離す
+        ok = client.mouse_up()
+        print(f"mouse_up -> {'OK' if ok else 'NG'}")
+
+        # キーボードモードに切り替えて backspace
+        ok = client.switch_to_keyboard_mode()
+        print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+        ok = client.press_key("backspace")
+        print(f"press_key(backspace) -> {'OK' if ok else 'NG'}")
+
+        # Ctrl+L (左寄せ)
+        ok = client.press_key("ctrl_l")
+        print(f"press_key(ctrl_l) -> {'OK' if ok else 'NG'}")
+
+        # Windows キー
+        ok = client.press_key("win")
+        print(f"press_key(win) -> {'OK' if ok else 'NG'}")
+
+        # 1.0秒待機
+        print("1.0秒待機...")
+        time.sleep(1.0)
+
+        # "note" テキスト入力
+        ok = client.type_text("note")
+        print(f"type_text(note) -> {'OK' if ok else 'NG'}")
+
+        # 0.5秒待機
+        print("0.5秒待機...")
+        time.sleep(0.5)
+
+        # Enter 送信
+        ok = client.press_key("enter")
+        print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
+
+        # 1.0秒待機（ウィンドウが開くのを待つ）
+        print("1.0秒待機...")
+        time.sleep(1.0)
+
+        # スクリーン中央をクリックしてフォーカス
+        ok = client.switch_to_mouse_mode()
+        print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+        center_x = config.capture_width // 2
+        center_y = config.capture_height // 2
+        ok = client.move_mouse_to_position(center_x, center_y)
+        print(f"moveto ({center_x}, {center_y}) -> {'OK' if ok else 'NG'}")
+        ok = client.click()
+        print(f"click (focus) -> {'OK' if ok else 'NG'}")
+
+        # 0.5秒待機後、ウィンドウ最大化 (Win+Up)
+        print("0.5秒待機...")
+        time.sleep(0.5)
+        ok = client.switch_to_keyboard_mode()
+        print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+        ok = client.press_key("win_up")
+        print(f"press_key(win_up) -> {'OK' if ok else 'NG'}")
 
         return 0
 

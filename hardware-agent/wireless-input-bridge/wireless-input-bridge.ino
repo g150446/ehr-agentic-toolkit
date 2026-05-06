@@ -300,6 +300,14 @@ bool pressNamedKey(const String &keyName) {
     Serial.println("-> key: Ctrl+Z");
     return true;
   }
+  if (keyName == "ctrl_l") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press('l');
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+L");
+    return true;
+  }
   if (keyName == "alt_tab") {
     Keyboard.press(KEY_LEFT_ALT);
     delay(50);
@@ -336,6 +344,14 @@ void processCommand(String command) {
   if (command == "click") {
     AbsMouse.click(MOUSE_LEFT);
     Serial.println("-> click");
+
+  } else if (command == "mdown") {
+    AbsMouse.press(MOUSE_LEFT);
+    Serial.println("-> mdown");
+
+  } else if (command == "mup") {
+    AbsMouse.release(MOUSE_LEFT);
+    Serial.println("-> mup");
 
   } else if (command == "rclick") {
     AbsMouse.click(MOUSE_RIGHT);

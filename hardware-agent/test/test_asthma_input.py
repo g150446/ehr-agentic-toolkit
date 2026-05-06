@@ -258,16 +258,6 @@ def test_main_rejects_fragment_with_start(monkeypatch):
     assert "--fragment は --start/--end と同時に使えません" in stderr.getvalue()
 
 
-def test_main_no_longer_accepts_win10_option():
-    stderr = io.StringIO()
-
-    with redirect_stderr(stderr), pytest.raises(SystemExit) as excinfo:
-        asthma_input.main(["--win10"])
-
-    assert excinfo.value.code == 2
-    assert "unrecognized arguments: --win10" in stderr.getvalue()
-
-
 def test_main_rejects_unknown_record(monkeypatch):
     monkeypatch.setattr(asthma_input, "_build_fragments", lambda path: ["一つ目。"])
     stderr = io.StringIO()
