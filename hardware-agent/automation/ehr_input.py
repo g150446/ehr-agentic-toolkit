@@ -2112,6 +2112,56 @@ def type_kanji_via_ime(
             print("完了（残り部分を再入力）")
             return
 
+        # --- 次ページ確認 ---
+        # 候補が9件で一致が見つからなかった場合、次ページも確認する
+        if len(numbered) >= 9:
+            print("  候補が9件です。Space×8で次ページへ進みます...")
+            for i in range(8):
+                ok = client.press_key("space")
+                print(f"key:space ({i+1}/8) -> {'OK' if ok else 'NG'}")
+                time.sleep(max(wait_sec, 0.3))
+            # ポップアップ更新待機
+            time.sleep(max(wait_sec, 1.0))
+            next_frame = capture_screen(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if next_frame is not None:
+                _save_debug_image(next_frame, f"ime_popup_{target_kanji}_page2")
+                try:
+                    next_numbered = _read_popup_candidates_with_fallback(
+                        target_kanji,
+                        next_frame,
+                        debug_name=f"{target_kanji}_page2",
+                    )
+                    print(f"  次ページ候補: {next_numbered}")
+                except Exception as exc:
+                    print(f"  次ページVLM読取失敗: {exc}")
+                    next_numbered = []
+
+                next_exact = _find_best_candidate_match(target_kanji, next_numbered)
+                if next_exact is not None:
+                    display_num, matched_text = next_exact
+                    print(f"  [次ページVLM一致] 「{target_kanji}」→ 表示番号 {display_num} (読取: {matched_text!r})")
+                    if display_num <= 9:
+                        print(f"  「{target_kanji}」→ type:{display_num}")
+                        client.send_command(f"type:{display_num}")
+                        time.sleep(max(wait_sec, 0.3))
+                        ok = client.press_key("enter")
+                        print(f"key:enter -> {'OK' if ok else 'NG'}")
+                        print("完了")
+                    else:
+                        spaces_needed = display_num - 2
+                        print(f"  「{target_kanji}」→ Space×{spaces_needed} + Enter (表示番号 {display_num})")
+                        for _ in range(spaces_needed):
+                            client.press_key("space")
+                            time.sleep(max(wait_sec, 0.3))
+                        ok = client.press_key("enter")
+                        print(f"key:enter -> {'OK' if ok else 'NG'}")
+                        print("完了")
+                    return
+
         # セグメント拡張 (Shift+Right) で再試行 — 現在は無効化
         # print(f"  プレフィックス一致なし → Shift+Right でセグメント拡張を試みます")
         # for ext in range(4):
@@ -3416,7 +3466,7 @@ def _segment_japanese_locally(text: str) -> list:
     return segments
 
 
-def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
+def type_japanese_sentence(text: str, clear_field: bool = False, _current_mode: Optional[str] = None) -> Optional[str]:
     """
     日本語・英語混在文を文節単位で入力する。
 
@@ -3432,6 +3482,10 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
     Args:
         text: 入力するテキスト（日本語・英語混在可）
         clear_field: True の場合、入力前に Backspace を 50 回送信してフィールドをクリアする
+        _current_mode: 呼び出し元から渡された現在の IME モード。None の場合は内部で検出する。
+
+    Returns:
+        入力後の IME モード文字列（'japanese' / 'english' / None）。呼び出し元で次行に渡すことで IME 検出を省略できる。
     """
     print(f"文節分割中 ({_segmentation_runtime_label()} 優先): {text!r}")
     config = load_config(skip_password=True)
@@ -3443,23 +3497,27 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
         print("フィールドをクリア中 (Escape + Ctrl+End + Backspace×200)...")
         client.press_key("escape")
         time.sleep(0.3)
-        client.press_key("ctrl+end")
+        client.press_key("ctrl_end")
         time.sleep(0.5)
         client.type_text("\x08" * 200)
-    # 開始時に1回だけ IME モードを検出し、以降は内部変数でトラッキングする
-    print("現在の IME モードを検出中...")
-    current_mode: Optional[str] = detect_ime_mode(client, config)
-    # 検出失敗(None)の場合: 前回の中断でポップアップが残っている可能性があるため
-    # Escape を複数回送ってクリアし、再検出する
+    # IME モードを検出: _current_mode が渡された場合は呼び出し元が既に検出済み
+    current_mode: Optional[str] = _current_mode
     if current_mode is None:
-        print("  [IME回復] モード不明 → Escape×3 でクリアして再検出します")
-        for _ in range(3):
-            client.press_key("escape")
-            time.sleep(0.2)
-        time.sleep(0.5)
+        print("現在の IME モードを検出中...")
         current_mode = detect_ime_mode(client, config)
-        print(f"  [IME回復] 再検出結果: {current_mode!r}")
-    print(f"初期 IME モード: {current_mode!r}")
+        # 検出失敗(None)の場合: 前回の中断でポップアップが残っている可能性があるため
+        # Escape を複数回送ってクリアし、再検出する
+        if current_mode is None:
+            print("  [IME回復] モード不明 → Escape×3 でクリアして再検出します")
+            for _ in range(3):
+                client.press_key("escape")
+                time.sleep(0.2)
+            time.sleep(0.5)
+            current_mode = detect_ime_mode(client, config)
+            print(f"  [IME回復] 再検出結果: {current_mode!r}")
+        print(f"初期 IME モード: {current_mode!r}")
+    else:
+        print(f"呼び出し元から IME モードを継承: {current_mode!r}")
     _prime_helper_reset_panel_cache(config)
 
     segments = list(_iter_segments_for_input(text))
@@ -3590,6 +3648,7 @@ def type_japanese_sentence(text: str, clear_field: bool = False) -> None:
         helper_anchor_text = _update_helper_anchor_text(helper_anchor_text, seg_text)
 
     print("\n文章入力完了")
+    return current_mode
 
 
 def _type_english_text(text: str, clear_field: bool = False) -> None:
@@ -3680,6 +3739,12 @@ def _run_cli_with_parsed_args(args: list[str], option_summary: dict[str, object]
     clear_field = bool(option_summary["clear_field"])
     omlx = bool(option_summary["omlx"])
     omlx_model = option_summary["omlx_model"]
+
+    # プロバイダーが指定されていない場合はデフォルトで omlx を有効化
+    if not omlx and not openrouter_model and not novita_model and not fireworks_model and not google_ai_studio:
+        omlx = True
+        if not omlx_model:
+            omlx_model = _OMLX_DEFAULT_MODEL
 
     _configure_runtime(
         openrouter_model=openrouter_model,

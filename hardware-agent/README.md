@@ -21,6 +21,8 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 - **ESP32 BLE Control** - Keyboard/mouse HID emulation over Bluetooth
 - **GUI Image Analyzer** - Find text coordinates and textbox positions in screenshots
 - **BLE Test CLI** - Interactive testing tool for ESP32 keyboard/mouse control
+- **Discharge Summary Automation** (`ehr_composer`) - Reads past charts via scroll + OCR/VLM, generates structured summaries, and inputs them into Word documents automatically
+- **Demo Video Recording** (`--movie`) - Records HDMI capture as phase-specific MP4s with fast-forward for hackathon demos
 
 ## Project Status
 
@@ -241,6 +243,34 @@ During input, a single `a` is typed and a screen capture is passed to the VLM to
 - Just before entering helper word fallback, the screen is re-captured after each `Escape`, and the VLM compares the **baseline image saved at the last successful confirmation** with the **current image after Esc**. For patient_record, **the third pane coordinates are detected once at command start and validated by VLM**, and subsequent compare crops reuse those fixed coordinates. **If Windows Notepad is detected**, the traditional Notepad body region is cropped to exclude the top menu bar and Windows taskbar. The comparison uses the **last confirmed string** as the baseline, and if there is a confirmed ASCII/symbol suffix immediately after the Japanese anchor, it is included in the anchor tail (e.g., `症状(`). This allows cases where `症状(` remains at the normal end while only the uncommitted part disappears to be correctly treated as reset complete. `captures/` retains `debug_panel_detection_*`, `debug_helper_reset_*_compare_crop.png`, and `debug_vlm_input_helper_reset_compare_*`, and the `[helper reset][compare]` lines in `logs/*.txt` show the yes/no decision after each `Esc`.
 
 > **Known Issue:** In re-validation with `data/patient_records/asthma_1.txt`, the blank-stall issue has been resolved, but misconversion still remains for words like `咽頭痛`. Especially at the beginning of long texts, unreflected symbols like `[` and conversion fluctuation around `昨晩` / `咳嗽` remain.
+
+---
+
+### Discharge Summary Composer (`ehr_composer`)
+
+Fully automated discharge summary pipeline that reads past charts, generates a structured summary via VLM, and inputs it into a Word document.
+
+**Workflow:**
+1. Scroll and read past chart entries via OCR + VLM
+2. Generate a 7-section discharge summary (Chief Complaint, Present Illness, Past History, Hospital Course, Discharge Status, Discharge Plan, Discharge Prescriptions)
+3. Open the discharge summary Word template from the EHR
+4. Input each line via Notepad IME conversion, cut (`Ctrl+X`), switch to Word (`Alt+Tab`), and paste (`Ctrl+V`)
+
+```bash
+# Generate discharge summary
+python -m automation.ehr_composer --summary
+
+# With demo video recording (--movie)
+python -m automation.ehr_composer --summary --movie
+```
+
+**Demo Video (`--movie`)**: Records HDMI capture as phase-specific MP4s with fast-forward:
+- Scroll phase: 3x speed
+- UI interaction phase: Normal speed
+- Text input phase: 2x speed
+- VLM processing phase: Skipped (no screen changes)
+
+Videos are saved to `captures/movie/`.
 
 ---
 
