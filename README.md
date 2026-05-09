@@ -32,7 +32,7 @@ This project requires running **Gemma 4 26B with 4-bit quantization** for AI tex
 **Minimum requirements:**
 - Apple Silicon Mac with **M4 chip or later**
 - **24GB RAM or more**
-- Runs via [omlx](https://github.com/ollama/ollama) or [ollama](https://github.com/ollama/ollama)
+- Runs via [omlx](https://github.com/jundot/omlx) or [ollama](https://github.com/ollama/ollama)
 
 ### For Keyboard/Mouse Control (ESP32-S3)
 
