@@ -279,6 +279,33 @@ class ChatViewController: NSViewController {
             }
         }
 
+        if text.contains("letter") || text.contains("情報提供書") {
+            isStreaming = true
+            sendButton.isEnabled = false
+            inputView.isEditable = false
+
+            appendMessage(role: "assistant", content: "")
+
+            Task {
+                do {
+                    try await runLetterAction()
+                } catch {
+                    await MainActor.run {
+                        updateLastMessage(content: "Error: \(error.localizedDescription)")
+                    }
+                }
+                await MainActor.run {
+                    isStreaming = false
+                    sendButton.isEnabled = true
+                    inputView.isEditable = true
+                    if inputView.window != nil {
+                        inputView.becomeFirstResponder()
+                    }
+                }
+            }
+            return
+        }
+
         if text.contains("サマリ") {
             isStreaming = true
             sendButton.isEnabled = false
@@ -849,7 +876,14 @@ class ChatViewController: NSViewController {
         let windowBounds = firstCapture.bounds
         logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
 
+        // Switch back to AI chat window for progress display
+        postCommandTab()
+        
         // Detect exact vertical divider to isolate side panel (VLM first, fallback to pixel)
+        let gaugeTask1 = showProgressGauge { [self] msg in
+            updateLastMessage(content: msg)
+        }
+
         let panelWidth: Int
         if let dividerX = await detectVerticalDividerWithVLM(image: fullImage, logger: logger) {
             panelWidth = dividerX
@@ -861,6 +895,7 @@ class ChatViewController: NSViewController {
             panelWidth = fullImage.width / 2
             logger.log("Vertical divider not detected, falling back to half width")
         }
+        gaugeTask1.cancel()
         let panelRect = CGRect(x: 0, y: 0, width: panelWidth, height: fullImage.height)
         guard let panelImage = fullImage.cropping(to: panelRect) else {
             logger.log("ERROR: Failed to crop left panel")
@@ -894,8 +929,8 @@ class ChatViewController: NSViewController {
         logger.log("Scale factors: scaleX=\(scaleX), scaleY=\(scaleY)")
         logger.log("Window bounds: \(windowBounds) (points)")
 
-        // Click at 70% from the left of the matched line box (pixel coords)
-        let clickPixelX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.7
+        // Click at 80% from the left of the matched line box (pixel coords)
+        let clickPixelX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.8
         let clickPixelY = CGFloat(matchedBox.y) + CGFloat(matchedBox.h) * 0.5
         logger.log("Click position in pixel coords: (\(clickPixelX)px, \(clickPixelY)px)")
 
@@ -903,12 +938,16 @@ class ChatViewController: NSViewController {
         let screenX = windowBounds.origin.x + clickPixelX / scaleX
         let screenY = windowBounds.origin.y + clickPixelY / scaleY
         let buttonCenter = CGPoint(x: screenX, y: screenY)
-        logger.log("Calculated button center in screen point coords: (\(screenX)pt, \(screenY)pt) (70% from left of line box)")
+        logger.log("Calculated button center in screen point coords: (\(screenX)pt, \(screenY)pt) (80% from left of line box)")
 
         logger.log("Clicking 'サマリ' button at \(buttonCenter)")
         await MainActor.run {
             updateLastMessage(content: "「サマリ」ボタンを発見（\(Int(buttonCenter.x)), \(Int(buttonCenter.y))）、クリックします...")
         }
+
+        // Ensure EHR window is in foreground before clicking
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -921,133 +960,39 @@ class ChatViewController: NSViewController {
         btnDown.post(tap: .cghidEventTap)
         try await Task.sleep(nanoseconds: 50_000_000)
         btnUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        guard let btnDown2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: buttonCenter, mouseButton: .left),
+              let btnUp2 = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: buttonCenter, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create second button click events")
+            throw NSError(domain: "SummaryAction", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to create second button click events"])
+        }
+        btnDown2.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        btnUp2.post(tap: .cghidEventTap)
         try await Task.sleep(nanoseconds: 500_000_000)
-        logger.log("Button click posted")
+        logger.log("Double-click posted")
 
         await MainActor.run {
-            updateLastMessage(content: "「サマリ」ボタンをクリックしました。次に「タイトル」を基準に入力エリアを検索します...")
+            updateLastMessage(content: "「サマリ」ボタンをダブルクリックしました。次に「サマリの本文」を検索します...")
         }
 
         // Wait for screen transition after clicking サマリ button
         logger.log("Waiting for screen transition after サマリ button click...")
         try await Task.sleep(nanoseconds: 1_500_000_000)
 
-        // Switch to keep EHR in foreground before second screenshot
+        // Switch to keep EHR in foreground before capturing for body input
         postCommandTab()
         try await Task.sleep(nanoseconds: 500_000_000)
 
-        // Re-capture active window
-        logger.log("Re-capturing active window for main panel analysis...")
-        guard let captureResult2 = captureActiveWindow(windowID: windowID) else {
-            logger.log("ERROR: Failed to re-capture active window")
+        // Re-capture active window for summary body analysis
+        logger.log("Re-capturing active window for summary body analysis...")
+        guard let captureResultBody = captureActiveWindow(windowID: windowID) else {
+            logger.log("ERROR: Failed to re-capture active window for summary body")
             throw NSError(domain: "SummaryAction", code: 6, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window after サマリ click"])
         }
-        let postClickImage = captureResult2.image
-        let postClickBounds = captureResult2.bounds
-        logger.log("Re-captured window: \(postClickImage.width)x\(postClickImage.height) pixels, bounds: \(postClickBounds) points")
-
-        // Recalculate scale for the new capture
-        let postScaleX = CGFloat(postClickImage.width) / postClickBounds.width
-        let postScaleY = CGFloat(postClickImage.height) / postClickBounds.height
-        logger.log("Post-click scale factors: scaleX=\(postScaleX), scaleY=\(postScaleY)")
-
-        // Crop main panel using dividerX (VLM first, fallback to pixel)
-        let mainPanelDividerX: Int
-        if let dividerX = await detectVerticalDividerWithVLM(image: postClickImage, logger: logger) {
-            mainPanelDividerX = dividerX
-            logger.log("VLM detected vertical divider at x=\(dividerX), cropping main panel")
-        } else if let dividerX = detectVerticalDivider(image: postClickImage) {
-            mainPanelDividerX = dividerX
-            logger.log("Pixel-based vertical divider detected at x=\(dividerX), cropping main panel")
-        } else {
-            mainPanelDividerX = postClickImage.width / 2
-            logger.log("Vertical divider not detected, falling back to half width for main panel")
-        }
-        let mainPanelRect = CGRect(x: mainPanelDividerX, y: 0, width: postClickImage.width - mainPanelDividerX, height: postClickImage.height)
-        guard let mainPanelImage = postClickImage.cropping(to: mainPanelRect) else {
-            logger.log("ERROR: Failed to crop main panel")
-            throw NSError(domain: "SummaryAction", code: 7, userInfo: [NSLocalizedDescriptionKey: "Failed to crop main panel"])
-        }
-        logger.log("Cropped main panel: \(mainPanelImage.width)x\(mainPanelImage.height)")
-
-        let mainPanelPath = saveDebugImage(mainPanelImage, name: "summary_main_panel")
-        logger.log("Saved main panel debug image: \(mainPanelPath ?? "FAILED")")
-
-        // Search for "タイトルを入力" in main panel
-        logger.log("Searching for 'タイトルを入力' in main panel via Tesseract OCR...")
-        let (inputAreaBoxOpt, mainPanelBoxes) = findTextLineBoxWithTesseract(on: mainPanelImage, searchText: "タイトルを入力", logger: logger)
-
-        let mainOverlayPath = saveTesseractOCROverlayImage(original: mainPanelImage, boxes: mainPanelBoxes, matched: inputAreaBoxOpt, name: "summary_main_ocr_overlay")
-        logger.log("Saved main panel OCR overlay: \(mainOverlayPath ?? "FAILED")")
-
-        guard let inputAreaBox = inputAreaBoxOpt else {
-            logger.log("ERROR: 'タイトルを入力' text not found in main panel.")
-            await MainActor.run {
-                updateLastMessage(content: "右側パネルに「タイトルを入力」が見つかりませんでした")
-            }
-            return
-        }
-
-        logger.log("Found 'タイトルを入力' line box: x=\(inputAreaBox.x), y=\(inputAreaBox.y), w=\(inputAreaBox.w), h=\(inputAreaBox.h)")
-
-        // Calculate click position
-        // X: center of bounding box
-        let inputClickPixelX = CGFloat(inputAreaBox.x) + CGFloat(inputAreaBox.w) / 2.0
-        // Y: 2/3 down from top of bounding box (slightly below center, targeting the actual input field)
-        let inputClickPixelY = CGFloat(inputAreaBox.y) + CGFloat(inputAreaBox.h) * 2.0 / 3.0
-        logger.log("Input area click position in main-panel pixel coords: (\(inputClickPixelX)px, \(inputClickPixelY)px)")
-
-        // Convert to screen point coords, adding divider offset in pixel space
-        let inputPointX = inputClickPixelX / postScaleX
-        let inputPointY = inputClickPixelY / postScaleY
-        let dividerPointX = CGFloat(mainPanelDividerX) / postScaleX
-        let finalScreenX = postClickBounds.origin.x + dividerPointX + inputPointX
-        let finalScreenY = postClickBounds.origin.y + inputPointY
-        let inputClickPoint = CGPoint(x: finalScreenX, y: finalScreenY)
-        logger.log("Final input area click in screen point coords: (\(finalScreenX)pt, \(finalScreenY)pt)")
-
-        // Click the input area
-        logger.log("Clicking input area at \(inputClickPoint)")
-        await MainActor.run {
-            updateLastMessage(content: "「タイトルを入力」を発見、入力欄をクリックします...")
-        }
-
-        CGDisplayMoveCursorToPoint(mainDisplay, inputClickPoint)
-        try await Task.sleep(nanoseconds: 500_000_000)
-
-        guard let inputDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: inputClickPoint, mouseButton: .left),
-              let inputUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: inputClickPoint, mouseButton: .left) else {
-            logger.log("ERROR: Failed to create input area click events")
-            throw NSError(domain: "SummaryAction", code: 8, userInfo: [NSLocalizedDescriptionKey: "Failed to create input area click events"])
-        }
-        inputDown.post(tap: .cghidEventTap)
-        try await Task.sleep(nanoseconds: 50_000_000)
-        inputUp.post(tap: .cghidEventTap)
-        try await Task.sleep(nanoseconds: 500_000_000)
-        logger.log("Input area click posted")
-
-        await MainActor.run {
-            updateLastMessage(content: "「タイトルを入力」入力欄をクリックしました。テストタイトルを入力します...")
-        }
-
-        // Step A: Type "テストタイトル" after title input click
-        logger.log("Typing 'テストタイトル' in title input field...")
-        await pasteText("テストタイトル")
-        logger.log("'テストタイトル' typed in title field")
-        try await Task.sleep(nanoseconds: 500_000_000)
-
-        await MainActor.run {
-            updateLastMessage(content: "テストタイトルを入力しました。次に「サマリの本文」を検索します...")
-        }
-
-        // Step B: Re-capture active window for summary body detection
-        logger.log("Re-capturing active window for 'サマリの本文' detection...")
-        guard let captureResult3 = captureActiveWindow(windowID: windowID) else {
-            logger.log("ERROR: Failed to re-capture active window for summary body")
-            throw NSError(domain: "SummaryAction", code: 9, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window for summary body"])
-        }
-        let summaryBodyImage = captureResult3.image
-        let summaryBodyBounds = captureResult3.bounds
+        let summaryBodyImage = captureResultBody.image
+        let summaryBodyBounds = captureResultBody.bounds
         logger.log("Re-captured window for summary body: \(summaryBodyImage.width)x\(summaryBodyImage.height) pixels, bounds: \(summaryBodyBounds) points")
 
         // Recalculate scale for the new capture
@@ -1055,7 +1000,14 @@ class ChatViewController: NSViewController {
         let bodyScaleY = CGFloat(summaryBodyImage.height) / summaryBodyBounds.height
         logger.log("Summary body scale factors: scaleX=\(bodyScaleX), scaleY=\(bodyScaleY)")
 
-        // Step C: Crop main panel and search for "サマリの本文"
+        // Switch back to AI chat window for progress display
+        postCommandTab()
+        
+        // Crop main panel and search for "サマリの本文"
+        let gaugeTaskBody = showProgressGauge { [self] msg in
+            updateLastMessage(content: msg)
+        }
+
         let bodyDividerX: Int
         if let dividerX = await detectVerticalDividerWithVLM(image: summaryBodyImage, logger: logger) {
             bodyDividerX = dividerX
@@ -1067,10 +1019,11 @@ class ChatViewController: NSViewController {
             bodyDividerX = summaryBodyImage.width / 2
             logger.log("Vertical divider not detected, falling back to half width for summary body")
         }
+        gaugeTaskBody.cancel()
         let bodyPanelRect = CGRect(x: bodyDividerX, y: 0, width: summaryBodyImage.width - bodyDividerX, height: summaryBodyImage.height)
         guard let bodyPanelImage = summaryBodyImage.cropping(to: bodyPanelRect) else {
             logger.log("ERROR: Failed to crop main panel for summary body")
-            throw NSError(domain: "SummaryAction", code: 10, userInfo: [NSLocalizedDescriptionKey: "Failed to crop main panel for summary body"])
+            throw NSError(domain: "SummaryAction", code: 7, userInfo: [NSLocalizedDescriptionKey: "Failed to crop main panel for summary body"])
         }
         logger.log("Cropped main panel for summary body: \(bodyPanelImage.width)x\(bodyPanelImage.height)")
 
@@ -1093,7 +1046,7 @@ class ChatViewController: NSViewController {
 
         logger.log("Found 'サマリの本文' line box: x=\(summaryBodyBox.x), y=\(summaryBodyBox.y), w=\(summaryBodyBox.w), h=\(summaryBodyBox.h)")
 
-        // Step D: Calculate click position (bottom of bounding box)
+        // Calculate click position (bottom of bounding box)
         let bodyClickPixelX = CGFloat(summaryBodyBox.x) + CGFloat(summaryBodyBox.w) / 2.0
         let bodyClickPixelY = CGFloat(summaryBodyBox.y) + CGFloat(summaryBodyBox.h)
         logger.log("Summary body click position in main-panel pixel coords: (\(bodyClickPixelX)px, \(bodyClickPixelY)px)")
@@ -1117,7 +1070,7 @@ class ChatViewController: NSViewController {
         guard let bodyDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: bodyClickPoint, mouseButton: .left),
               let bodyUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: bodyClickPoint, mouseButton: .left) else {
             logger.log("ERROR: Failed to create summary body click events")
-            throw NSError(domain: "SummaryAction", code: 11, userInfo: [NSLocalizedDescriptionKey: "Failed to create summary body click events"])
+            throw NSError(domain: "SummaryAction", code: 8, userInfo: [NSLocalizedDescriptionKey: "Failed to create summary body click events"])
         }
         bodyDown.post(tap: .cghidEventTap)
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -1129,7 +1082,7 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "「サマリの本文」をクリックしました。テストを入力します...")
         }
 
-        // Step E: Type "テスト" after summary body click
+        // Type body text
         logger.log("Typing 'テスト' in summary body field...")
         await pasteText("テスト")
         logger.log("'テスト' typed in summary body field")
@@ -1138,9 +1091,383 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "テストを入力しました。")
         }
 
-        // Step F: Switch back to EHR-Agent
+        // Switch back to EHR-Agent
         postCommandTab()
         logger.log("Switched back to EHR-Agent")
+    }
+
+    private func runLetterAction() async throws {
+        let logger = EHRLogger()
+        defer { logger.saveToFile() }
+        logger.log("===== Letter Action Started =====")
+
+        await MainActor.run {
+            updateLastMessage(content: "情報提供書ボタンを検索・クリックします...")
+        }
+
+        // Switch to EHR app
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let mainDisplay = CGMainDisplayID()
+        let displayBounds = CGDisplayBounds(mainDisplay)
+        let centerPoint = CGPoint(x: displayBounds.width / 2, y: displayBounds.height / 2)
+
+        logger.log("Clicking center of screen to activate window: \(centerPoint)")
+
+        CGDisplayMoveCursorToPoint(mainDisplay, centerPoint)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: centerPoint, mouseButton: .left),
+              let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: centerPoint, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create center click events")
+            throw NSError(domain: "LetterAction", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create click events"])
+        }
+        clickDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        clickUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        logger.log("Center click posted")
+
+        // Find active window ID and bounds
+        var windowID: Int = 0
+        if let windowInfo = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
+            for info in windowInfo {
+                if let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+                   let ownerName = info[kCGWindowOwnerName as String] as? String,
+                   ownerName != "Window Server",
+                   ownerName != "Dock",
+                   let winNum = info[kCGWindowNumber as String] as? Int {
+                    windowID = winNum
+                    logger.log("Found active window: \(ownerName) (ID: \(winNum))")
+                    break
+                }
+            }
+        }
+
+        guard windowID != 0 else {
+            logger.log("ERROR: No active window found")
+            throw NSError(domain: "LetterAction", code: 2, userInfo: [NSLocalizedDescriptionKey: "No active window found"])
+        }
+
+        logger.log("Capturing active window (first screenshot)...")
+        guard let firstCapture = captureActiveWindow(windowID: windowID) else {
+            logger.log("ERROR: Failed to capture active window")
+            throw NSError(domain: "LetterAction", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to capture active window"])
+        }
+        let fullImage = firstCapture.image
+        let windowBounds = firstCapture.bounds
+        logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
+
+        // Switch back to AI chat window for progress display
+        postCommandTab()
+
+        let panelWidth: Int
+        if let dividerX = await detectVerticalDividerWithVLM(image: fullImage, logger: logger) {
+            panelWidth = dividerX
+            logger.log("VLM detected vertical divider at x=\(dividerX), cropping side panel")
+        } else if let dividerX = detectVerticalDivider(image: fullImage) {
+            panelWidth = dividerX
+            logger.log("Pixel-based vertical divider detected at x=\(dividerX), cropping side panel")
+        } else {
+            panelWidth = fullImage.width / 2
+            logger.log("Vertical divider not detected, falling back to half width")
+        }
+
+        let panelRect = CGRect(x: 0, y: 0, width: panelWidth, height: fullImage.height)
+        guard let panelImage = fullImage.cropping(to: panelRect) else {
+            logger.log("ERROR: Failed to crop left panel")
+            throw NSError(domain: "LetterAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to crop left panel"])
+        }
+        logger.log("Cropped left panel: \(panelImage.width)x\(panelImage.height)")
+
+        let fullPanelPath = saveDebugImage(fullImage, name: "letter_fullscreen")
+        let panelPath = saveDebugImage(panelImage, name: "letter_left_panel")
+        logger.log("Saved debug images: full=\(fullPanelPath ?? "FAILED"), panel=\(panelPath ?? "FAILED")")
+
+        logger.log("Searching for '情報提供書' button via Tesseract OCR...")
+        let (matchedBoxOpt, allBoxes) = findTextLineBoxWithTesseract(on: panelImage, searchText: "情報提供書", logger: logger)
+
+        let overlayPath = saveTesseractOCROverlayImage(original: panelImage, boxes: allBoxes, matched: matchedBoxOpt, name: "letter_ocr_overlay")
+        logger.log("Saved OCR overlay: \(overlayPath ?? "FAILED")")
+
+        guard let matchedBox = matchedBoxOpt else {
+            logger.log("ERROR: '情報提供書' text not found in left panel.")
+            await MainActor.run {
+                updateLastMessage(content: "左側パネルに「情報提供書」ボタンが見つかりませんでした")
+            }
+            return
+        }
+
+        logger.log("Found '情報提供書' line box: x=\(matchedBox.x), y=\(matchedBox.y), w=\(matchedBox.w), h=\(matchedBox.h)")
+
+        let scaleX = CGFloat(fullImage.width) / windowBounds.width
+        let scaleY = CGFloat(fullImage.height) / windowBounds.height
+        logger.log("Scale factors: scaleX=\(scaleX), scaleY=\(scaleY)")
+
+        let clickPixelX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.7
+        let clickPixelY = CGFloat(matchedBox.y) + CGFloat(matchedBox.h) * 0.5
+        logger.log("Click position in pixel coords: (\(clickPixelX)px, \(clickPixelY)px)")
+
+        let screenX = windowBounds.origin.x + clickPixelX / scaleX
+        let screenY = windowBounds.origin.y + clickPixelY / scaleY
+        let buttonCenter = CGPoint(x: screenX, y: screenY)
+        logger.log("Calculated button center in screen point coords: (\(screenX)pt, \(screenY)pt)")
+
+        logger.log("Clicking '情報提供書' button at \(buttonCenter)")
+        await MainActor.run {
+            updateLastMessage(content: "「情報提供書」ボタンを発見（\(Int(buttonCenter.x)), \(Int(buttonCenter.y))）、クリックします...")
+        }
+
+        // Ensure EHR window is in foreground before clicking
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let btnDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: buttonCenter, mouseButton: .left),
+              let btnUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: buttonCenter, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create button click events")
+            throw NSError(domain: "LetterAction", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to create button click events"])
+        }
+        btnDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        btnUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        logger.log("Button click posted")
+
+        await MainActor.run {
+            updateLastMessage(content: "「情報提供書」ボタンをクリックしました。次に入力エリアを検索します...")
+        }
+
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        logger.log("Re-capturing active window for main panel analysis...")
+        guard let captureResult2 = captureActiveWindow(windowID: windowID) else {
+            logger.log("ERROR: Failed to re-capture active window")
+            throw NSError(domain: "LetterAction", code: 6, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window after 情報提供書 click"])
+        }
+        let postClickImage = captureResult2.image
+        let postClickBounds = captureResult2.bounds
+        logger.log("Re-captured window: \(postClickImage.width)x\(postClickImage.height) pixels, bounds: \(postClickBounds) points")
+
+        let postScaleX = CGFloat(postClickImage.width) / postClickBounds.width
+        let postScaleY = CGFloat(postClickImage.height) / postClickBounds.height
+        logger.log("Post-click scale factors: scaleX=\(postScaleX), scaleY=\(postScaleY)")
+
+        postCommandTab()
+
+        let mainPanelDividerX: Int
+        if let dividerX = await detectVerticalDividerWithVLM(image: postClickImage, logger: logger) {
+            mainPanelDividerX = dividerX
+        } else if let dividerX = detectVerticalDivider(image: postClickImage) {
+            mainPanelDividerX = dividerX
+        } else {
+            mainPanelDividerX = postClickImage.width / 2
+        }
+
+        let mainPanelRect = CGRect(x: mainPanelDividerX, y: 0, width: postClickImage.width - mainPanelDividerX, height: postClickImage.height)
+        guard let mainPanelImage = postClickImage.cropping(to: mainPanelRect) else {
+            logger.log("ERROR: Failed to crop main panel")
+            throw NSError(domain: "LetterAction", code: 7, userInfo: [NSLocalizedDescriptionKey: "Failed to crop main panel"])
+        }
+        logger.log("Cropped main panel: \(mainPanelImage.width)x\(mainPanelImage.height)")
+
+        let mainPanelPath = saveDebugImage(mainPanelImage, name: "letter_main_panel")
+        logger.log("Saved main panel debug image: \(mainPanelPath ?? "FAILED")")
+
+        logger.log("Searching for '医療機関名を入力' in main panel via Tesseract OCR...")
+        let (inputAreaBoxOpt, mainPanelBoxes) = findTextLineBoxWithTesseract(on: mainPanelImage, searchText: "医療機関名を入力", logger: logger)
+
+        let mainOverlayPath = saveTesseractOCROverlayImage(original: mainPanelImage, boxes: mainPanelBoxes, matched: inputAreaBoxOpt, name: "letter_main_ocr_overlay")
+        logger.log("Saved main panel OCR overlay: \(mainOverlayPath ?? "FAILED")")
+
+        guard let inputAreaBox = inputAreaBoxOpt else {
+            logger.log("ERROR: '医療機関名を入力' text not found in main panel.")
+            await MainActor.run {
+                updateLastMessage(content: "右側パネルに「医療機関名を入力」が見つかりませんでした")
+            }
+            return
+        }
+
+        logger.log("Found '医療機関名を入力' line box: x=\(inputAreaBox.x), y=\(inputAreaBox.y), w=\(inputAreaBox.w), h=\(inputAreaBox.h)")
+
+        let inputClickPixelX = CGFloat(inputAreaBox.x) + CGFloat(inputAreaBox.w) / 2.0
+        let inputClickPixelY = CGFloat(inputAreaBox.y) + CGFloat(inputAreaBox.h)
+
+        let inputPointX = inputClickPixelX / postScaleX
+        let inputPointY = inputClickPixelY / postScaleY
+        let dividerPointX = CGFloat(mainPanelDividerX) / postScaleX
+        let finalScreenX = postClickBounds.origin.x + dividerPointX + inputPointX
+        let finalScreenY = postClickBounds.origin.y + inputPointY
+        let inputClickPoint = CGPoint(x: finalScreenX, y: finalScreenY)
+        logger.log("Final input area click in screen point coords: (\(finalScreenX)pt, \(finalScreenY)pt)")
+
+        logger.log("Clicking input area at \(inputClickPoint)")
+        // Ensure EHR is in foreground before clicking
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        await MainActor.run {
+            updateLastMessage(content: "「医療機関名を入力」を発見、入力欄をクリックします...")
+        }
+
+        CGDisplayMoveCursorToPoint(mainDisplay, inputClickPoint)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let inputDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: inputClickPoint, mouseButton: .left),
+              let inputUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: inputClickPoint, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create input area click events")
+            throw NSError(domain: "LetterAction", code: 8, userInfo: [NSLocalizedDescriptionKey: "Failed to create input area click events"])
+        }
+        inputDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        inputUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        logger.log("Input area click posted")
+
+        await MainActor.run {
+            updateLastMessage(content: "「医療機関名を入力」入力欄をクリックしました。テスト医療機関名を入力します...")
+        }
+
+        logger.log("Typing 'テスト医療機関' in medical institution input field...")
+        await pasteText("テスト医療機関")
+        logger.log("'テスト医療機関' typed in medical institution field")
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        await MainActor.run {
+            updateLastMessage(content: "テスト医療機関名を入力しました。次に「本文を入力」を検索します...")
+        }
+
+        // Re-capture for body input
+        logger.log("Re-capturing active window for body detection...")
+        guard let captureResult3 = captureActiveWindow(windowID: windowID) else {
+            logger.log("ERROR: Failed to re-capture active window for body")
+            throw NSError(domain: "LetterAction", code: 9, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window for body"])
+        }
+        let bodyImage = captureResult3.image
+        let bodyBounds = captureResult3.bounds
+        logger.log("Re-captured window for body: \(bodyImage.width)x\(bodyImage.height) pixels, bounds: \(bodyBounds) points")
+
+        let bodyScaleX = CGFloat(bodyImage.width) / bodyBounds.width
+        let bodyScaleY = CGFloat(bodyImage.height) / bodyBounds.height
+        logger.log("Body scale factors: scaleX=\(bodyScaleX), scaleY=\(bodyScaleY)")
+
+        postCommandTab()
+
+        let bodyDividerX: Int
+        if let dividerX = await detectVerticalDividerWithVLM(image: bodyImage, logger: logger) {
+            bodyDividerX = dividerX
+        } else if let dividerX = detectVerticalDivider(image: bodyImage) {
+            bodyDividerX = dividerX
+        } else {
+            bodyDividerX = bodyImage.width / 2
+        }
+
+        let bodyPanelRect = CGRect(x: bodyDividerX, y: 0, width: bodyImage.width - bodyDividerX, height: bodyImage.height)
+        guard let bodyPanelImage = bodyImage.cropping(to: bodyPanelRect) else {
+            logger.log("ERROR: Failed to crop main panel for body")
+            throw NSError(domain: "LetterAction", code: 10, userInfo: [NSLocalizedDescriptionKey: "Failed to crop main panel for body"])
+        }
+        logger.log("Cropped main panel for body: \(bodyPanelImage.width)x\(bodyPanelImage.height)")
+
+        let bodyPanelPath = saveDebugImage(bodyPanelImage, name: "letter_body_panel")
+        logger.log("Saved body panel debug image: \(bodyPanelPath ?? "FAILED")")
+
+        logger.log("Searching for '本文を入力' in main panel via Tesseract OCR...")
+        let (bodyBoxOpt, bodyPanelBoxes) = findTextLineBoxWithTesseract(on: bodyPanelImage, searchText: "本文を入力", logger: logger)
+
+        let bodyOverlayPath = saveTesseractOCROverlayImage(original: bodyPanelImage, boxes: bodyPanelBoxes, matched: bodyBoxOpt, name: "letter_body_ocr_overlay")
+        logger.log("Saved body OCR overlay: \(bodyOverlayPath ?? "FAILED")")
+
+        guard let bodyBox = bodyBoxOpt else {
+            logger.log("ERROR: '本文を入力' text not found in main panel.")
+            await MainActor.run {
+                updateLastMessage(content: "メインパネルに「本文を入力」が見つかりませんでした")
+            }
+            return
+        }
+
+        logger.log("Found '本文を入力' line box: x=\(bodyBox.x), y=\(bodyBox.y), w=\(bodyBox.w), h=\(bodyBox.h)")
+
+        let bodyClickPixelX = CGFloat(bodyBox.x) + CGFloat(bodyBox.w) / 2.0
+        let bodyClickPixelY = CGFloat(bodyBox.y) + CGFloat(bodyBox.h)
+        logger.log("Body click position in main-panel pixel coords: (\(bodyClickPixelX)px, \(bodyClickPixelY)px)")
+
+        let bodyPointX = bodyClickPixelX / bodyScaleX
+        let bodyPointY = bodyClickPixelY / bodyScaleY
+        let bodyDividerPointX = CGFloat(bodyDividerX) / bodyScaleX
+        let bodyScreenX = bodyBounds.origin.x + bodyDividerPointX + bodyPointX
+        let bodyScreenY = bodyBounds.origin.y + bodyPointY
+        let bodyClickPoint = CGPoint(x: bodyScreenX, y: bodyScreenY)
+        logger.log("Final body click in screen point coords: (\(bodyScreenX)pt, \(bodyScreenY)pt)")
+
+        logger.log("Clicking '本文を入力' at \(bodyClickPoint)")
+        // Ensure EHR is in foreground before clicking
+        postCommandTab()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        await MainActor.run {
+            updateLastMessage(content: "「本文を入力」を発見、クリックします...")
+        }
+
+        CGDisplayMoveCursorToPoint(mainDisplay, bodyClickPoint)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        guard let bodyDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: bodyClickPoint, mouseButton: .left),
+              let bodyUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: bodyClickPoint, mouseButton: .left) else {
+            logger.log("ERROR: Failed to create body click events")
+            throw NSError(domain: "LetterAction", code: 11, userInfo: [NSLocalizedDescriptionKey: "Failed to create body click events"])
+        }
+        bodyDown.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        bodyUp.post(tap: .cghidEventTap)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        logger.log("Body click posted")
+
+        await MainActor.run {
+            updateLastMessage(content: "「本文を入力」をクリックしました。テスト本文を入力します...")
+        }
+
+        logger.log("Typing 'テスト本文' in body field...")
+        await pasteText("テスト本文")
+        logger.log("'テスト本文' typed in body field")
+
+        await MainActor.run {
+            updateLastMessage(content: "テスト本文を入力しました。")
+        }
+
+        postCommandTab()
+        logger.log("Switched back to EHR-Agent")
+    }
+
+    private func showProgressGauge(estimatedSeconds: Int = 25, message: String = "レイアウト解析中...", updateMessage: @escaping (String) -> Void) -> Task<Void, Error> {
+        return Task {
+            let totalBlocks = 10
+            for elapsed in 0...estimatedSeconds {
+                try Task.checkCancellation()
+                
+                let progress = min(Double(elapsed) / Double(estimatedSeconds), 1.0)
+                let filledBlocks = Int(progress * Double(totalBlocks))
+                let emptyBlocks = totalBlocks - filledBlocks
+                let bar = String(repeating: "█", count: filledBlocks) + String(repeating: "░", count: emptyBlocks)
+                let percent = Int(progress * 100)
+                let remaining = estimatedSeconds - elapsed
+                
+                let text = "\(message) [\(bar)] \(percent)% (あと\(remaining)秒)"
+                
+                await MainActor.run {
+                    updateMessage(text)
+                }
+                
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
     }
 
     private func postCommandTab() {
@@ -1201,7 +1528,7 @@ class ChatViewController: NSViewController {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = ["-x", "-l", "\(windowID)", fileURL.path]
+        process.arguments = ["-x", "-o", "-l", "\(windowID)", fileURL.path]
         try? process.run()
         process.waitUntilExit()
 
@@ -1970,7 +2297,7 @@ class ChatViewController: NSViewController {
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
         process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/tesseract")
-        process.arguments = [inputPath, outputPrefix, "-l", "jpn", "tsv"]
+        process.arguments = [inputPath, outputPrefix, "-l", "jpn", "--psm", "11", "tsv"]
         if !FileManager.default.fileExists(atPath: "/opt/homebrew/bin/tesseract") {
             process.executableURL = URL(fileURLWithPath: "/usr/local/bin/tesseract")
             logger.log("Tesseract not found at /opt/homebrew/bin/tesseract, trying /usr/local/bin/tesseract")
