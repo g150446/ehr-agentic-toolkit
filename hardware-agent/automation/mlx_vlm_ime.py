@@ -1371,7 +1371,8 @@ def _call_mlx_vlm_with_content(
 
     def _send_request(request_payload: dict) -> dict:
         global _last_vlm_response_monotonic
-        _wait_for_vlm_cooldown()
+        # NOTE: VLM cooldown disabled for faster sequential requests.
+        # _wait_for_vlm_cooldown()
         if _is_novita_url(url):
             client = OpenAI(
                 api_key=api_key,
@@ -2188,7 +2189,8 @@ def _call_mlx_vlm_text_only(
         headers["Authorization"] = f"Bearer {api_key}"
     try:
         if _is_novita_url(url):
-            _wait_for_vlm_cooldown()
+            # NOTE: VLM cooldown disabled for faster sequential requests.
+            # _wait_for_vlm_cooldown()
             client = OpenAI(
                 api_key=api_key,
                 base_url=_novita_base_url(url),

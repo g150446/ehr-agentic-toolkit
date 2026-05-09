@@ -1,14 +1,14 @@
 # EHR Agentic Toolkit
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-![Physical Setup](images/relationships.png)
+**Python automation pipeline for on-premises EHR systems.**
 
-**AI-powered clinical decision support bridge for on-premises Electronic Health Record systems.**
+This component provides HDMI capture, OCR, AI-assisted text input, and automated clinical document generation for on-premises Electronic Health Record systems.
 
-EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabilities without requiring direct system integration. Using screen capture and OCR technology, it extracts clinical information and provides AI-assisted clinical summaries, differential diagnoses, and treatment suggestions.
+Part of the [EHR Agentic Toolkit](../README.md).
 
 ## Key Features
 
@@ -482,26 +482,4 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 4. Write tests
 5. Submit PR with documentation
 
-## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Disclaimer
-
-This software is provided for research and development purposes. It is not a medical device and should not be used as the sole basis for clinical decisions. Always verify AI-generated suggestions with clinical judgment and current medical guidelines.
-
-## Acknowledgments
-
-- Built with [Anthropic Claude](https://www.anthropic.com/claude)
-- OCR powered by [EasyOCR](https://github.com/JaidedAI/EasyOCR)
-- BLE communication using [Bleak](https://github.com/hbldh/bleak)
-- Computer vision using [OpenCV](https://opencv.org/)
-
-## Contact
-
-- Issues: [GitHub Issues](https://github.com/g150446/ehr-agentic-toolkit/issues)
-- Email: your.email@example.com
-
----
-
-**Made with love for healthcare professionals**

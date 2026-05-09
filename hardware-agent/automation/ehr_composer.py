@@ -296,9 +296,9 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
     ok = client.click()
     print(f"click (退院時要約) -> {'OK' if ok else 'NG'}")
 
-    # 5.0秒待機（Microsoft Word が開くのを待つ）
-    print("5.0秒待機（Word起動待ち）...")
-    time.sleep(5.0)
+    # 8.0秒待機（Microsoft Word が開くのを待つ）
+    print("8.0秒待機（Word起動待ち）...")
+    time.sleep(8.0)
 
     # キーボードモードに切り替えて Alt+Tab
     ok = client.switch_to_keyboard_mode()
@@ -395,9 +395,9 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
     ok = client.press_key("enter")
     print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
 
-    # 1.0秒待機（ウィンドウが開くのを待つ）
-    print("1.0秒待機...")
-    time.sleep(1.0)
+    # 3.0秒待機（Notepad起動・前面化を確実に待つ）
+    print("3.0秒待機（Notepad起動・前面化待ち）...")
+    time.sleep(3.0)
 
     # スクリーン中央をクリックしてフォーカス
     ok = client.switch_to_mouse_mode()
@@ -463,11 +463,10 @@ def _type_line_and_paste(line: str, is_first_line: bool, _current_mode: Optional
     print(f"press_key(ctrl_v) -> {'OK' if ok else 'NG'}")
     time.sleep(1.0)
 
-    # 最初の行以外は貼り付け後に改行を挿入
-    if not is_first_line:
-        ok = client.press_key("enter")
-        print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
-        time.sleep(0.5)
+    # 貼り付け後に改行を挿入（全行共通）
+    ok = client.press_key("enter")
+    print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
+    time.sleep(0.5)
 
     # Alt+Tab でノートパッドに戻る
     ok = client.alt_tab()
