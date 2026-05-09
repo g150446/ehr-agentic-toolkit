@@ -77,8 +77,9 @@ Part of the [EHR Agentic Toolkit](../README.md).
 
 **Hardware:**
 - macOS 11+ (M1 or later recommended) or Linux
+- **For AI inference (Gemma 4 26B 4-bit): Apple Silicon M4+ with 24GB+ RAM** (runs via omlx or ollama)
 - HDMI capture device (e.g., MiraBox, Elgato)
-- ESP32 module (for Windows automation, optional)
+- **ESP32-S3 device** (e.g., M5AtomS3U) with wireless-input-bridge.ino flashed (for Windows automation via BLE HID)
 
 **Software:**
 - Python 3.10+
