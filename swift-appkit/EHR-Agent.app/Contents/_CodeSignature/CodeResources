@@ -3,9 +3,33 @@
 <plist version="1.0">
 <dict>
 	<key>files</key>
-	<dict/>
+	<dict>
+		<key>Resources/match_templates/past_records_button_blue.png</key>
+		<data>
+		KiZlGx3HDkkCFwbYn1foYBjse8s=
+		</data>
+		<key>Resources/match_templates/past_records_button_glay.png</key>
+		<data>
+		ElfWHYgSeuFr/lXrXFmxukvfFeg=
+		</data>
+	</dict>
 	<key>files2</key>
-	<dict/>
+	<dict>
+		<key>Resources/match_templates/past_records_button_blue.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			tWAS/fgZRuE3/htdP7Xm2VWSZiSfLaHaYEceYxcnDNI=
+			</data>
+		</dict>
+		<key>Resources/match_templates/past_records_button_glay.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			s13OEmI3DSGRoBRsiiOWroH1sHvcZtAMlhvOT6GneOE=
+			</data>
+		</dict>
+	</dict>
 	<key>rules</key>
 	<dict>
 		<key>^Resources/</key>

@@ -16,6 +16,13 @@ swiftc -target arm64-apple-macos14.0 -o /tmp/EHR-Agent main.swift
 echo "Copying binary to local app bundle..."
 cp /tmp/EHR-Agent "$APP_SRC/Contents/MacOS/EHR-Agent"
 
+echo "Copying template images to bundle Resources..."
+mkdir -p "$APP_SRC/Contents/Resources/match_templates"
+cp match_templates/*.png "$APP_SRC/Contents/Resources/match_templates/"
+
+echo "Stripping extended attributes..."
+xattr -cr "$APP_SRC"
+
 echo "Re-signing app..."
 codesign --force --deep --sign - "$APP_SRC"
 
