@@ -3,6 +3,7 @@ import Foundation
 import CoreGraphics
 import ApplicationServices
 import Vision
+import ScreenCaptureKit
 
 // MARK: - ChatMessage
 struct ChatMessage {
@@ -529,52 +530,27 @@ class ChatViewController: NSViewController {
         logger.log("Screen bounds: \(bounds)")
         logger.log("Center point: \(centerPoint)")
 
-        CGDisplayMoveCursorToPoint(mainDisplay, centerPoint)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        logger.log("Moved cursor to center")
-
-        guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: centerPoint, mouseButton: .left),
-              let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: centerPoint, mouseButton: .left) else {
-            logger.log("ERROR: Failed to create click events")
-            throw NSError(domain: "EHRReader", code: 10, userInfo: [NSLocalizedDescriptionKey: "Failed to create click events"])
+        logger.log("Finding Chrome window via ScreenCaptureKit...")
+        await MainActor.run {
+            appendMessage(role: "assistant", content: "Chromeウィンドウを検索中...")
         }
-        clickDown.post(tap: .cghidEventTap)
-        try await Task.sleep(nanoseconds: 50_000_000)
-        clickUp.post(tap: .cghidEventTap)
-        try await Task.sleep(nanoseconds: 500_000_000)
-        logger.log("Posted click at center")
-
-        var windowID: Int = 0
-        if let windowInfo = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
-            for info in windowInfo {
-                if let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
-                   let ownerName = info[kCGWindowOwnerName as String] as? String,
-                   ownerName != "Window Server",
-                   ownerName != "Dock",
-                   let winNum = info[kCGWindowNumber as String] as? Int {
-                    windowID = winNum
-                    logger.log("Found active window: \(ownerName) (ID: \(winNum))")
-                    break
-                }
+        guard let chromeResult = await findChromeWindowSCK() else {
+            logger.log("ERROR: Chrome window not found")
+            await MainActor.run {
+                appendMessage(role: "assistant", content: "Google Chromeのウィンドウが見つかりませんでした。Chromeを開いて電子カルテを表示してください。")
             }
+            throw NSError(domain: "EHRReader", code: 11, userInfo: [NSLocalizedDescriptionKey: "Chrome window not found"])
         }
+        let scWindow = chromeResult.scWindow
+        logger.log("Found Chrome window: ID=\(scWindow.windowID), bounds=\(chromeResult.bounds)")
 
-        guard windowID != 0 else {
-            logger.log("ERROR: No active window found")
-            throw NSError(domain: "EHRReader", code: 11, userInfo: [NSLocalizedDescriptionKey: "No active window found"])
-        }
-
-        logger.log("Capturing initial screenshot...")
-        guard let captureResult = captureActiveWindow(windowID: windowID) else {
+        logger.log("Capturing initial screenshot via SCK (AI window stays in front)...")
+        guard let captureResult = await captureWindowViaSCK(scWindow) else {
             logger.log("ERROR: Failed to capture initial screenshot")
             throw NSError(domain: "EHRReader", code: 12, userInfo: [NSLocalizedDescriptionKey: "Failed to capture initial screenshot"])
         }
         let frame = captureResult.image
         logger.log("Initial screenshot captured: \(frame.width)x\(frame.height)")
-
-        logger.log("Switching back to AI chat window...")
-        postCommandTab()
-        try await Task.sleep(nanoseconds: 500_000_000)
 
         logger.log("Detecting vertical divider...")
         guard let dividerX = detectVerticalDivider(image: frame) else {
@@ -649,8 +625,12 @@ class ChatViewController: NSViewController {
             try await Task.sleep(nanoseconds: 1_000_000_000)
             logger.log("Waited 1.0s after scroll")
 
-            logger.log("Capturing screenshot after scroll...")
-            guard let newCaptureResult = captureActiveWindow(windowID: windowID) else {
+            logger.log("Switching back to AI chat window after scroll...")
+            postCommandTab()
+            try await Task.sleep(nanoseconds: 500_000_000)
+
+            logger.log("Capturing screenshot after scroll via SCK (AI window in front)...")
+            guard let newCaptureResult = await captureWindowViaSCK(scWindow) else {
                 logger.log("WARNING: Screenshot capture failed after scroll")
                 await MainActor.run {
                     appendMessage(role: "assistant", content: "[WARNING] スクリーンショット撮影に失敗しました。現在の結果で終了します。")
@@ -708,10 +688,6 @@ class ChatViewController: NSViewController {
                 let overlayPath = saveDebugImage(overlay, name: "ehr_reader_overlay_scroll_\(iteration)")
                 logger.log("Saved overlay: \(overlayPath ?? "FAILED")")
             }
-
-            logger.log("Switching back to AI chat window...")
-            postCommandTab()
-            try await Task.sleep(nanoseconds: 500_000_000)
 
             logger.log("Extracting past chart region: dividerX=\(newDividerX), topY=\(newTopY)")
             guard let newCropped = extractPastChartRegion(image: newFrame, dividerX: newDividerX, topY: newTopY) else {
@@ -796,9 +772,6 @@ class ChatViewController: NSViewController {
             appendMessage(role: "assistant", content: "過去診療録のスクロール読み取りが完了しました:\n```json\n\(finalJSONStr)\n```")
         }
 
-        logger.log("Sending Command+Tab to switch to previous app...")
-        postCommandTab()
-        logger.log("Command+Tab sent.")
         return finalJSONStr
     }
 
@@ -1671,6 +1644,36 @@ class ChatViewController: NSViewController {
         }
 
         return (cgImage, windowBounds)
+    }
+
+    private func findChromeWindowSCK() async -> (scWindow: SCWindow, bounds: CGRect)? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let window = content.windows
+                .filter({ $0.owningApplication?.applicationName == "Google Chrome" })
+                .max(by: { $0.frame.width < $1.frame.width }) else {
+                return nil
+            }
+            return (window, window.frame)
+        } catch {
+            print("SCK findChrome error: \(error)")
+            return nil
+        }
+    }
+
+    private func captureWindowViaSCK(_ scWindow: SCWindow) async -> (image: CGImage, bounds: CGRect)? {
+        do {
+            let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+            let config = SCStreamConfiguration()
+            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+            config.width = Int(scWindow.frame.width * scale)
+            config.height = Int(scWindow.frame.height * scale)
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            return (image, scWindow.frame)
+        } catch {
+            print("SCK capture error: \(error)")
+            return nil
+        }
     }
 
     private func getWindowBounds(windowID: Int) -> CGRect? {

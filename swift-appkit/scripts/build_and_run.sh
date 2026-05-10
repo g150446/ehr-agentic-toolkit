@@ -11,7 +11,7 @@ APP_SRC="./$APP_NAME"
 APP_DST="$HOME/Applications/$APP_NAME"
 
 echo "Building EHR-Agent..."
-swiftc -o /tmp/EHR-Agent main.swift
+swiftc -target arm64-apple-macos14.0 -o /tmp/EHR-Agent main.swift
 
 echo "Copying binary to local app bundle..."
 cp /tmp/EHR-Agent "$APP_SRC/Contents/MacOS/EHR-Agent"
