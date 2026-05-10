@@ -529,6 +529,11 @@ class ChatViewController: NSViewController {
         let scaleY = CGFloat(captureImage.height) / captureBounds.height
         let clickX = captureBounds.origin.x + (match.position.x + CGFloat(template.width)  / 2) / scaleX
         let clickY = captureBounds.origin.y + (match.position.y + CGFloat(template.height) / 2) / scaleY
+        logger.log("activating Chrome window (postCommandTab)...")
+        logger.saveToFile()
+        postCommandTab()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
         logger.log("clicking at screen (\(Int(clickX)), \(Int(clickY)))")
         logger.saveToFile()
 
