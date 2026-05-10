@@ -2,6 +2,12 @@
 
 macOS native AI chat application with debugging capabilities.
 
+## Target EHR
+
+This app targets a browser-based demo EHR. A sample patient record is available at:
+
+https://dialog-ehr.vercel.app/patients/3
+
 ## Setup
 
 ### 1. Build
