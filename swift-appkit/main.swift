@@ -477,125 +477,65 @@ class ChatViewController: NSViewController {
         task.resume()
     }
 
-    // MARK: - Template Matching
-
-    private func templateMatchSSD(
-        source: CGImage,
-        template: CGImage,
-        searchRegion: CGRect? = nil,
-        stride: Int = 2
-    ) -> (x: Int, y: Int, score: Double)? {
-        let tw = template.width
-        let th = template.height
-        let sw = source.width
-        let sh = source.height
-
-        let tBytesPerRow = tw * 4
-        var tPixels = [UInt8](repeating: 0, count: th * tBytesPerRow)
-        guard let tCtx = CGContext(
-            data: &tPixels, width: tw, height: th,
-            bitsPerComponent: 8, bytesPerRow: tBytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
-        tCtx.draw(template, in: CGRect(x: 0, y: 0, width: tw, height: th))
-
-        let sBytesPerRow = sw * 4
-        var sPixels = [UInt8](repeating: 0, count: sh * sBytesPerRow)
-        guard let sCtx = CGContext(
-            data: &sPixels, width: sw, height: sh,
-            bitsPerComponent: 8, bytesPerRow: sBytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
-        sCtx.draw(source, in: CGRect(x: 0, y: 0, width: sw, height: sh))
-
-        let region = searchRegion ?? CGRect(x: 0, y: 0, width: CGFloat(sw), height: CGFloat(sh))
-        let x0 = max(0, Int(region.minX))
-        let y0 = max(0, Int(region.minY))
-        let x1 = min(sw - tw, Int(region.maxX) - tw)
-        let y1 = min(sh - th, Int(region.maxY) - th)
-        guard x1 >= x0, y1 >= y0 else { return nil }
-
-        var bestX = 0, bestY = 0
-        var bestScore = Double.infinity
-        let normalize = Double(tw * th) * 3.0 * 255.0 * 255.0
-
-        var sy = y0
-        while sy <= y1 {
-            var sx = x0
-            while sx <= x1 {
-                var ssd = 0.0
-                for ty in 0..<th {
-                    let sRowOff = (sy + ty) * sBytesPerRow
-                    let tRowOff = ty * tBytesPerRow
-                    for tx in 0..<tw {
-                        let sOff = sRowOff + (sx + tx) * 4
-                        let tOff = tRowOff + tx * 4
-                        let dr = Double(sPixels[sOff])     - Double(tPixels[tOff])
-                        let dg = Double(sPixels[sOff + 1]) - Double(tPixels[tOff + 1])
-                        let db = Double(sPixels[sOff + 2]) - Double(tPixels[tOff + 2])
-                        ssd += dr * dr + dg * dg + db * db
-                    }
-                }
-                let score = ssd / normalize
-                if score < bestScore {
-                    bestScore = score
-                    bestX = sx
-                    bestY = sy
-                }
-                sx += stride
-            }
-            sy += stride
-        }
-
-        guard bestScore <= 0.05 else { return nil }
-        return (x: bestX, y: bestY, score: bestScore)
-    }
+    // MARK: - Template Matching (OpenCV)
 
     private func checkAndOpenPastRecordsIfNeeded(
         captureImage: CGImage,
         captureBounds: CGRect,
         logger: EHRLogger
     ) async {
+        logger.log("checkAndOpenPastRecordsIfNeeded: start")
+        logger.saveToFile()
+
         guard let templatePath = Bundle.main.path(
             forResource: "past_records_button_glay",
             ofType: "png",
             inDirectory: "match_templates"
         ) else {
-            logger.log("past_records gray template not found in bundle, skipping check")
+            logger.log("gray template not found in bundle")
+            logger.saveToFile()
             return
         }
         guard let nsImg = NSImage(contentsOfFile: templatePath),
               let template = nsImg.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            logger.log("past_records gray template could not be loaded, skipping check")
+            logger.log("gray template load failed")
+            logger.saveToFile()
             return
         }
+        logger.log("template loaded: \(template.width)x\(template.height)px")
+        logger.saveToFile()
 
         let searchRegion = CGRect(x: 0, y: 0,
                                   width: CGFloat(captureImage.width),
-                                  height: CGFloat(captureImage.height / 3))
-        logger.log("Template matching: gray template \(template.width)x\(template.height)px, search region \(Int(searchRegion.width))x\(Int(searchRegion.height))px")
-        guard let match = templateMatchSSD(
-            source: captureImage,
+                                  height: CGFloat(captureImage.height) / 3)
+        logger.log("matchTemplate: source=\(captureImage.width)x\(captureImage.height) region=\(Int(searchRegion.width))x\(Int(searchRegion.height))")
+        logger.saveToFile()
+
+        let t0 = Date()
+        guard let match = TemplateMatchingWrapper.matchSource(
+            captureImage,
             template: template,
             searchRegion: searchRegion,
-            stride: 2
+            threshold: 0.7
         ) else {
-            logger.log("past_records button: gray not matched → already open or not found")
+            logger.log("gray not matched (elapsed \(String(format: "%.2f", -t0.timeIntervalSinceNow))s) → already open or not found")
+            logger.saveToFile()
             return
         }
-        logger.log("past_records gray matched at (\(match.x), \(match.y)), score=\(String(format: "%.4f", match.score))")
+        logger.log("gray matched at (\(Int(match.position.x)), \(Int(match.position.y))) score=\(String(format: "%.3f", match.score)) elapsed=\(String(format: "%.2f", -t0.timeIntervalSinceNow))s")
+        logger.saveToFile()
 
         let scaleX = CGFloat(captureImage.width)  / captureBounds.width
         let scaleY = CGFloat(captureImage.height) / captureBounds.height
-        let clickX = captureBounds.origin.x + CGFloat(match.x + template.width  / 2) / scaleX
-        let clickY = captureBounds.origin.y + CGFloat(match.y + template.height / 2) / scaleY
-        logger.log("Clicking past_records button at screen (\(Int(clickX)), \(Int(clickY)))")
-        await performClickAt(x: Int(clickX), y: Int(clickY))
+        let clickX = captureBounds.origin.x + (match.position.x + CGFloat(template.width)  / 2) / scaleX
+        let clickY = captureBounds.origin.y + (match.position.y + CGFloat(template.height) / 2) / scaleY
+        logger.log("clicking at screen (\(Int(clickX)), \(Int(clickY)))")
+        logger.saveToFile()
 
+        await performClickAt(x: Int(clickX), y: Int(clickY))
         try? await Task.sleep(nanoseconds: 3_000_000_000)
-        logger.log("Waited 3s after clicking past_records button")
+        logger.log("waited 3s after clicking past_records button")
+        logger.saveToFile()
     }
 
     // MARK: - EHR Reader (Scroll + VLM)

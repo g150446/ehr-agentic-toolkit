@@ -10,8 +10,26 @@ APP_BUNDLE_ID="com.ehr-agentic-toolkit.EHR-Agent"
 APP_SRC="./$APP_NAME"
 APP_DST="$HOME/Applications/$APP_NAME"
 
+OPENCV_PREFIX="$(brew --prefix opencv)"
+OPENCV_INC="$OPENCV_PREFIX/include/opencv4"
+OPENCV_LIB="$OPENCV_PREFIX/lib"
+
+echo "Compiling Objective-C++ template matching wrapper..."
+clang++ -target arm64-apple-macos14.0 \
+  -fmodules -fobjc-arc -std=c++17 \
+  -I "$OPENCV_INC" \
+  -c TemplateMatchingWrapper.mm \
+  -o /tmp/TemplateMatchingWrapper.o
+
 echo "Building EHR-Agent..."
-swiftc -target arm64-apple-macos14.0 -o /tmp/EHR-Agent main.swift
+swiftc -target arm64-apple-macos14.0 \
+  -import-objc-header TemplateMatchingWrapper.h \
+  /tmp/TemplateMatchingWrapper.o \
+  -L "$OPENCV_LIB" \
+  -lopencv_core -lopencv_imgproc \
+  -lc++ \
+  -Xlinker -rpath -Xlinker "$OPENCV_LIB" \
+  -o /tmp/EHR-Agent main.swift
 
 echo "Copying binary to local app bundle..."
 cp /tmp/EHR-Agent "$APP_SRC/Contents/MacOS/EHR-Agent"
