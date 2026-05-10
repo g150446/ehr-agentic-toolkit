@@ -47,6 +47,16 @@ codesign --force --deep --sign - EHR-Agent.app
 ./scripts/build_and_run.sh
 ```
 
+このスクリプトは以下を行います：
+1. `swiftc` でビルド
+2. `EHR-Agent.app` にバイナリをコピーして再署名
+3. `~/Applications/` にアプリをインストール（Launch Services 登録のため必須）
+4. Launch Services に登録 (`lsregister`)
+5. 権限をリセット (`./scripts/reset_permissions.sh`)
+6. アプリと System Settings を開く
+
+**重要**: `~/Applications/` にコピーしないと、Launch Services に正しく登録されず、TCC 権限が再起動時に失われます（白紙アイコンで表示される）。
+
 実行後、System Settings の権限画面が自動で開くので、手動で許可してください。
 
 ### Architecture
