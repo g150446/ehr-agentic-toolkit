@@ -507,7 +507,7 @@ class ChatViewController: NSViewController {
 
         let searchRegion = CGRect(x: 0, y: 0,
                                   width: CGFloat(captureImage.width),
-                                  height: CGFloat(captureImage.height) / 3)
+                                  height: CGFloat(captureImage.height) / 2)
         logger.log("matchTemplate: source=\(captureImage.width)x\(captureImage.height) region=\(Int(searchRegion.width))x\(Int(searchRegion.height))")
         logger.saveToFile()
 
