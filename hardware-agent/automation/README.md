@@ -308,6 +308,48 @@ input_text_to_field(input_text="tesuto", label="フリガナ")
 
 ---
 
+## EHR Composer (Discharge Summary Automation)
+
+`automation.ehr_composer` combines **past chart reading**, **VLM-based summary generation**, and **Word document input** into a single automated pipeline.
+
+### What it does
+
+1. **Phase 1 – Scroll & Read Past Charts**: Scrolls the past chart column while reading entries via OCR + VLM, merging results into a structured JSON array.
+2. **Phase 2 – Generate Discharge Summary**: Sends the extracted chart data to the VLM and generates a discharge summary with 7 sections:
+   - Chief Complaint, Present Illness, Past History, Hospital Course, Discharge Status, Discharge Plan, Discharge Prescriptions
+3. **Phase 3 – Open Word + Notepad**: Clicks the discharge summary icon in the EHR, opens the Word template, then launches Notepad for IME conversion.
+4. **Phase 4 – Line-by-Line Input**: Types each summary line into Notepad, cuts it (`Ctrl+X`), switches to Word (`Alt+Tab`), pastes (`Ctrl+V`), then returns to Notepad.
+
+### Command Line Usage
+
+```bash
+# Basic usage (omlx is auto-enabled if omitted)
+python -m automation.ehr_composer --summary
+
+# Specify VLM model
+python -m automation.ehr_composer --summary --omlx gemma-4-26b-a4b-it-4bit
+
+# Record demo video (--movie)
+python -m automation.ehr_composer --summary --movie
+```
+
+### `--movie` Option (Demo Video Recording)
+
+When `--movie` is specified, the tool records the HDMI capture as phase-specific MP4 files saved to `captures/movie/`:
+
+| Phase | Speed | Output File |
+|-------|-------|-------------|
+| Phase 1 (Scroll & Read) | **3x fast-forward** | `composer_scroll_<timestamp>.mp4` |
+| Phase 2 (Summary Generation) | **Skipped** (no screen changes) | — |
+| Phase 3 (Word/Notepad Launch) | **Normal speed** | `composer_other_<timestamp>.mp4` |
+| Phase 4 (Text Input) | **2x fast-forward** | `composer_input_<timestamp>.mp4` |
+
+The recording uses **monkey-patching** on `capture_screen()` so no changes are needed in existing modules (`ehr_reader.py`, `ehr_input.py`, `screen_analyzer.py`).
+
+> **Note**: Requires `ffmpeg`-compatible codecs. OpenCV is used with fourcc fallback (`mp4v` → `avc1` → `XVID`).
+
+---
+
 ## BLE Test CLI
 
 Interactive command-line tool for manually testing BLE keyboard and mouse commands with the ESP32 wireless input bridge. Provides a REPL-style interface for sending individual commands to test the BLE connection and input control.
@@ -650,6 +692,8 @@ All outputs are saved to `automation_outputs/`:
 - `mlx_vlm_segmentation.py`: Japanese segmentation helper using the omlx VLM server (reference implementation, also text-only input)
 - `mlx_vlm_segment_probe.py`: VLM segmentation CLI probe
 - `mlx_vlm_ime.py`: IME conversion candidate reading helper using the omlx VLM server (used by `ehr_input.py`)
+- `ehr_composer.py`: End-to-end discharge summary automation — reads past charts, generates summaries via VLM, and inputs them into Word via Notepad IME conversion
+- `video_recorder.py`: Phase-specific HDMI video recorder with frame-skip fast-forward for demo video generation
 
 ### Adding Features
 

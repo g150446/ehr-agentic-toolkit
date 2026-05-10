@@ -308,6 +308,38 @@ bool pressNamedKey(const String &keyName) {
     Serial.println("-> key: Ctrl+L");
     return true;
   }
+  if (keyName == "ctrl_x" || keyName == "cut") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press('x');
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+X");
+    return true;
+  }
+  if (keyName == "ctrl_v" || keyName == "paste") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press('v');
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+V");
+    return true;
+  }
+  if (keyName == "ctrl_c" || keyName == "copy") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press('c');
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+C");
+    return true;
+  }
+  if (keyName == "ctrl_end") {
+    Keyboard.press(KEY_LEFT_CTRL);
+    Keyboard.press(KEY_END);
+    delay(50);
+    Keyboard.releaseAll();
+    Serial.println("-> key: Ctrl+End");
+    return true;
+  }
   if (keyName == "alt_tab") {
     Keyboard.press(KEY_LEFT_ALT);
     delay(50);

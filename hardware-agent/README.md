@@ -1,14 +1,14 @@
 # EHR Agentic Toolkit
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-![Physical Setup](images/relationships.png)
+**Python automation pipeline for on-premises EHR systems.**
 
-**AI-powered clinical decision support bridge for on-premises Electronic Health Record systems.**
+This component provides HDMI capture, OCR, AI-assisted text input, and automated clinical document generation for on-premises Electronic Health Record systems.
 
-EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabilities without requiring direct system integration. Using screen capture and OCR technology, it extracts clinical information and provides AI-assisted clinical summaries, differential diagnoses, and treatment suggestions.
+Part of the [EHR Agentic Toolkit](../README.md).
 
 ## Key Features
 
@@ -21,6 +21,8 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 - **ESP32 BLE Control** - Keyboard/mouse HID emulation over Bluetooth
 - **GUI Image Analyzer** - Find text coordinates and textbox positions in screenshots
 - **BLE Test CLI** - Interactive testing tool for ESP32 keyboard/mouse control
+- **Discharge Summary Automation** (`ehr_composer`) - Reads past charts via scroll + OCR/VLM, generates structured summaries, and inputs them into Word documents automatically
+- **Demo Video Recording** (`--movie`) - Records HDMI capture as phase-specific MP4s with fast-forward for hackathon demos
 
 ## Project Status
 
@@ -75,8 +77,9 @@ EHR Agentic Toolkit connects your existing on-premises EHR system with AI capabi
 
 **Hardware:**
 - macOS 11+ (M1 or later recommended) or Linux
+- **For AI inference (Gemma 4 26B 4-bit): Apple Silicon M4+ with 24GB+ RAM** (runs via omlx or ollama)
 - HDMI capture device (e.g., MiraBox, Elgato)
-- ESP32 module (for Windows automation, optional)
+- **ESP32-S3 device** (e.g., M5AtomS3U) with wireless-input-bridge.ino flashed (for Windows automation via BLE HID)
 
 **Software:**
 - Python 3.10+
@@ -241,6 +244,34 @@ During input, a single `a` is typed and a screen capture is passed to the VLM to
 - Just before entering helper word fallback, the screen is re-captured after each `Escape`, and the VLM compares the **baseline image saved at the last successful confirmation** with the **current image after Esc**. For patient_record, **the third pane coordinates are detected once at command start and validated by VLM**, and subsequent compare crops reuse those fixed coordinates. **If Windows Notepad is detected**, the traditional Notepad body region is cropped to exclude the top menu bar and Windows taskbar. The comparison uses the **last confirmed string** as the baseline, and if there is a confirmed ASCII/symbol suffix immediately after the Japanese anchor, it is included in the anchor tail (e.g., `症状(`). This allows cases where `症状(` remains at the normal end while only the uncommitted part disappears to be correctly treated as reset complete. `captures/` retains `debug_panel_detection_*`, `debug_helper_reset_*_compare_crop.png`, and `debug_vlm_input_helper_reset_compare_*`, and the `[helper reset][compare]` lines in `logs/*.txt` show the yes/no decision after each `Esc`.
 
 > **Known Issue:** In re-validation with `data/patient_records/asthma_1.txt`, the blank-stall issue has been resolved, but misconversion still remains for words like `咽頭痛`. Especially at the beginning of long texts, unreflected symbols like `[` and conversion fluctuation around `昨晩` / `咳嗽` remain.
+
+---
+
+### Discharge Summary Composer (`ehr_composer`)
+
+Fully automated discharge summary pipeline that reads past charts, generates a structured summary via VLM, and inputs it into a Word document.
+
+**Workflow:**
+1. Scroll and read past chart entries via OCR + VLM
+2. Generate a 7-section discharge summary (Chief Complaint, Present Illness, Past History, Hospital Course, Discharge Status, Discharge Plan, Discharge Prescriptions)
+3. Open the discharge summary Word template from the EHR
+4. Input each line via Notepad IME conversion, cut (`Ctrl+X`), switch to Word (`Alt+Tab`), and paste (`Ctrl+V`)
+
+```bash
+# Generate discharge summary
+python -m automation.ehr_composer --summary
+
+# With demo video recording (--movie)
+python -m automation.ehr_composer --summary --movie
+```
+
+**Demo Video (`--movie`)**: Records HDMI capture as phase-specific MP4s with fast-forward:
+- Scroll phase: 3x speed
+- UI interaction phase: Normal speed
+- Text input phase: 2x speed
+- VLM processing phase: Skipped (no screen changes)
+
+Videos are saved to `captures/movie/`.
 
 ---
 
@@ -452,26 +483,4 @@ Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md)
 4. Write tests
 5. Submit PR with documentation
 
-## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Disclaimer
-
-This software is provided for research and development purposes. It is not a medical device and should not be used as the sole basis for clinical decisions. Always verify AI-generated suggestions with clinical judgment and current medical guidelines.
-
-## Acknowledgments
-
-- Built with [Anthropic Claude](https://www.anthropic.com/claude)
-- OCR powered by [EasyOCR](https://github.com/JaidedAI/EasyOCR)
-- BLE communication using [Bleak](https://github.com/hbldh/bleak)
-- Computer vision using [OpenCV](https://opencv.org/)
-
-## Contact
-
-- Issues: [GitHub Issues](https://github.com/g150446/ehr-agentic-toolkit/issues)
-- Email: your.email@example.com
-
----
-
-**Made with love for healthcare professionals**

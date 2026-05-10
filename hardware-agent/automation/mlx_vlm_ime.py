@@ -1371,7 +1371,8 @@ def _call_mlx_vlm_with_content(
 
     def _send_request(request_payload: dict) -> dict:
         global _last_vlm_response_monotonic
-        _wait_for_vlm_cooldown()
+        # NOTE: VLM cooldown disabled for faster sequential requests.
+        # _wait_for_vlm_cooldown()
         if _is_novita_url(url):
             client = OpenAI(
                 api_key=api_key,
@@ -2188,7 +2189,8 @@ def _call_mlx_vlm_text_only(
         headers["Authorization"] = f"Bearer {api_key}"
     try:
         if _is_novita_url(url):
-            _wait_for_vlm_cooldown()
+            # NOTE: VLM cooldown disabled for faster sequential requests.
+            # _wait_for_vlm_cooldown()
             client = OpenAI(
                 api_key=api_key,
                 base_url=_novita_base_url(url),
@@ -2520,11 +2522,16 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
     """
     prompt = (
         f"{target}、という漢字をIMEで変換して入力したいです。"
-        "この漢字を先頭に含む単語またはフレーズで、MS-IMEの変換候補として出現しやすいものを三つ提案して。"
-        "ただし、地名・人名など固有名詞と同じ読みの単語は避けてください（例: 「吸収」は「九州」と同音なので不可）。"
+        "この漢字を先頭に含む単語を三つ提案してください。"
+        "【重要な制約】"
+        "1. 助詞（の、は、が、を、に、で、へ、と、から、よりなど）を含まないこと"
+        "2. 1つの文節（単語）であること。フレーズや複数の文節に分かれたものは不可"
+        "3. MS-IMEの変換辞書に確実に存在する一般的な単語であること"
+        "4. 地名・人名など固有名詞と同じ読みの単語は避けてください（例: 「吸収」は「九州」と同音なので不可）"
+        "5. 助詞を含むフレーズは避けてください（例: target=\"痰\" の場合、「痰の詰まり」は「の」が入っているので不可）"
         "JSONのみで回答してください。"
-        "返答形式は必ず {\"words\":[\"候補1\",\"候補2\",\"候補3\"]} にしてください。"
-        "\"word\" や他のキーは使わないでください。説明文やコードフェンスは禁止です。"
+        '返答形式は必ず {"words":["候補1","候補2","候補3"]} にしてください。'
+        '"word" や他のキーは使わないでください。説明文やコードフェンスは禁止です。'
     )
     runtime_label = describe_runtime(url=MLX_VLM_TEXT_URL, model=MLX_VLM_TEXT_MODEL, default_kind="Text")
     try:
