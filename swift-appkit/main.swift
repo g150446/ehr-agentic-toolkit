@@ -230,7 +230,7 @@ class ChatViewController: NSViewController {
 
     func switchServer(to type: String) {
         if type == "ollama" {
-            apiBase = "http://localhost:11434/v1"
+            apiBase = "http://127.0.0.1:11434/v1"
             apiKey = "ollama"
             currentModel = "gemma4:26b"
         } else {
@@ -481,6 +481,7 @@ class ChatViewController: NSViewController {
 
     private func runEHRReader() async throws -> String {
         let logger = EHRLogger()
+        defer { logger.saveToFile() }
         logger.log("===== EHR Reader Started =====")
 
         await MainActor.run {
@@ -765,7 +766,6 @@ class ChatViewController: NSViewController {
         }
 
         logger.log("Final JSON:\n\(finalJSONStr)")
-        logger.saveToFile()
         logger.log("Log saved to: \(logger.logFilePath)")
 
         await MainActor.run {
@@ -2223,9 +2223,17 @@ class ChatViewController: NSViewController {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(authHeader(), forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        request.timeoutInterval = 120
+        request.timeoutInterval = 300
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            let errMsg = "Network error: \(error.localizedDescription)"
+            logVLMRequest(prompt: prompt, ocrText: ocrText, response: "", error: errMsg)
+            throw error
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             let errorMsg = "Invalid response type"
@@ -2629,7 +2637,9 @@ class EHRLogger {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         let logsDir = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("logs")
         try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let tsFormatter = ISO8601DateFormatter()
+        tsFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = tsFormatter.string(from: Date())
         logFilePath = logsDir.appendingPathComponent("ehr_reader_\(timestamp).log").path
     }
 
