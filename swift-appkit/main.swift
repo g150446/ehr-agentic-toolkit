@@ -529,9 +529,9 @@ class ChatViewController: NSViewController {
         let scaleY = CGFloat(captureImage.height) / captureBounds.height
         let clickX = captureBounds.origin.x + (match.position.x + CGFloat(template.width)  / 2) / scaleX
         let clickY = captureBounds.origin.y + (match.position.y + CGFloat(template.height) / 2) / scaleY
-        logger.log("activating Chrome window (postCommandTab)...")
+        logger.log("activating Chrome window...")
         logger.saveToFile()
-        postCommandTab()
+        activateChrome()
         try? await Task.sleep(nanoseconds: 500_000_000)
 
         logger.log("clicking at screen (\(Int(clickX)), \(Int(clickY)))")
@@ -660,6 +660,7 @@ class ChatViewController: NSViewController {
         logger.log("PNG conversion OK: \(croppedData.count) bytes")
 
         logger.log("Calling VLM (initial read)...")
+        activateSelf()
         await MainActor.run {
             appendMessage(role: "assistant", content: "VLMへ送信中（1回目）... 画面を操作しないでください")
         }
@@ -683,7 +684,7 @@ class ChatViewController: NSViewController {
             try await Task.sleep(nanoseconds: 300_000_000)
 
             logger.log("Switching to EHR window for scroll...")
-            postCommandTab()
+            activateChrome()
             try await Task.sleep(nanoseconds: 500_000_000)
 
             let scrollAmount = Int32(bounds.height / 3)
@@ -693,7 +694,7 @@ class ChatViewController: NSViewController {
             logger.log("Waited 1.0s after scroll")
 
             logger.log("Switching back to AI chat window after scroll...")
-            postCommandTab()
+            activateSelf()
             try await Task.sleep(nanoseconds: 500_000_000)
 
             logger.log("Capturing screenshot after scroll via SCK (AI window in front)...")
@@ -891,7 +892,7 @@ class ChatViewController: NSViewController {
         }
 
         // Switch to EHR app
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         let mainDisplay = CGMainDisplayID()
@@ -945,7 +946,7 @@ class ChatViewController: NSViewController {
         logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
 
         // Switch back to AI chat window for progress display
-        postCommandTab()
+        activateSelf()
         
         // Detect exact vertical divider to isolate side panel (VLM first, fallback to pixel)
         let gaugeTask1 = showProgressGauge { [self] msg in
@@ -1014,7 +1015,7 @@ class ChatViewController: NSViewController {
         }
 
         // Ensure EHR window is in foreground before clicking
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
@@ -1049,8 +1050,8 @@ class ChatViewController: NSViewController {
         logger.log("Waiting for screen transition after サマリ button click...")
         try await Task.sleep(nanoseconds: 1_500_000_000)
 
-        // Switch to keep EHR in foreground before capturing for body input
-        postCommandTab()
+        // Switch to AI chat while capturing (screencapture -l works without Chrome in front)
+        activateSelf()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         // Re-capture active window for summary body analysis
@@ -1068,8 +1069,7 @@ class ChatViewController: NSViewController {
         let bodyScaleY = CGFloat(summaryBodyImage.height) / summaryBodyBounds.height
         logger.log("Summary body scale factors: scaleX=\(bodyScaleX), scaleY=\(bodyScaleY)")
 
-        // Switch back to AI chat window for progress display
-        postCommandTab()
+        // AI is already in front for VLM analysis
         
         // Crop main panel and search for "サマリの本文"
         let gaugeTaskBody = showProgressGauge { [self] msg in
@@ -1132,6 +1132,9 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "「サマリの本文」を発見、クリックします...")
         }
 
+        activateChrome()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
         CGDisplayMoveCursorToPoint(mainDisplay, bodyClickPoint)
         try await Task.sleep(nanoseconds: 500_000_000)
 
@@ -1160,7 +1163,7 @@ class ChatViewController: NSViewController {
         }
 
         // Switch back to EHR-Agent
-        postCommandTab()
+        activateSelf()
         logger.log("Switched back to EHR-Agent")
     }
 
@@ -1221,6 +1224,8 @@ class ChatViewController: NSViewController {
         }
 
         // Step 1: 診療録読み取り
+        activateSelf()
+        try await Task.sleep(nanoseconds: 300_000_000)
         await MainActor.run {
             updateLastMessage(content: "診療録を読み取ります...")
         }
@@ -1287,7 +1292,7 @@ class ChatViewController: NSViewController {
         }
 
         // Switch to EHR app
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         let mainDisplay = CGMainDisplayID()
@@ -1341,7 +1346,7 @@ class ChatViewController: NSViewController {
         logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
 
         // Switch back to AI chat window for progress display
-        postCommandTab()
+        activateSelf()
 
         let panelWidth: Int
         if let dividerX = await detectVerticalDividerWithVLM(image: fullImage, logger: logger) {
@@ -1401,7 +1406,7 @@ class ChatViewController: NSViewController {
         }
 
         // Ensure EHR window is in foreground before clicking
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
@@ -1427,7 +1432,7 @@ class ChatViewController: NSViewController {
 
         try await Task.sleep(nanoseconds: 1_500_000_000)
 
-        postCommandTab()
+        activateSelf()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         logger.log("Re-capturing active window for main panel analysis...")
@@ -1443,7 +1448,7 @@ class ChatViewController: NSViewController {
         let postScaleY = CGFloat(postClickImage.height) / postClickBounds.height
         logger.log("Post-click scale factors: scaleX=\(postScaleX), scaleY=\(postScaleY)")
 
-        postCommandTab()
+        activateSelf()
 
         let mainPanelDividerX: Int
         if let dividerX = await detectVerticalDividerWithVLM(image: postClickImage, logger: logger) {
@@ -1493,7 +1498,7 @@ class ChatViewController: NSViewController {
 
         logger.log("Clicking input area at \(inputClickPoint)")
         // Ensure EHR is in foreground before clicking
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
         await MainActor.run {
             updateLastMessage(content: "「医療機関名を入力」を発見、入力欄をクリックします...")
@@ -1528,6 +1533,7 @@ class ChatViewController: NSViewController {
 
         // Re-capture for body input
         logger.log("Re-capturing active window for body detection...")
+        activateSelf()
         guard let captureResult3 = captureActiveWindow(windowID: windowID) else {
             logger.log("ERROR: Failed to re-capture active window for body")
             throw NSError(domain: "LetterAction", code: 9, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window for body"])
@@ -1540,7 +1546,7 @@ class ChatViewController: NSViewController {
         let bodyScaleY = CGFloat(bodyImage.height) / bodyBounds.height
         logger.log("Body scale factors: scaleX=\(bodyScaleX), scaleY=\(bodyScaleY)")
 
-        postCommandTab()
+        activateSelf()
 
         let bodyDividerX: Int
         if let dividerX = await detectVerticalDividerWithVLM(image: bodyImage, logger: logger) {
@@ -1591,7 +1597,7 @@ class ChatViewController: NSViewController {
 
         logger.log("Clicking '本文を入力' at \(bodyClickPoint)")
         // Ensure EHR is in foreground before clicking
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
         await MainActor.run {
             updateLastMessage(content: "「本文を入力」を発見、クリックします...")
@@ -1623,7 +1629,7 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "テスト本文を入力しました。")
         }
 
-        postCommandTab()
+        activateSelf()
         logger.log("Switched back to EHR-Agent")
     }
 
@@ -1649,6 +1655,16 @@ class ChatViewController: NSViewController {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
+    }
+
+    private func activateSelf() {
+        NSApp.activate()
+    }
+
+    private func activateChrome() {
+        NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == "com.google.Chrome" })?
+            .activate()
     }
 
     private func postCommandTab() {
