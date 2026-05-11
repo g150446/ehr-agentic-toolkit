@@ -687,9 +687,9 @@ class ChatViewController: NSViewController {
             activateChrome()
             try await Task.sleep(nanoseconds: 500_000_000)
 
-            let scrollAmount = Int32(bounds.height / 6)
-            logger.log("Scrolling down by \(scrollAmount)px (screen height / 6)...")
-            postScrollEvent(at: centerPoint, amount: -scrollAmount)
+            let scrollLines: Int32 = 5
+            logger.log("Scrolling down by \(scrollLines) lines...")
+            postScrollEvent(at: centerPoint, amount: -scrollLines)
             try await Task.sleep(nanoseconds: 1_000_000_000)
             logger.log("Waited 1.0s after scroll")
 
@@ -1806,7 +1806,7 @@ class ChatViewController: NSViewController {
     }
 
     private func postScrollEvent(at point: CGPoint, amount: Int32) {
-        guard let scrollEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0) else { return }
+        guard let scrollEvent = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0) else { return }
         scrollEvent.location = point
         scrollEvent.post(tap: .cghidEventTap)
     }
