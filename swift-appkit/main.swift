@@ -687,8 +687,8 @@ class ChatViewController: NSViewController {
             activateChrome()
             try await Task.sleep(nanoseconds: 500_000_000)
 
-            let scrollAmount = Int32(bounds.height / 3)
-            logger.log("Scrolling down by \(scrollAmount)px (screen height / 3)...")
+            let scrollAmount = Int32(bounds.height / 6)
+            logger.log("Scrolling down by \(scrollAmount)px (screen height / 6)...")
             postScrollEvent(at: centerPoint, amount: -scrollAmount)
             try await Task.sleep(nanoseconds: 1_000_000_000)
             logger.log("Waited 1.0s after scroll")
@@ -1658,13 +1658,28 @@ class ChatViewController: NSViewController {
     }
 
     private func activateSelf() {
-        NSApp.activate()
+        DispatchQueue.main.async {
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.google.Chrome" else { return }
+            let cmdDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: true)
+            let tabDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x30, keyDown: true)
+            let tabUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0x30, keyDown: false)
+            let cmdUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: false)
+            cmdDown?.flags = .maskCommand
+            tabDown?.flags = .maskCommand
+            tabUp?.flags   = .maskCommand
+            cmdDown?.post(tap: .cghidEventTap)
+            tabDown?.post(tap: .cghidEventTap)
+            tabUp?.post(tap: .cghidEventTap)
+            cmdUp?.post(tap: .cghidEventTap)
+        }
     }
 
     private func activateChrome() {
-        NSWorkspace.shared.runningApplications
-            .first(where: { $0.bundleIdentifier == "com.google.Chrome" })?
-            .activate()
+        DispatchQueue.main.async {
+            NSWorkspace.shared.runningApplications
+                .first(where: { $0.bundleIdentifier == "com.google.Chrome" })?
+                .activate()
+        }
     }
 
     private func postCommandTab() {
