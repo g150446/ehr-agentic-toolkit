@@ -3,6 +3,7 @@ import Foundation
 import CoreGraphics
 import ApplicationServices
 import Vision
+import ScreenCaptureKit
 
 // MARK: - ChatMessage
 struct ChatMessage {
@@ -229,7 +230,7 @@ class ChatViewController: NSViewController {
 
     func switchServer(to type: String) {
         if type == "ollama" {
-            apiBase = "http://localhost:11434/v1"
+            apiBase = "http://127.0.0.1:11434/v1"
             apiKey = "ollama"
             currentModel = "gemma4:26b"
         } else {
@@ -476,10 +477,77 @@ class ChatViewController: NSViewController {
         task.resume()
     }
 
+    // MARK: - Template Matching (OpenCV)
+
+    private func checkAndOpenPastRecordsIfNeeded(
+        captureImage: CGImage,
+        captureBounds: CGRect,
+        logger: EHRLogger
+    ) async {
+        logger.log("checkAndOpenPastRecordsIfNeeded: start")
+        logger.saveToFile()
+
+        guard let templatePath = Bundle.main.path(
+            forResource: "past_records_button_glay",
+            ofType: "png",
+            inDirectory: "match_templates"
+        ) else {
+            logger.log("gray template not found in bundle")
+            logger.saveToFile()
+            return
+        }
+        guard let nsImg = NSImage(contentsOfFile: templatePath),
+              let template = nsImg.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            logger.log("gray template load failed")
+            logger.saveToFile()
+            return
+        }
+        logger.log("template loaded: \(template.width)x\(template.height)px")
+        logger.saveToFile()
+
+        let searchRegion = CGRect(x: 0, y: 0,
+                                  width: CGFloat(captureImage.width),
+                                  height: CGFloat(captureImage.height) / 2)
+        logger.log("matchTemplate: source=\(captureImage.width)x\(captureImage.height) region=\(Int(searchRegion.width))x\(Int(searchRegion.height))")
+        logger.saveToFile()
+
+        let t0 = Date()
+        guard let match = TemplateMatchingWrapper.matchSource(
+            captureImage,
+            template: template,
+            searchRegion: searchRegion,
+            threshold: 0.7
+        ) else {
+            logger.log("gray not matched (elapsed \(String(format: "%.2f", -t0.timeIntervalSinceNow))s) → already open or not found")
+            logger.saveToFile()
+            return
+        }
+        logger.log("gray matched at (\(Int(match.position.x)), \(Int(match.position.y))) score=\(String(format: "%.3f", match.score)) elapsed=\(String(format: "%.2f", -t0.timeIntervalSinceNow))s")
+        logger.saveToFile()
+
+        let scaleX = CGFloat(captureImage.width)  / captureBounds.width
+        let scaleY = CGFloat(captureImage.height) / captureBounds.height
+        let clickX = captureBounds.origin.x + (match.position.x + CGFloat(template.width)  / 2) / scaleX
+        let clickY = captureBounds.origin.y + (match.position.y + CGFloat(template.height) / 2) / scaleY
+        logger.log("activating Chrome window (postCommandTab)...")
+        logger.saveToFile()
+        postCommandTab()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        logger.log("clicking at screen (\(Int(clickX)), \(Int(clickY)))")
+        logger.saveToFile()
+
+        await performClickAt(x: Int(clickX), y: Int(clickY))
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        logger.log("waited 3s after clicking past_records button")
+        logger.saveToFile()
+    }
+
     // MARK: - EHR Reader (Scroll + VLM)
 
     private func runEHRReader() async throws -> String {
         let logger = EHRLogger()
+        defer { logger.saveToFile() }
         logger.log("===== EHR Reader Started =====")
 
         await MainActor.run {
@@ -529,52 +597,27 @@ class ChatViewController: NSViewController {
         logger.log("Screen bounds: \(bounds)")
         logger.log("Center point: \(centerPoint)")
 
-        CGDisplayMoveCursorToPoint(mainDisplay, centerPoint)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        logger.log("Moved cursor to center")
-
-        guard let clickDown = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: centerPoint, mouseButton: .left),
-              let clickUp = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: centerPoint, mouseButton: .left) else {
-            logger.log("ERROR: Failed to create click events")
-            throw NSError(domain: "EHRReader", code: 10, userInfo: [NSLocalizedDescriptionKey: "Failed to create click events"])
+        logger.log("Finding Chrome window via ScreenCaptureKit...")
+        await MainActor.run {
+            appendMessage(role: "assistant", content: "Chromeウィンドウを検索中...")
         }
-        clickDown.post(tap: .cghidEventTap)
-        try await Task.sleep(nanoseconds: 50_000_000)
-        clickUp.post(tap: .cghidEventTap)
-        try await Task.sleep(nanoseconds: 500_000_000)
-        logger.log("Posted click at center")
-
-        var windowID: Int = 0
-        if let windowInfo = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] {
-            for info in windowInfo {
-                if let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
-                   let ownerName = info[kCGWindowOwnerName as String] as? String,
-                   ownerName != "Window Server",
-                   ownerName != "Dock",
-                   let winNum = info[kCGWindowNumber as String] as? Int {
-                    windowID = winNum
-                    logger.log("Found active window: \(ownerName) (ID: \(winNum))")
-                    break
-                }
+        guard let chromeResult = await findChromeWindowSCK() else {
+            logger.log("ERROR: Chrome window not found")
+            await MainActor.run {
+                appendMessage(role: "assistant", content: "Google Chromeのウィンドウが見つかりませんでした。Chromeを開いて電子カルテを表示してください。")
             }
+            throw NSError(domain: "EHRReader", code: 11, userInfo: [NSLocalizedDescriptionKey: "Chrome window not found"])
         }
+        let scWindow = chromeResult.scWindow
+        logger.log("Found Chrome window: ID=\(scWindow.windowID), bounds=\(chromeResult.bounds)")
 
-        guard windowID != 0 else {
-            logger.log("ERROR: No active window found")
-            throw NSError(domain: "EHRReader", code: 11, userInfo: [NSLocalizedDescriptionKey: "No active window found"])
-        }
-
-        logger.log("Capturing initial screenshot...")
-        guard let captureResult = captureActiveWindow(windowID: windowID) else {
+        logger.log("Capturing initial screenshot via SCK (AI window stays in front)...")
+        guard let captureResult = await captureWindowViaSCK(scWindow) else {
             logger.log("ERROR: Failed to capture initial screenshot")
             throw NSError(domain: "EHRReader", code: 12, userInfo: [NSLocalizedDescriptionKey: "Failed to capture initial screenshot"])
         }
         let frame = captureResult.image
         logger.log("Initial screenshot captured: \(frame.width)x\(frame.height)")
-
-        logger.log("Switching back to AI chat window...")
-        postCommandTab()
-        try await Task.sleep(nanoseconds: 500_000_000)
 
         logger.log("Detecting vertical divider...")
         guard let dividerX = detectVerticalDivider(image: frame) else {
@@ -649,8 +692,12 @@ class ChatViewController: NSViewController {
             try await Task.sleep(nanoseconds: 1_000_000_000)
             logger.log("Waited 1.0s after scroll")
 
-            logger.log("Capturing screenshot after scroll...")
-            guard let newCaptureResult = captureActiveWindow(windowID: windowID) else {
+            logger.log("Switching back to AI chat window after scroll...")
+            postCommandTab()
+            try await Task.sleep(nanoseconds: 500_000_000)
+
+            logger.log("Capturing screenshot after scroll via SCK (AI window in front)...")
+            guard let newCaptureResult = await captureWindowViaSCK(scWindow) else {
                 logger.log("WARNING: Screenshot capture failed after scroll")
                 await MainActor.run {
                     appendMessage(role: "assistant", content: "[WARNING] スクリーンショット撮影に失敗しました。現在の結果で終了します。")
@@ -708,10 +755,6 @@ class ChatViewController: NSViewController {
                 let overlayPath = saveDebugImage(overlay, name: "ehr_reader_overlay_scroll_\(iteration)")
                 logger.log("Saved overlay: \(overlayPath ?? "FAILED")")
             }
-
-            logger.log("Switching back to AI chat window...")
-            postCommandTab()
-            try await Task.sleep(nanoseconds: 500_000_000)
 
             logger.log("Extracting past chart region: dividerX=\(newDividerX), topY=\(newTopY)")
             guard let newCropped = extractPastChartRegion(image: newFrame, dividerX: newDividerX, topY: newTopY) else {
@@ -789,16 +832,12 @@ class ChatViewController: NSViewController {
         }
 
         logger.log("Final JSON:\n\(finalJSONStr)")
-        logger.saveToFile()
         logger.log("Log saved to: \(logger.logFilePath)")
 
         await MainActor.run {
             appendMessage(role: "assistant", content: "過去診療録のスクロール読み取りが完了しました:\n```json\n\(finalJSONStr)\n```")
         }
 
-        logger.log("Sending Command+Tab to switch to previous app...")
-        postCommandTab()
-        logger.log("Command+Tab sent.")
         return finalJSONStr
     }
 
@@ -1166,9 +1205,24 @@ class ChatViewController: NSViewController {
         defer { logger.saveToFile() }
         logger.log("===== Create Summary Action Started =====")
 
+        // Step 0: 過去診療録ページが開いていなければ開く
+        await MainActor.run {
+            appendMessage(role: "assistant", content: "過去診療録ページを確認中...")
+        }
+        if let chromeResult = await findChromeWindowSCK(),
+           let captureResult = await captureWindowViaSCK(chromeResult.scWindow) {
+            await checkAndOpenPastRecordsIfNeeded(
+                captureImage: captureResult.image,
+                captureBounds: captureResult.bounds,
+                logger: logger
+            )
+        } else {
+            logger.log("Chrome window not found for past_records check, proceeding anyway")
+        }
+
         // Step 1: 診療録読み取り
         await MainActor.run {
-            appendMessage(role: "assistant", content: "診療録を読み取ります...")
+            updateLastMessage(content: "診療録を読み取ります...")
         }
         let ehrJSON = try await runEHRReader()
 
@@ -1185,26 +1239,34 @@ class ChatViewController: NSViewController {
         \(ehrJSON)
         ```
 
+        ### 重要：日付の扱い
+        - 診療録データの**最初の `date`** を入院日として扱ってください。
+        - 診療録データの**最後の `date`** を退院日として扱ってください。
+        - サマリ内では「本日」「今日」「現在」などの相対的な表現を**一切使わず**、必ず具体的な日付（例：YYYY年MM月DD日）を記載してください。
+          - 悪い例：「本日退院の運びとなった」「本日午前中に退院とし」
+          - 良い例：「YYYY年MM月DD日に退院となった」「YYYY年MM月DD日午前中に退院とし」
+
         ### 出力形式
-        以下の7項目に分けて記載してください。各項目は1〜3行程度で記載し、内容が充実するよう詳細な経過・処方・指導内容を含めてください。全体でMicrosoft Wordの1ページに収まる内容にしてください。
+        以下の7項目に分けて記載してください。各項目の内容が充実するよう詳細な経過・処方・指導内容を含めてください。全体でMicrosoft Wordの1〜2ページに収まる内容にしてください。
 
         1. **主訴**
-        2. **現病歴**
+        2. **現病歴**（発症から入院日（YYYY年MM月DD日）までの経過のみを記載すること。入院後の治療経過・退院に関する内容は書かず、「入院後経過」に委ねること）
         3. **既往歴**
-        4. **入院後経過**
+        4. **入院後経過**（入院後の治療経過を詳細に記載。検査所見・検査値、投薬内容・薬剤名・用量、処置内容、治療反応を含めること）
         5. **退院時状況**
-        6. **退院時方針**
+        6. **退院時方針**（退院日を具体的な日付で明記すること）
         7. **退院時処方**
 
         ### 出力の書式
         - 必ず各行の先頭に `[項目名]` を付けてください。例: `[主訴] 呼吸困難、喘鳴`
         - 項目間は1行の空行で区切ってください。
         - 各項目の内容は連続した文章として記載し、項目内での改行は避けてください。
-        - 内容が短くなりすぎないよう、診療経過の詳細（検査所見、治療反応、経過日数など）を含めてください。
+        - 内容が短くなりすぎないよう、検査値・薬剤名・用量・治療反応などの詳細を漏らさず記載してください。
 
         ### 制約
         - 診療録に記載されている情報のみを使用し、推測や補完は行わないでください。
         - 日付順に診療経過を整理し、簡潔に記載してください。
+        - 「本日」「今日」「現在」などの相対的な時間表現は絶対に使用しないでください。
         """
         let summaryText = try await callTextLLM(prompt: prompt, logger: logger)
 
@@ -1663,6 +1725,36 @@ class ChatViewController: NSViewController {
         }
 
         return (cgImage, windowBounds)
+    }
+
+    private func findChromeWindowSCK() async -> (scWindow: SCWindow, bounds: CGRect)? {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let window = content.windows
+                .filter({ $0.owningApplication?.applicationName == "Google Chrome" })
+                .max(by: { $0.frame.width < $1.frame.width }) else {
+                return nil
+            }
+            return (window, window.frame)
+        } catch {
+            print("SCK findChrome error: \(error)")
+            return nil
+        }
+    }
+
+    private func captureWindowViaSCK(_ scWindow: SCWindow) async -> (image: CGImage, bounds: CGRect)? {
+        do {
+            let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+            let config = SCStreamConfiguration()
+            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+            config.width = Int(scWindow.frame.width * scale)
+            config.height = Int(scWindow.frame.height * scale)
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            return (image, scWindow.frame)
+        } catch {
+            print("SCK capture error: \(error)")
+            return nil
+        }
     }
 
     private func getWindowBounds(windowID: Int) -> CGRect? {
@@ -2212,9 +2304,17 @@ class ChatViewController: NSViewController {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(authHeader(), forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        request.timeoutInterval = 120
+        request.timeoutInterval = 300
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            let errMsg = "Network error: \(error.localizedDescription)"
+            logVLMRequest(prompt: prompt, ocrText: ocrText, response: "", error: errMsg)
+            throw error
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             let errorMsg = "Invalid response type"
@@ -2618,7 +2718,9 @@ class EHRLogger {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
         let logsDir = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("logs")
         try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let tsFormatter = ISO8601DateFormatter()
+        tsFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = tsFormatter.string(from: Date())
         logFilePath = logsDir.appendingPathComponent("ehr_reader_\(timestamp).log").path
     }
 

@@ -6,7 +6,7 @@
 
 ```bash
 cd swift-appkit
-swiftc -o /tmp/EHR-Agent main.swift
+swiftc -target arm64-apple-macos14.0 -o /tmp/EHR-Agent main.swift
 cp /tmp/EHR-Agent EHR-Agent.app/Contents/MacOS/EHR-Agent
 ```
 
