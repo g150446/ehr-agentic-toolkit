@@ -148,6 +148,7 @@ def _save_debug_frame_local(frame, name: str) -> str:
 # --movie 用のグローバル録画インスタンス（モンキーパッチでフレームを横流し）
 _recorder: Optional[VideoRecorder] = None
 _original_capture = _capture_screen_hdmi
+_config = None  # main() で設定される（_maybe_capture_frame 用）
 
 
 def _capture_with_recording(*args, **kwargs):
@@ -156,6 +157,17 @@ def _capture_with_recording(*args, **kwargs):
     if frame is not None and _recorder is not None and _recorder.is_recording():
         _recorder.write(frame)
     return frame
+
+
+def _maybe_capture_frame() -> None:
+    """--movie モード中のみ現在画面を1フレームキャプチャしてレコーダーに記録する。"""
+    if _recorder is None or not _recorder.is_recording() or _config is None:
+        return
+    _capture_screen_hdmi(
+        device_index=_config.capture_device_index,
+        width=_config.capture_width,
+        height=_config.capture_height,
+    )
 
 
 def _generate_summary(
@@ -176,25 +188,31 @@ def _generate_summary(
         "```json\n"
         f"{chart_json}\n"
         "```\n\n"
+        "### 重要：日付の扱い\n"
+        "- 診療録データの**最初の `date`** を入院日として扱ってください。\n"
+        "- 診療録データの**最後の `date`** を退院日として扱ってください。\n"
+        "- サマリ内では「本日」「今日」「現在」などの相対的な表現を**一切使わず**、必ず具体的な日付（例：YYYY年MM月DD日）を記載してください。\n"
+        "  - 悪い例：「本日退院の運びとなった」「本日午前中に退院とし」\n"
+        "  - 良い例：「YYYY年MM月DD日に退院となった」「YYYY年MM月DD日午前中に退院とし」\n\n"
         "### 出力形式\n"
-        "以下の7項目に分けて記載してください。各項目は1〜3行程度で記載し、"
-        "内容が充実するよう詳細な経過・処方・指導内容を含めてください。"
-        "全体でMicrosoft Wordの1ページに収まる内容にしてください。\n\n"
+        "以下の7項目に分けて記載してください。各項目の内容が充実するよう詳細な経過・処方・指導内容を含めてください。"
+        "全体でMicrosoft Wordの1〜2ページに収まる内容にしてください。\n\n"
         "1. **主訴**\n"
-        "2. **現病歴**\n"
+        "2. **現病歴**（発症から入院日（YYYY年MM月DD日）までの経過のみを記載すること。入院後の治療経過・退院に関する内容は書かず、「入院後経過」に委ねること）\n"
         "3. **既往歴**\n"
-        "4. **入院後経過**\n"
+        "4. **入院後経過**（入院後の治療経過を詳細に記載。検査所見・検査値、投薬内容・薬剤名・用量、処置内容、治療反応を含めること）\n"
         "5. **退院時状況**\n"
-        "6. **退院時方針**\n"
+        "6. **退院時方針**（退院日を具体的な日付で明記すること）\n"
         "7. **退院時処方**\n\n"
         "### 出力の書式\n"
         "- 必ず各行の先頭に `[項目名]` を付けてください。例: `[主訴] 呼吸困難、喘鳴`\n"
         "- 項目間は1行の空行で区切ってください。\n"
         "- 各項目の内容は連続した文章として記載し、項目内での改行は避けてください。\n"
-        "- 内容が短くなりすぎないよう、診療経過の詳細（検査所見、治療反応、経過日数など）を含めてください。\n\n"
+        "- 内容が短くなりすぎないよう、検査値・薬剤名・用量・治療反応などの詳細を漏らさず記載してください。\n\n"
         "### 制約\n"
         "- 診療録に記載されている情報のみを使用し、推測や補完は行わないでください。\n"
-        "- 日付順に診療経過を整理し、簡潔に記載してください。"
+        "- 日付順に診療経過を整理し、簡潔に記載してください。\n"
+        "- 「本日」「今日」「現在」などの相対的な時間表現は絶対に使用しないでください。"
     )
 
     payload = {
@@ -360,6 +378,7 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
     # 2秒待機（ドラッグ範囲を目視確認）
     print("2.0秒待機（ドラッグ範囲確認）...")
     time.sleep(2.0)
+    _maybe_capture_frame()  # Wordのドラッグ選択範囲
 
     # 先にマウスボタンを離す
     ok = client.mouse_up()
@@ -374,6 +393,7 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
     # Ctrl+L (左寄せ)
     ok = client.press_key("ctrl_l")
     print(f"press_key(ctrl_l) -> {'OK' if ok else 'NG'}")
+    _maybe_capture_frame()  # テンプレート削除・左寄せ後のWord
 
     # Windows キー
     ok = client.press_key("win")
@@ -382,6 +402,7 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
     # 1.0秒待機
     print("1.0秒待機...")
     time.sleep(1.0)
+    _maybe_capture_frame()  # Windowsスタートメニュー
 
     # "note" テキスト入力
     ok = client.type_text("note")
@@ -398,6 +419,7 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
     # 3.0秒待機（Notepad起動・前面化を確実に待つ）
     print("3.0秒待機（Notepad起動・前面化待ち）...")
     time.sleep(3.0)
+    _maybe_capture_frame()  # Notepad起動直後
 
     # スクリーン中央をクリックしてフォーカス
     ok = client.switch_to_mouse_mode()
@@ -416,18 +438,45 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
     print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
     ok = client.press_key("win_up")
     print(f"press_key(win_up) -> {'OK' if ok else 'NG'}")
+    time.sleep(0.5)
+    _maybe_capture_frame()  # Notepad最大化後
 
 
-def _type_line_and_paste(line: str, is_first_line: bool, _current_mode: Optional[str] = None) -> Optional[str]:
-    """ノートパッドに1行入力し、切り取ってWordに貼り付ける。
+def _split_summary_chunks(summary_text: str) -> list[tuple[str, bool]]:
+    """サマリを改行・読点で分割し (チャンク文字列, 改行フラグ) を返す。
+
+    改行フラグ=True はWordへの貼り付け後にEnterを押すことを意味する。
+    読点で分割されたチャンク（行途中）は False、行末チャンクは True。
+    """
+    chunks: list[tuple[str, bool]] = []
+    for line in summary_text.strip().splitlines():
+        if not line.strip():
+            continue
+        parts = line.split('、')
+        for i, part in enumerate(parts):
+            is_last = (i == len(parts) - 1)
+            text = part + ('、' if not is_last else '')
+            if text.strip():
+                chunks.append((text, is_last))
+    return chunks
+
+
+def _type_line_and_paste(
+    line: str,
+    is_first_line: bool,
+    _current_mode: Optional[str] = None,
+    press_enter: bool = True,
+) -> Optional[str]:
+    """ノートパッドに1チャンク入力し、切り取ってWordに貼り付ける。
 
     Args:
-        line: 入力する行のテキスト
-        is_first_line: True の場合、最初の行としてクリアを実行
-        _current_mode: 前の行から引き継いだ IME モード。None の場合は内部で検出する。
+        line: 入力するテキスト（改行・読点で分割済みのチャンク）
+        is_first_line: True の場合、最初のチャンクとしてクリアを実行
+        _current_mode: 前のチャンクから引き継いだ IME モード。None の場合は内部で検出する。
+        press_enter: True の場合、Wordへの貼り付け後にEnterを押す（改行位置のみ True）
 
     Returns:
-        入力後の IME モード。次の行に渡すことで IME 検出を省略できる。
+        入力後の IME モード。次のチャンクに渡すことで IME 検出を省略できる。
     """
     print(f"\n--- 行入力 ({'最初' if is_first_line else '追記'}) ---")
     print(f"内容: {line!r}")
@@ -457,21 +506,25 @@ def _type_line_and_paste(line: str, is_first_line: bool, _current_mode: Optional
     ok = client.alt_tab()
     print(f"alt_tab (to Word) -> {'OK' if ok else 'NG'}")
     time.sleep(0.5)
+    _maybe_capture_frame()  # Word画面
 
     # Ctrl+V で貼り付け
     ok = client.press_key("ctrl_v")
     print(f"press_key(ctrl_v) -> {'OK' if ok else 'NG'}")
     time.sleep(1.0)
+    _maybe_capture_frame()  # Wordへの貼り付け後
 
-    # 貼り付け後に改行を挿入（全行共通）
-    ok = client.press_key("enter")
-    print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
-    time.sleep(0.5)
+    # 貼り付け後の改行（元の文章の改行位置のみ）
+    if press_enter:
+        ok = client.press_key("enter")
+        print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
+        time.sleep(0.5)
 
     # Alt+Tab でノートパッドに戻る
     ok = client.alt_tab()
     print(f"alt_tab (to Notepad) -> {'OK' if ok else 'NG'}")
     time.sleep(0.5)
+    _maybe_capture_frame()  # Notepad（次行入力前）
 
     return current_mode
 
@@ -663,6 +716,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"VLM ランタイム: {runtime['model']} ({runtime['url']})")
 
     config = load_config(skip_password=True)
+    global _config
+    _config = config
 
     # --movie 指定時：モンキーパッチで capture_screen をラップ
     movie_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -717,13 +772,13 @@ def main(argv: list[str] | None = None) -> int:
 
             print(f"\n--- 生成されたサマリ ---\n{summary_text}\n--- 終了 ---\n")
 
-        # サマリを行に分割（空行を除外）
-        summary_lines = [line.strip() for line in summary_text.strip().splitlines() if line.strip()]
-        if not summary_lines:
+        # サマリを改行・読点で分割
+        summary_chunks = _split_summary_chunks(summary_text)
+        if not summary_chunks:
             print("[ERROR] サマリが空です", file=sys.stderr)
             return 1
 
-        print(f"サマリを {len(summary_lines)} 行に分割しました。")
+        print(f"サマリを {len(summary_chunks)} チャンクに分割しました。")
 
         # Phase 3: Word / ノートパッドを開く
         print("\n========== Phase 3: Word・ノートパッド起動 ==========")
@@ -757,14 +812,21 @@ def main(argv: list[str] | None = None) -> int:
         if do_movie:
             _recorder.start_phase(_MOVIE_DIR / f"composer_input_{movie_ts}.mp4", frame_skip=2)
         current_mode: Optional[str] = None
-        for i, line in enumerate(summary_lines):
-            try:
-                current_mode = _type_line_and_paste(line, is_first_line=(i == 0), _current_mode=current_mode)
-            except Exception as exc:
-                print(f"[ERROR] 行入力に失敗しました ({i+1}/{len(summary_lines)}): {exc}", file=sys.stderr)
-                return 1
-        if do_movie:
-            _recorder.stop_phase()
+        try:
+            for i, (chunk, press_enter) in enumerate(summary_chunks):
+                try:
+                    current_mode = _type_line_and_paste(
+                        chunk,
+                        is_first_line=(i == 0),
+                        _current_mode=current_mode,
+                        press_enter=press_enter,
+                    )
+                except Exception as exc:
+                    print(f"[ERROR] チャンク入力に失敗しました ({i+1}/{len(summary_chunks)}): {exc}", file=sys.stderr)
+                    return 1
+        finally:
+            if do_movie:
+                _recorder.stop_phase()
 
         print("\n========== 完了 ==========")
         if do_movie:
