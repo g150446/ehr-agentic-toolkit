@@ -87,6 +87,7 @@ from automation.local_segmentation import (
     _katakana_to_romaji,
     segment_japanese_text_locally,
 )
+from automation import romaji as _romaji_mod
 from automation.romaji import romanize_for_ime
 from automation.mlx_vlm_segmentation import (
     MlxVlmSegmentationError,
@@ -94,6 +95,7 @@ from automation.mlx_vlm_segmentation import (
 )
 from automation.mlx_vlm_ime import (
     MlxVlmImeError,
+    arbitrate_romaji as _arbitrate_romaji,
     assess_helper_reset_state as _assess_helper_reset_state_impl,
     compare_helper_reset_images as _compare_helper_reset_images_impl,
     detect_ime_mode_from_typed_a as _detect_ime_mode_from_typed_a_impl,
@@ -615,6 +617,8 @@ def _configure_runtime(
         mlx_vlm_ime.MLX_VLM_TEXT_URL = _OMLX_CHAT_URL
         mlx_vlm_ime.MLX_VLM_TEXT_MODEL = model
         mlx_vlm_ime.MLX_VLM_TEXT_API_KEY = _OMLX_API_KEY
+
+    _romaji_mod.set_romaji_arbitrator(_arbitrate_romaji)
 
 
 def _runtime_label(*, url: str, model: str, default_kind: str = "VLM") -> str:

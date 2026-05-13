@@ -36,6 +36,7 @@ from automation.config import load_config
 from automation.screen_analyzer import capture_screen as _capture_screen_hdmi
 from automation.mlx_vlm_ime import MLX_VLM_IME_TIMEOUT
 from automation.ehr_input import type_japanese_sentence, _configure_runtime
+import automation.ehr_input as _ehr_input_mod
 from automation.video_recorder import VideoRecorder
 from automation.ehr_reader import (
     _detect_all_dividers,
@@ -443,21 +444,24 @@ def _open_word_and_notepad(frame, dividers: list[int], config) -> None:
 
 
 def _split_summary_chunks(summary_text: str) -> list[tuple[str, bool]]:
-    """サマリを改行・読点で分割し (チャンク文字列, 改行フラグ) を返す。
+    """サマリを改行・読点・句点で分割し (チャンク文字列, 改行フラグ) を返す。
 
     改行フラグ=True はWordへの貼り付け後にEnterを押すことを意味する。
-    読点で分割されたチャンク（行途中）は False、行末チャンクは True。
+    読点・句点で分割されたチャンク（行途中）は False、行末チャンクは True。
+    句点は分割後のチャンク末尾に付加する。
     """
+    import re as _re
     chunks: list[tuple[str, bool]] = []
     for line in summary_text.strip().splitlines():
         if not line.strip():
             continue
-        parts = line.split('、')
+        # 読点・句点の直後で分割し、区切り文字はそのチャンクの末尾に残す
+        parts = _re.split(r'(?<=。)|(?<=、)', line)
+        parts = [p for p in parts if p]
         for i, part in enumerate(parts):
             is_last = (i == len(parts) - 1)
-            text = part + ('、' if not is_last else '')
-            if text.strip():
-                chunks.append((text, is_last))
+            if part.strip():
+                chunks.append((part, is_last))
     return chunks
 
 
@@ -729,6 +733,7 @@ def main(argv: list[str] | None = None) -> int:
             fps=10,
         )
         globals()["_capture_screen_hdmi"] = _capture_with_recording
+        _ehr_input_mod._capture_screen_hdmi = _capture_with_recording
         print("[movie] HDMIキャプチャ動画記録を有効化しました")
 
     with _capture_run_output():

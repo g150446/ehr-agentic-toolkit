@@ -2592,3 +2592,31 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
     except MlxVlmImeError as exc:
         print(f"  [ヘルパー単語提案] {runtime_label}呼び出し失敗: {exc}")
         return []
+
+
+def arbitrate_romaji(text: str, cutlet_r: str, kakasi_r: str) -> str:
+    """cutlet と kakasi の不一致を LLM（gemma 4 26b）で解決する。
+
+    両ライブラリが異なるローマ字を返した場合に呼ばれ、MS-IME 入力として
+    適切な方をモデルに選ばせる。結果が想定外なら cutlet にフォールバックする。
+    """
+    prompt = (
+        f"日本語「{text}」をMS-IMEで入力するためのヘボン式ローマ字として"
+        f"適切な方を選んでください。\n"
+        f"候補A: {cutlet_r}\n"
+        f"候補B: {kakasi_r}\n"
+        "AまたはBのどちらか一方のローマ字文字列のみを1行で答えてください。"
+        "余分な説明は不要です。"
+    )
+    runtime_label = describe_runtime(url=MLX_VLM_TEXT_URL, model=MLX_VLM_TEXT_MODEL, default_kind="Text")
+    try:
+        raw = _call_mlx_vlm_text_only(prompt, model=MLX_VLM_TEXT_MODEL)
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip().lower()
+        raw = re.sub(r"[^a-z]", "", raw)
+        print(f"  [ロマジ調停] {runtime_label}応答: {raw!r} (cutlet={cutlet_r!r}, kakasi={kakasi_r!r})")
+        if raw in (cutlet_r, kakasi_r):
+            return raw
+        print(f"  [ロマジ調停] 応答が候補外 → cutlet にフォールバック")
+    except Exception as exc:
+        print(f"  [ロマジ調停] {runtime_label}呼び出し失敗: {exc} → cutlet にフォールバック")
+    return cutlet_r
