@@ -1075,6 +1075,51 @@ def _split_katakana_runs(text: str) -> list[str]:
     return chunks
 
 
+def _merge_sokuon_segments(segments: list[dict[str, str]]) -> list[dict[str, str]]:
+    """っ で終わるセグメントを次のセグメントとマージして romaji を再計算する。
+
+    っ（促音）は後続子音を二重化する音であり、単独では IME に入力できない。
+    VLM が「行っ」+「た」と分割した場合、「行った」としてまとめ romaji=itta を得る。
+    """
+    result: list[dict[str, str]] = []
+    i = 0
+    while i < len(segments):
+        seg = segments[i]
+        while seg["text"].endswith("っ") and i + 1 < len(segments):
+            i += 1
+            next_seg = segments[i]
+            merged_text = seg["text"] + next_seg["text"]
+            merged_romaji = _kanji_to_romaji(merged_text)
+            print(f"[促音マージ] {seg['text']!r} + {next_seg['text']!r} → {merged_text!r} ({merged_romaji})")
+            seg = {"text": merged_text, "romaji": merged_romaji}
+        result.append(seg)
+        i += 1
+    return result
+
+
+def _subsplit_japanese_segments(segments: list[dict[str, str]]) -> list[dict[str, str]]:
+    """漢字を含む長いセグメントを形態素単位に細分化して IME 変換の安定性を高める。
+
+    VLM が「低酸素血症」を 1 セグメントで出した場合、MS-IME がこの複合語を
+    辞書に持たず変換が不安定になる。sudachipy による形態素分割で各形態素を
+    別々に IME 入力することで、候補ミスを汎用的に削減する。
+
+    対象: 漢字を含み 3 文字以上のセグメント（純カタカナを除く）
+    除外: sudachipy が 1 形態素と判定した場合（それ以上分割できない）
+    """
+    result: list[dict[str, str]] = []
+    for seg in segments:
+        text = seg["text"]
+        if len(text) >= 3 and _has_kanji(text) and not _is_katakana_only(text):
+            _, sub_segs = segment_japanese_text_locally(text)
+            if len(sub_segs) >= 2:
+                print(f"[形態素分割] {text!r} → {[s['text'] for s in sub_segs]}")
+                result.extend(sub_segs)
+                continue
+        result.append(seg)
+    return result
+
+
 def _split_mixed_katakana_segments(segments: list[dict[str, str]]) -> list[dict[str, str]]:
     """Split katakana runs out of mixed Japanese segments so they always use F7 input."""
     result: list[dict[str, str]] = []
@@ -1160,7 +1205,9 @@ def _segment_japanese_with_default_vlm(text: str) -> list[dict[str, str]]:
             {"text": seg["text"], "romaji": seg["romaji"]}
             for seg in segments
         ]
+        normalized_segments = _merge_sokuon_segments(normalized_segments)
         normalized_segments = _expand_segment_overrides(normalized_segments)
+        normalized_segments = _subsplit_japanese_segments(normalized_segments)
         normalized_segments = _validate_vlm_romaji(normalized_segments)
         normalized_segments = _split_mixed_katakana_segments(normalized_segments)
         print(f"{runtime_label}分割結果: {raw_content}")
