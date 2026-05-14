@@ -19,9 +19,38 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+import sys as _sys
 import cv2
 import numpy as np
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+
+_NDLOCR_SRC = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "ndlocr-lite", "src"))
+if _NDLOCR_SRC not in _sys.path:
+    _sys.path.insert(0, _NDLOCR_SRC)
+
+_NDLOCR_DETECTOR = None
+_NDLOCR_RECOGNIZER = None
+
+
+def _get_ndlocr():
+    global _NDLOCR_DETECTOR, _NDLOCR_RECOGNIZER
+    if _NDLOCR_DETECTOR is None:
+        from deim import DEIM  # type: ignore[import]
+        from parseq import PARSEQ  # type: ignore[import]
+        from yaml import safe_load
+        _model_dir = os.path.join(_NDLOCR_SRC, "model")
+        _cfg_dir = os.path.join(_NDLOCR_SRC, "config")
+        with open(os.path.join(_cfg_dir, "NDLmoji.yaml"), encoding="utf-8") as f:
+            charlist = list(safe_load(f)["model"]["charset_train"])
+        _NDLOCR_DETECTOR = DEIM(
+            model_path=os.path.join(_model_dir, "deim-s-1024x1024.onnx"),
+            class_mapping_path=os.path.join(_cfg_dir, "ndl.yaml"),
+        )
+        _NDLOCR_RECOGNIZER = PARSEQ(
+            model_path=os.path.join(_model_dir, "parseq-ndl-24x768-100-tiny-153epoch-tegaki3-r8data-202604.onnx"),
+            charlist=charlist,
+        )
+    return _NDLOCR_DETECTOR, _NDLOCR_RECOGNIZER
 
 MLX_VLM_IME_URL = os.getenv(
     "MLX_VLM_IME_URL",
@@ -1775,6 +1804,53 @@ def read_highlighted_popup_candidate(frame: np.ndarray, *, debug_name: str = "")
     return _parse_candidate_response(content)
 
 
+def read_popup_candidates_ndlocr(
+    frame: np.ndarray, *, debug_name: str = ""
+) -> list[tuple[int, str]]:
+    """ndlocr-lite (DEIM + PARSEQ) でIMEポップアップ候補を読み取る。
+
+    EasyOCR では浸→侵 などのさんずい/にんべん混同が起きるが、
+    ndlocr-lite の日本語特化モデルはこれを正しく読み取れる。
+    """
+    cropped = _crop_popup_region(frame, debug_name=debug_name)
+    if cropped is None:
+        return []
+    h, w = cropped.shape[:2]
+    if w > 600 or h > 600:
+        return []
+    try:
+        detector, recognizer = _get_ndlocr()
+        detections = detector.detect(cropped)
+        # y座標でソートして各行を処理。DEIM は同一領域を複数検出することがあるため
+        # 同じ (num, cand) は重複除去する。
+        raw: list[tuple[int, str]] = []
+        for det in sorted(detections, key=lambda d: d["box"][1]):
+            x1, y1, x2, y2 = [int(v) for v in det["box"]]
+            region = cropped[max(0, y1):y2, max(0, x1):x2]
+            if region.size == 0:
+                continue
+            text = recognizer.read(region).strip()
+            # "1 浸食" / "1. 浸食" / "1浸食" (セパレータなし) の各パターンに対応
+            m = re.match(r'^(\d+)[.。\s]*(.+)$', text)
+            if m:
+                num, cand = int(m.group(1)), m.group(2).strip()
+                if 1 <= num <= 9 and cand and not cand.isascii() and len(cand) <= 25:
+                    raw.append((num, cand))
+        # 番号ごとに最頻出候補を採用（同一番号の複数検出をまとめる）
+        from collections import Counter
+        by_num: dict[int, Counter] = {}
+        for num, cand in raw:
+            by_num.setdefault(num, Counter())[cand] += 1
+        result = []
+        for num in sorted(by_num):
+            best = by_num[num].most_common(1)[0][0]
+            result.append((num, best))
+        return result
+    except Exception as exc:
+        print(f"  [ndlocr OCR] 読取失敗: {exc}")
+        return []
+
+
 def read_popup_candidates_ocr(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
     """OCRを使ってIMEポップアップ候補リストを読み取る。
 
@@ -1928,8 +2004,18 @@ def read_popup_candidates_numbered_vlm(frame: np.ndarray, *, debug_name: str = "
 def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -> list[tuple[int, str]]:
     """IME ポップアップ候補リストを番号付きで読み取る。
 
-    OCRを優先しつつ、OCR結果が疎な場合は VLM も試して補完する。
+    ndlocr-lite を優先し、結果が疎な場合は EasyOCR、それでも疎なら VLM で補完する。
     """
+    ndlocr_result: list[tuple[int, str]] = []
+    try:
+        ndlocr_result = read_popup_candidates_ndlocr(frame, debug_name=debug_name)
+        if ndlocr_result:
+            print(f"  [ndlocr番号付き候補] {ndlocr_result}")
+            if len(ndlocr_result) >= 3:
+                return ndlocr_result
+    except Exception as exc:
+        print(f"  [ndlocr番号付き候補] 失敗: {exc}")
+
     ocr_result: list[tuple[int, str]] = []
     try:
         ocr_result = read_popup_candidates_ocr(frame, debug_name=debug_name)
@@ -1940,10 +2026,11 @@ def read_popup_candidates_numbered(frame: np.ndarray, *, debug_name: str = "") -
     except Exception as exc:
         print(f"  [OCR番号付き候補] 失敗: {exc}")
 
+    best_ocr = ndlocr_result if len(ndlocr_result) >= len(ocr_result) else ocr_result
     vlm_result = read_popup_candidates_numbered_vlm(frame, debug_name=debug_name)
-    if vlm_result and len(vlm_result) > len(ocr_result):
+    if vlm_result and len(vlm_result) > len(best_ocr):
         return vlm_result
-    return ocr_result
+    return best_ocr
 
 
 def read_popup_candidates(frame: np.ndarray) -> list[str]:

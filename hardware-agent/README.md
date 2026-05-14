@@ -88,8 +88,8 @@ Part of the [EHR Agentic Toolkit](../README.md).
 
 **Option 1: Automated Setup (Recommended)**
 ```bash
-# Clone the repository
-git clone https://github.com/g150446/ehr-agentic-toolkit.git
+# Clone the repository (including submodules)
+git clone --recurse-submodules https://github.com/g150446/ehr-agentic-toolkit.git
 cd ehr-agentic-toolkit
 
 # Run setup script (installs everything)
@@ -102,8 +102,8 @@ nano .env  # Configure your settings
 
 **Option 2: Manual Setup**
 ```bash
-# Clone and enter directory
-git clone https://github.com/g150446/ehr-agentic-toolkit.git
+# Clone and enter directory (including submodules)
+git clone --recurse-submodules https://github.com/g150446/ehr-agentic-toolkit.git
 cd ehr-agentic-toolkit
 
 # Create virtual environment (Python 3.12 recommended)
@@ -113,9 +113,19 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Install OCR dependencies
+cd hardware-agent
+./venv/bin/pip install onnxruntime
+
 # Create .env file
 cp .env.example .env
 ```
+
+> **既存クローンに submodule を追加する場合:**
+> ```bash
+> git submodule update --init
+> cd hardware-agent && ./venv/bin/pip install onnxruntime
+> ```
 
 ## Usage
 

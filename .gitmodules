@@ -1,0 +1,3 @@
+[submodule "hardware-agent/ndlocr-lite"]
+	path = hardware-agent/ndlocr-lite
+	url = https://github.com/ndl-lab/ndlocr-lite.git
