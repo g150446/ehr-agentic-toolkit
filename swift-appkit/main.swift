@@ -611,7 +611,28 @@ class ChatViewController: NSViewController {
         let scWindow = chromeResult.scWindow
         logger.log("Found Chrome window: ID=\(scWindow.windowID), bounds=\(chromeResult.bounds)")
 
-        logger.log("Capturing initial screenshot via SCK (AI window stays in front)...")
+        // Scroll to oldest records first (past_records button opens latest record by default)
+        logger.log("\n=== Scrolling to oldest records first ===")
+        logger.log("Switching to EHR window for initial upward scroll...")
+        activateChrome()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let upwardScrollAmount: Int32 = 10
+        logger.log("Scrolling up by \(upwardScrollAmount) lines for 20 times...")
+        for i in 1...20 {
+            postScrollEvent(at: centerPoint, amount: upwardScrollAmount)
+            logger.log("Upward scroll \(i)/20 completed")
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        logger.log("Initial upward scroll completed - should be at oldest records now")
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        logger.log("Switching back to AI chat window after upward scroll...")
+        activateSelf()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Capture initial screenshot at oldest records position
+        logger.log("Capturing initial screenshot at oldest records position via SCK (AI window in front)...")
         guard let captureResult = await captureWindowViaSCK(scWindow) else {
             logger.log("ERROR: Failed to capture initial screenshot")
             throw NSError(domain: "EHRReader", code: 12, userInfo: [NSLocalizedDescriptionKey: "Failed to capture initial screenshot"])
@@ -659,7 +680,7 @@ class ChatViewController: NSViewController {
         }
         logger.log("PNG conversion OK: \(croppedData.count) bytes")
 
-        logger.log("Calling VLM (initial read)...")
+        logger.log("Calling VLM (initial read at oldest records)...")
         activateSelf()
         await MainActor.run {
             appendMessage(role: "assistant", content: "VLMへ送信中（1回目）... 画面を操作しないでください")
@@ -681,21 +702,21 @@ class ChatViewController: NSViewController {
 
         for iteration in 1...maxIterations {
             logger.log("\n--- Scroll Set \(iteration) ---")
-            try await Task.sleep(nanoseconds: 300_000_000)
+            try await Task.sleep(nanoseconds: 100_000_000)
 
             logger.log("Switching to EHR window for scroll...")
             activateChrome()
-            try await Task.sleep(nanoseconds: 500_000_000)
+            try await Task.sleep(nanoseconds: 200_000_000)
 
-            let scrollLines: Int32 = 5
-            logger.log("Scrolling down by \(scrollLines) lines...")
-            postScrollEvent(at: centerPoint, amount: -scrollLines)
-            try await Task.sleep(nanoseconds: 1_000_000_000)
-            logger.log("Waited 1.0s after scroll")
+            let scrollAmount: Int32 = -10
+            logger.log("Scrolling down by \(scrollAmount) lines...")
+            postScrollEvent(at: centerPoint, amount: scrollAmount)
+            try await Task.sleep(nanoseconds: 500_000_000)
+            logger.log("Waited 0.5s after scroll")
 
             logger.log("Switching back to AI chat window after scroll...")
             activateSelf()
-            try await Task.sleep(nanoseconds: 500_000_000)
+            try await Task.sleep(nanoseconds: 200_000_000)
 
             logger.log("Capturing screenshot after scroll via SCK (AI window in front)...")
             guard let newCaptureResult = await captureWindowViaSCK(scWindow) else {
@@ -1805,7 +1826,16 @@ class ChatViewController: NSViewController {
         return nil
     }
 
+    private func moveMouseTo(_ point: CGPoint) {
+        guard let moveEvent = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) else { return }
+        moveEvent.post(tap: .cghidEventTap)
+    }
+
     private func postScrollEvent(at point: CGPoint, amount: Int32) {
+        // Move mouse cursor to the target point first so the scroll targets the correct window
+        moveMouseTo(point)
+        usleep(50_000) // 50ms wait for cursor move
+        
         guard let scrollEvent = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0) else { return }
         scrollEvent.location = point
         scrollEvent.post(tap: .cghidEventTap)
