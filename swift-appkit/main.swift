@@ -280,6 +280,33 @@ class ChatViewController: NSViewController {
             }
         }
 
+        if text.contains("診療情報提供書作成") {
+            isStreaming = true
+            sendButton.isEnabled = false
+            inputView.isEditable = false
+
+            appendMessage(role: "assistant", content: "")
+
+            Task {
+                do {
+                    try await runCreateReferralLetterAction()
+                } catch {
+                    await MainActor.run {
+                        updateLastMessage(content: "Error: \(error.localizedDescription)")
+                    }
+                }
+                await MainActor.run {
+                    isStreaming = false
+                    sendButton.isEnabled = true
+                    inputView.isEditable = true
+                    if inputView.window != nil {
+                        inputView.becomeFirstResponder()
+                    }
+                }
+            }
+            return
+        }
+
         if text.contains("letter") || text.contains("情報提供書") {
             isStreaming = true
             sendButton.isEnabled = false
@@ -1303,7 +1330,78 @@ class ChatViewController: NSViewController {
         try await runSummaryAction(content: summaryText)
     }
 
-    private func runLetterAction() async throws {
+    private func runCreateReferralLetterAction() async throws {
+        let logger = EHRLogger()
+        defer { logger.saveToFile() }
+        logger.log("===== Create Referral Letter Action Started =====")
+
+        // Step 0: 過去診療録ページが開いていなければ開く（サマリ作成と同様）
+        await MainActor.run {
+            appendMessage(role: "assistant", content: "過去診療録ページを確認中...")
+        }
+        if let chromeResult = await findChromeWindowSCK(),
+           let captureResult = await captureWindowViaSCK(chromeResult.scWindow) {
+            await checkAndOpenPastRecordsIfNeeded(
+                captureImage: captureResult.image,
+                captureBounds: captureResult.bounds,
+                logger: logger
+            )
+        } else {
+            logger.log("Chrome window not found for past_records check, proceeding anyway")
+        }
+
+        // Step 1: 診療録読み取り（サマリ作成と同様）
+        activateSelf()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await MainActor.run {
+            updateLastMessage(content: "診療録を読み取ります...")
+        }
+        let ehrJSON = try await runEHRReader()
+
+        // Step 2: LLM で診療情報提供書生成
+        await MainActor.run {
+            updateLastMessage(content: "診療録読み取り完了。診療情報提供書を生成中...")
+        }
+        let prompt = """
+        ### 指示
+        以下の過去診療録データを元に、かかりつけ医宛の入院に関する診療情報提供書（紹介状）の本文を作成してください。
+
+        ### 過去診療録データ
+        ```json
+        \(ehrJSON)
+        ```
+
+        ### 重要：日付の扱い
+        - 診療録データの**最初の `date`** を入院日として扱ってください。
+        - 診療録データの**最後の `date`** を退院日として扱ってください。
+        - 「本日」「今日」「現在」などの相対的な表現を**一切使わず**、必ず具体的な日付（例：YYYY年MM月DD日）を記載してください。
+
+        ### 出力形式
+        診療情報提供書の本文として、以下の項目を含めてください：
+
+        1. **入院期間**（入院日〜退院日）
+        2. **入院理由・主訴**
+        3. **入院中の経過**（治療内容・検査所見・投薬を含む詳細な経過）
+        4. **退院時診断**
+        5. **退院時処方**（薬剤名・用量・用法）
+        6. **今後の方針・お願い**（かかりつけ医へのフォローアップ依頼事項）
+
+        ### 出力の書式
+        - 各項目は「【項目名】」の形式で見出しを付けてください
+        - 読みやすい文章形式で記載してください
+        - 診療録に記載されている情報のみを使用し、推測や補完は行わないでください
+        - 「本日」「今日」などの相対的な時間表現は絶対に使用しないでください
+        """
+        let letterText = try await callTextLLM(prompt: prompt, logger: logger)
+
+        // Step 3: 情報提供書フォームに本文を貼り付け
+        await MainActor.run {
+            updateLastMessage(content: "診療情報提供書生成完了。フォームに入力します...")
+        }
+        try await runLetterAction(content: letterText)
+    }
+
+    private func runLetterAction(content: String? = nil) async throws {
         let logger = EHRLogger()
         defer { logger.saveToFile() }
         logger.log("===== Letter Action Started =====")
@@ -1629,9 +1727,10 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "「本文を入力」をクリックしました。テスト本文を入力します...")
         }
 
-        logger.log("Typing 'テスト本文' in body field...")
-        await pasteText("テスト本文")
-        logger.log("'テスト本文' typed in body field")
+        logger.log("Typing body text in body field...")
+        let bodyContent = content ?? "テスト本文"
+        await pasteText(bodyContent)
+        logger.log("Body text typed in body field (\(bodyContent.count) chars)")
 
         await MainActor.run {
             updateLastMessage(content: "テスト本文を入力しました。")
