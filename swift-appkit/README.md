@@ -65,7 +65,7 @@ open ~/Applications/EHR-Agent.app
 
 Type the following commands in the EHR-Agent chat input to automate EHR operations.
 
-### サマリ作成
+### Create Discharge Summary (サマリ作成)
 
 ```
 サマリ作成
@@ -79,7 +79,7 @@ Scrolls through all past medical records, generates a discharge summary using AI
 3. AI generates a discharge summary from the extracted data
 4. Opens the summary form and pastes the generated text into the body field
 
-### 診療情報提供書作成
+### Create Referral Letter (診療情報提供書作成)
 
 ```
 診療情報提供書作成
