@@ -933,7 +933,7 @@ def crop_to_ime_popup_by_blue(frame: np.ndarray) -> Optional[np.ndarray]:
     best_area = 0
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
-        if w < 60 or w > 500:
+        if w < 60 or w > 300:
             continue
         if h < 12 or h > 80:
             continue
@@ -989,8 +989,8 @@ def crop_to_ime_popup_by_corner(frame: np.ndarray, *, debug_name: str = "") -> O
     _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
     print(f"  [popup_crop_corner] テンプレートマッチング スコア: {max_val:.3f}")
-    if max_val < 0.5:
-        print(f"  [popup_crop_corner] スコアが低すぎます (閾値 0.5)")
+    if max_val < 0.45:
+        print(f"  [popup_crop_corner] スコアが低すぎます (閾値 0.45)")
         return None
 
     mx, my = max_loc
@@ -1821,6 +1821,7 @@ def read_popup_candidates_ndlocr(
     try:
         detector, recognizer = _get_ndlocr()
         detections = detector.detect(cropped)
+        print(f"  [ndlocr detect] {len(detections)} 領域検出 ({debug_name})")
         # y座標でソートして各行を処理。DEIM は同一領域を複数検出することがあるため
         # 同じ (num, cand) は重複除去する。
         raw: list[tuple[int, str]] = []
@@ -1830,6 +1831,7 @@ def read_popup_candidates_ndlocr(
             if region.size == 0:
                 continue
             text = recognizer.read(region).strip()
+            print(f"  [ndlocr det] text={text!r}")
             # "1 浸食" / "1. 浸食" / "1浸食" (セパレータなし) の各パターンに対応
             m = re.match(r'^(\d+)[.。\s]*(.+)$', text)
             if m:

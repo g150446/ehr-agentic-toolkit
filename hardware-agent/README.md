@@ -405,6 +405,14 @@ source venv/bin/activate
 python -m pip install easyocr
 ```
 
+#### "No module named 'onnxruntime'"
+
+**Solution:** Install onnxruntime in the active virtual environment:
+```bash
+source venv/bin/activate
+pip install onnxruntime
+```
+
 #### ESP32 Not Connecting
 
 **Checklist:**

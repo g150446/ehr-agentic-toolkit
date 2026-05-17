@@ -23,6 +23,20 @@ EHR Agentic Toolkit connects your existing EHR system with AI capabilities witho
 | **Hardware Agent** | Python automation pipeline for on-premises EHR: HDMI capture, OCR, AI-assisted text input, discharge summary generation | [`hardware-agent/`](hardware-agent/README.md) |
 | **EHR-Agent (Swift)** | macOS native AI chat application with screen capture and debugging for browser-based EHR access | [`swift-appkit/`](swift-appkit/README.md) |
 
+## Setup
+
+Clone the repository with submodules:
+
+```bash
+git clone --recurse-submodules <repo-url>
+```
+
+If you already cloned without `--recurse-submodules`, populate submodules in place from the project root:
+
+```bash
+git submodule update --init --recursive
+```
+
 ## Hardware Requirements
 
 ### For AI Model (Gemma 4 26B 4-bit)
