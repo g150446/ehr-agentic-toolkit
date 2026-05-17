@@ -1366,71 +1366,58 @@ class ChatViewController: NSViewController {
         let windowBounds = firstCapture.bounds
         logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
 
-        // Switch back to AI chat window for progress display
-        activateSelf()
-
-        let panelWidth: Int
-        if let dividerX = await detectVerticalDividerWithVLM(image: fullImage, logger: logger) {
-            panelWidth = dividerX
-            logger.log("VLM detected vertical divider at x=\(dividerX), cropping side panel")
-        } else if let dividerX = detectVerticalDivider(image: fullImage) {
-            panelWidth = dividerX
-            logger.log("Pixel-based vertical divider detected at x=\(dividerX), cropping side panel")
-        } else {
-            panelWidth = fullImage.width / 2
-            logger.log("Vertical divider not detected, falling back to half width")
-        }
-
-        let panelRect = CGRect(x: 0, y: 0, width: panelWidth, height: fullImage.height)
-        guard let panelImage = fullImage.cropping(to: panelRect) else {
-            logger.log("ERROR: Failed to crop left panel")
-            throw NSError(domain: "LetterAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to crop left panel"])
-        }
-        logger.log("Cropped left panel: \(panelImage.width)x\(panelImage.height)")
-
         let fullPanelPath = saveDebugImage(fullImage, name: "letter_fullscreen")
-        let panelPath = saveDebugImage(panelImage, name: "letter_left_panel")
-        logger.log("Saved debug images: full=\(fullPanelPath ?? "FAILED"), panel=\(panelPath ?? "FAILED")")
+        logger.log("Saved debug image: full=\(fullPanelPath ?? "FAILED")")
 
-        logger.log("Searching for '情報提供書' button via Tesseract OCR...")
-        let (matchedBoxOpt, allBoxes) = findTextLineBoxWithTesseract(on: panelImage, searchText: "情報提供書", logger: logger)
+        logger.log("Searching for '情報提供書' button via template matching...")
+        guard let templatePath = Bundle.main.path(
+            forResource: "letter_button_gray",
+            ofType: "png",
+            inDirectory: "match_templates"
+        ) else {
+            logger.log("ERROR: letter_button_gray template not found in bundle")
+            await MainActor.run {
+                updateLastMessage(content: "テンプレート画像が見つかりませんでした")
+            }
+            throw NSError(domain: "LetterAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Template not found"])
+        }
+        guard let nsTemplateImg = NSImage(contentsOfFile: templatePath),
+              let template = nsTemplateImg.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            logger.log("ERROR: Failed to load letter_button_gray template")
+            throw NSError(domain: "LetterAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Template load failed"])
+        }
+        logger.log("Template loaded: \(template.width)x\(template.height)px")
 
-        let overlayPath = saveTesseractOCROverlayImage(original: panelImage, boxes: allBoxes, matched: matchedBoxOpt, name: "letter_ocr_overlay")
-        logger.log("Saved OCR overlay: \(overlayPath ?? "FAILED")")
-
-        guard let matchedBox = matchedBoxOpt else {
-            logger.log("ERROR: '情報提供書' text not found in left panel.")
+        let t0 = Date()
+        guard let match = TemplateMatchingWrapper.matchSource(
+            fullImage,
+            template: template,
+            searchRegion: CGRect(x: 0, y: 0, width: CGFloat(fullImage.width), height: CGFloat(fullImage.height)),
+            threshold: 0.7
+        ) else {
+            logger.log("ERROR: '情報提供書' template not matched (elapsed \(String(format: "%.2f", -t0.timeIntervalSinceNow))s)")
             await MainActor.run {
                 updateLastMessage(content: "左側パネルに「情報提供書」ボタンが見つかりませんでした")
             }
             return
         }
-
-        logger.log("Found '情報提供書' line box: x=\(matchedBox.x), y=\(matchedBox.y), w=\(matchedBox.w), h=\(matchedBox.h)")
+        logger.log("Template matched at (\(Int(match.position.x)), \(Int(match.position.y))) score=\(String(format: "%.3f", match.score)) elapsed=\(String(format: "%.2f", -t0.timeIntervalSinceNow))s")
 
         let scaleX = CGFloat(fullImage.width) / windowBounds.width
         let scaleY = CGFloat(fullImage.height) / windowBounds.height
-        logger.log("Scale factors: scaleX=\(scaleX), scaleY=\(scaleY)")
-
-        let clickPixelX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.7
-        let clickPixelY = CGFloat(matchedBox.y) + CGFloat(matchedBox.h) * 0.5
-        logger.log("Click position in pixel coords: (\(clickPixelX)px, \(clickPixelY)px)")
-
+        let clickPixelX = match.position.x + CGFloat(template.width) / 2
+        let clickPixelY = match.position.y + CGFloat(template.height) / 2
         let screenX = windowBounds.origin.x + clickPixelX / scaleX
         let screenY = windowBounds.origin.y + clickPixelY / scaleY
         let buttonCenter = CGPoint(x: screenX, y: screenY)
-        logger.log("Calculated button center in screen point coords: (\(screenX)pt, \(screenY)pt)")
+        logger.log("Calculated button center: (\(Int(screenX))pt, \(Int(screenY))pt)")
 
         logger.log("Clicking '情報提供書' button at \(buttonCenter)")
         await MainActor.run {
             updateLastMessage(content: "「情報提供書」ボタンを発見（\(Int(buttonCenter.x)), \(Int(buttonCenter.y))）、クリックします...")
         }
 
-        // Ensure EHR window is in foreground before clicking
         activateChrome()
-        try await Task.sleep(nanoseconds: 500_000_000)
-
-        CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
         try await Task.sleep(nanoseconds: 500_000_000)
 
         CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)

@@ -4,6 +4,14 @@
 <dict>
 	<key>files</key>
 	<dict>
+		<key>Resources/match_templates/letter_button_blue.png</key>
+		<data>
+		adS3GNcT/1OtG2hDZjGM0s5DaTA=
+		</data>
+		<key>Resources/match_templates/letter_button_gray.png</key>
+		<data>
+		I+v4iMUQdYBiCcDr5TJ9ECFYAtA=
+		</data>
 		<key>Resources/match_templates/past_records_button_blue.png</key>
 		<data>
 		KiZlGx3HDkkCFwbYn1foYBjse8s=
@@ -15,6 +23,20 @@
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>Resources/match_templates/letter_button_blue.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			3j3rVFdG5lJtMP2MNOTDRUQIZeOFeoqxfjOHi7b6Fsw=
+			</data>
+		</dict>
+		<key>Resources/match_templates/letter_button_gray.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			WfthLUe8//p1HqQkOEIC88wKJsDXIE79gfCMfsam+gg=
+			</data>
+		</dict>
 		<key>Resources/match_templates/past_records_button_blue.png</key>
 		<dict>
 			<key>hash2</key>
