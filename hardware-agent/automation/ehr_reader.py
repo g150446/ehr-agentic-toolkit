@@ -31,7 +31,7 @@ import cv2
 import numpy as np
 
 from automation.config import load_config
-from automation.screen_analyzer import capture_screen as _capture_screen_hdmi, load_ocr_reader, run_ocr_word_split
+from automation.screen_analyzer import capture_screen as _capture_screen_hdmi, load_ocr_reader, run_ocr_word_split, run_ocr_backend
 from automation.mlx_vlm_ime import (
     _encode_image_data_url,
     _find_gray_divider_candidates,
@@ -49,11 +49,14 @@ _OMLX_API_KEY = "penguin"
 _CAPTURES_DIR = Path(__file__).resolve().parent.parent / "captures"
 _LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 
+import os as _os
+_OCR_BACKEND = _os.getenv("OCR_BACKEND", "ndlocr")
+
 
 def _extract_ocr_text(image: np.ndarray) -> str:
-    """EasyOCRで画像からテキストを抽出し、整形して返す。"""
-    reader = load_ocr_reader(languages=['ja', 'en'], use_gpu=False)
-    results = run_ocr_word_split(reader, image)
+    """OCRで画像からテキストを抽出し、整形して返す。"""
+    print(f"  OCRバックエンド: {_OCR_BACKEND}")
+    results = run_ocr_backend(image, _OCR_BACKEND)
     
     # Y座標でソートして上から下に並べる
     lines = []
@@ -352,7 +355,7 @@ def _find_text_position_ocr(
     *,
     min_confidence: float = 0.3,
 ) -> tuple[int, int] | None:
-    """パネル2画像を EasyOCR で認識し、指定テキストの画面全体座標の中心を返す。
+    """パネル2画像でOCR認識し、指定テキストの画面全体座標の中心を返す。
 
     search_text の部分一致でテキストを検索する。
     検出できなければ None を返す。
@@ -383,7 +386,7 @@ def _find_target_y_by_ocr(
     *,
     min_confidence: float = 0.3,
 ) -> int | None:
-    """画面全体を EasyOCR で認識し、指定キーワードの y 座標（中心）を返す。
+    """画面全体でOCR認識し、指定キーワードの y 座標（中心）を返す。
 
     keywords は優先順位順。先頭のキーワードから順に検索する。
     検出できなければ None を返す。

@@ -165,6 +165,44 @@ def run_ocr(reader, image: np.ndarray) -> List[tuple]:
     return []
 
 
+def run_ocr_ndlocr(image: np.ndarray) -> List[tuple]:
+    """ndlocr-lite (DEIM + PARSEQ) で画像全体のテキストを認識する。
+
+    Returns:
+        List of (bbox, text, confidence) tuples — EasyOCR 互換フォーマット。
+        bbox は [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]、confidence は常に 1.0。
+    """
+    from automation.mlx_vlm_ime import _get_ndlocr  # lazy import
+    detector, recognizer = _get_ndlocr()
+    detections = detector.detect(image)
+    results = []
+    for det in sorted(detections, key=lambda d: d["box"][1]):
+        x1, y1, x2, y2 = [int(v) for v in det["box"]]
+        region = image[max(0, y1):y2, max(0, x1):x2]
+        if region.size == 0:
+            continue
+        text = recognizer.read(region).strip()
+        if not text:
+            continue
+        bbox = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        results.append((bbox, text, 1.0))
+    return results
+
+
+def run_ocr_backend(image: np.ndarray, backend: str = "ndlocr") -> List[tuple]:
+    """OCRバックエンドを選択して実行する。
+
+    Args:
+        backend: 'ndlocr' または 'easyocr'
+    Returns:
+        List of (bbox, text, confidence) tuples
+    """
+    if backend == "ndlocr":
+        return run_ocr_ndlocr(image)
+    reader = load_ocr_reader(languages=["ja", "en"], use_gpu=False)
+    return run_ocr_word_split(reader, image)
+
+
 def analyze_layout(
     image: np.ndarray,
     model,

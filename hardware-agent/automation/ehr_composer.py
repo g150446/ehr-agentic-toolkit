@@ -101,6 +101,24 @@ def _capture_run_output():
             yield log_path
 
 
+def _save_summary(summary_text: str) -> Path:
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = _LOGS_DIR / f"summary_{ts}.txt"
+    path.write_text(summary_text, encoding="utf-8")
+    print(f"[INFO] サマリを保存しました: {path.name}")
+    return path
+
+
+def _load_latest_summary() -> str:
+    files = sorted(_LOGS_DIR.glob("summary_*.txt"), key=lambda p: p.name, reverse=True)
+    if not files:
+        raise FileNotFoundError(f"保存されたサマリが見つかりません: {_LOGS_DIR}")
+    path = files[0]
+    print(f"[INFO] 保存済みサマリを読み込みます: {path.name}")
+    return path.read_text(encoding="utf-8")
+
+
 _MOVIE_DIR = _CAPTURES_DIR / "movie"
 
 # --summary-no-scroll 用の固定デバッグテキスト
@@ -560,7 +578,7 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
         raise RuntimeError(str(exc))
     print(f"切り出しサイズ: {past_chart.shape[1]}x{past_chart.shape[0]} px")
 
-    print("\nEasyOCR でテキスト抽出中...")
+    print("\nOCR でテキスト抽出中...")
     ocr_text = _extract_ocr_text(past_chart)
     print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
 
@@ -641,7 +659,7 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
             print(f"[ERROR] {exc}", file=sys.stderr)
             break
 
-        print("\nEasyOCR でテキスト抽出中...")
+        print("\nOCR でテキスト抽出中...")
         ocr_text = _extract_ocr_text(past_chart)
         print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
 
@@ -738,11 +756,14 @@ def main(argv: list[str] | None = None) -> int:
 
     with _capture_run_output():
         if do_summary_no_scroll:
-            # --summary-no-scroll: Phase 1 と Phase 2 をスキップし、固定テキストを使用
+            # --summary-no-scroll: Phase 1 と Phase 2 をスキップし、保存済みサマリを使用
             print("\n========== Phase 1 & 2: スキップ（--summary-no-scroll） ==========")
-            print("固定デバッグテキストを使用します。")
-            summary_text = _DEBUG_SUMMARY_TEXT
-            print(f"\n--- 固定サマリ ---\n{summary_text}\n--- 終了 ---\n")
+            try:
+                summary_text = _load_latest_summary()
+            except FileNotFoundError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                return 1
+            print(f"\n--- 保存済みサマリ ---\n{summary_text}\n--- 終了 ---\n")
         else:
             # Phase 1: 過去カルテ読み取り
             print("\n========== Phase 1: 過去カルテ読み取り ==========")
@@ -776,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
             print(f"\n--- 生成されたサマリ ---\n{summary_text}\n--- 終了 ---\n")
+            _save_summary(summary_text)
 
         # サマリを改行・読点で分割
         summary_chunks = _split_summary_chunks(summary_text)
