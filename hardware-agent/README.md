@@ -30,7 +30,7 @@ Part of the [EHR Agentic Toolkit](../README.md).
 |-----------|--------|-------------|
 | **HDMI Capture** | Complete | Real-time video capture from MiraBox/compatible devices |
 | **Layout Analysis** | In Progress | Evaluating ROI inference and detector-first OCR for EHR layout parsing |
-| **OCR (EasyOCR)** | Complete | Multi-language text extraction with EasyOCR as the default path |
+| **OCR** | Complete | ndlocr-lite (DEIM+PARSEQ) for past chart reading; EasyOCR for Word UI detection |
 | **Stream Monitor** | Complete | Interactive HDMI capture monitor with detection overlay |
 | **ESP32 BLE Control** | Complete | Keyboard/mouse HID emulation over Bluetooth |
 | **BLE Test CLI** | Complete | Interactive testing tool for ESP32 keyboard/mouse |
@@ -268,11 +268,26 @@ Fully automated discharge summary pipeline that reads past charts, generates a s
 4. Input each line via Notepad IME conversion, cut (`Ctrl+X`), switch to Word (`Alt+Tab`), and paste (`Ctrl+V`)
 
 ```bash
-# Generate discharge summary
+# Generate discharge summary (saves summary to logs/summary_YYYYMMDD_HHMMSS.txt)
 python -m automation.ehr_composer --summary
+
+# Skip chart reading — reload latest saved summary and input directly
+python -m automation.ehr_composer --summary-no-scroll
 
 # With demo video recording (--movie)
 python -m automation.ehr_composer --summary --movie
+```
+
+**Summary Persistence**: Generated summaries are saved to `logs/summary_YYYYMMDD_HHMMSS.txt` after Phase 2. `--summary-no-scroll` loads the most recent saved summary, so you can re-run the input phase without repeating chart reading and VLM generation.
+
+**OCR Backends**:
+- Past chart reading: **ndlocr-lite** (DEIM detector + PARSEQ recognizer) by default. Switch to EasyOCR with `OCR_BACKEND=easyocr`.
+- Word UI label detection ("担当医" etc.): **EasyOCR** (fixed — ndlocr-lite cannot detect small printed fonts in modern Word documents).
+- IME popup candidates: **ndlocr-lite → EasyOCR → VLM** cascade.
+
+```bash
+# Use EasyOCR for past chart reading instead
+OCR_BACKEND=easyocr python -m automation.ehr_composer --summary
 ```
 
 **Demo Video (`--movie`)**: Records HDMI capture as phase-specific MP4s with fast-forward:
