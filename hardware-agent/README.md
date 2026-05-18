@@ -4,27 +4,27 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-**退院時要約を自動生成・入力する、オンプレミス電子カルテ向け Python 自動化パイプライン。**
+**Python automation pipeline for on-premise EHR systems that auto-generates and inputs discharge summaries.**
 
-HDMI キャプチャで画面を取得し、過去カルテを OCR + VLM でスクロール読み取り、7セクション構成の退院時要約を生成して Word ドキュメントへ自動入力します。すべての処理はローカルで完結し、患者情報は外部に送信されません。
+Captures the screen via HDMI, reads past medical records by scrolling with OCR + VLM, generates a 7-section discharge summary, and automatically inputs it into a Word document. All processing runs entirely locally; no patient data is transmitted externally.
 
 Part of the [EHR Agentic Toolkit](../README.md).
 
 ## Key Features
 
-- **Discharge Summary Automation** (`ehr_composer`) — 過去カルテの読み取りから退院時要約の Word 入力まで全自動
-- **Privacy-First Design** — 全処理がローカルで完結、患者識別情報は保存・送信なし
-- **Universal EHR Compatibility** — HDMI キャプチャ経由でどのオンプレミス EHR にも対応
-- **ESP32 BLE Control** — Bluetooth キーボード/マウス HID エミュレーション
-- **Zero EHR Modification** — 既存システムへの改変不要
-- **Demo Video Recording** (`--movie`) — フェーズ別 MP4 録画（ハッカソンデモ用）
+- **Discharge Summary Automation** (`ehr_composer`) — Fully automated pipeline from past chart reading to discharge summary Word input
+- **Privacy-First Design** — All processing runs entirely locally; no patient data is stored or transmitted
+- **Universal EHR Compatibility** — Works with any on-premise EHR via HDMI capture
+- **ESP32 BLE Control** — Bluetooth keyboard/mouse HID emulation
+- **Zero EHR Modification** — No modification to existing systems required
+- **Demo Video Recording** (`--movie`) — Phase-by-phase MP4 recording (for hackathon demos)
 
 ## Project Status
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **ehr_composer (Discharge Summary)** | Complete | 過去カルテ読み取り → サマリ生成 → Word 自動入力 |
-| **HDMI Capture** | Complete | MiraBox/対応デバイスからのリアルタイム映像取得 |
+| **ehr_composer (Discharge Summary)** | Complete | Past chart reading → summary generation → Word auto-input |
+| **HDMI Capture** | Complete | Real-time video capture from MiraBox and compatible devices |
 | **OCR** | Complete | ndlocr-lite (DEIM+PARSEQ) for past chart reading; EasyOCR for Word UI detection |
 | **ESP32 BLE Control** | Complete | Keyboard/mouse HID emulation over Bluetooth |
 | **EHR Adapters** | In Progress | Fujitsu adapter framework implemented |
@@ -66,7 +66,7 @@ cd hardware-agent
 cp .env.example .env
 ```
 
-> **既存クローンに submodule を追加する場合:**
+> **Adding submodules to an existing clone:**
 > ```bash
 > git submodule update --init
 > cd hardware-agent && ./venv/bin/pip install onnxruntime
@@ -76,65 +76,65 @@ cp .env.example .env
 
 ### Discharge Summary Composer (`ehr_composer`)
 
-退院時要約の生成・入力を全自動で行うメインコマンドです。
+Main command that fully automates discharge summary generation and input.
 
 **Workflow:**
-1. 過去カルテをスクロールしながら OCR + VLM で読み取る
-2. 7セクション構成の退院時要約を生成（主訴、現病歴、既往歴、入院後経過、退院時状況、退院時方針、退院時処方）
-3. EHR から退院時要約 Word テンプレートを開く
-4. ノートパッドで IME 変換 → 切り取り（`Ctrl+X`）→ Word へ貼り付け（`Ctrl+V`）を行ごとに繰り返す
+1. Scroll through past medical records and extract text with OCR + VLM
+2. Generate a 7-section discharge summary (chief complaint, present illness, past history, hospital course, discharge status, discharge plan, discharge prescriptions)
+3. Open the discharge summary Word template from the EHR
+4. For each line: IME conversion in Notepad → cut (`Ctrl+X`) → paste into Word (`Ctrl+V`)
 
 ```bash
-# 過去カルテを読み取り、退院時要約を生成して Word に入力する（メインコマンド）
+# Read past charts, generate discharge summary, and input into Word (main command)
 python -m automation.ehr_composer --summary
 
-# 前回生成・保存したサマリを再利用して入力のみ実行（カルテ読み取り・生成をスキップ）
+# Skip chart reading and summary generation; re-use the previously saved summary for input only
 python -m automation.ehr_composer --summary-no-scroll
 
-# デモ動画も同時録画
+# Also record demo video
 python -m automation.ehr_composer --summary --movie
 ```
 
-**Summary Persistence**: `--summary` 実行後、生成サマリは `logs/summary_YYYYMMDD_HHMMSS.txt` に自動保存されます。`--summary-no-scroll` は最新の保存済みサマリを読み込むので、入力フェーズだけ再実行できます。
+**Summary Persistence**: After running `--summary`, the generated summary is automatically saved to `logs/summary_YYYYMMDD_HHMMSS.txt`. `--summary-no-scroll` loads the latest saved summary, so you can re-run just the input phase.
 
 **OCR Backends**:
-- 過去カルテ読み取り: **ndlocr-lite** (DEIM + PARSEQ) をデフォルトで使用。`OCR_BACKEND=easyocr` で切り替え可能。
-- Word UI ラベル検出（「担当医」等）: **EasyOCR**（固定 — ndlocr-lite は Word の小サイズ印刷フォントを検出できないため）
-- IME ポップアップ候補: **ndlocr-lite → EasyOCR → VLM** の cascade
+- Past chart reading: **ndlocr-lite** (DEIM + PARSEQ) used by default. Switch with `OCR_BACKEND=easyocr`.
+- Word UI label detection (e.g., "担当医"): **EasyOCR** (fixed — ndlocr-lite cannot detect small printed fonts in modern Word documents)
+- IME popup candidates: **ndlocr-lite → EasyOCR → VLM** cascade
 
 ```bash
-# 過去カルテ読み取りを EasyOCR に切り替える場合
+# Switch past chart reading to EasyOCR
 OCR_BACKEND=easyocr python -m automation.ehr_composer --summary
 ```
 
-**Demo Video (`--movie`)**: フェーズごとの MP4 を `captures/movie/` に保存します。
-- スクロールフェーズ: 3倍速
-- UI 操作フェーズ: 等速
-- テキスト入力フェーズ: 2倍速
-- VLM 処理フェーズ: スキップ（画面変化なし）
+**Demo Video (`--movie`)**: Saves per-phase MP4 files to `captures/movie/`.
+- Scroll phase: 3× speed
+- UI operation phase: 1× speed
+- Text input phase: 2× speed
+- VLM processing phase: skipped (no screen change)
 
 ---
 
 ## Debug / Development Tools
 
-> 以下のツールは `ehr_composer` のデバッグや開発時のトラブルシュートに使用します。通常の運用では不要です。
+> The following tools are used for debugging and troubleshooting `ehr_composer` during development. Not needed for normal operation.
 
-### omlx VLM Server（前提条件）
+### omlx VLM Server (Prerequisite)
 
-`automation.mlx_vlm_history`、`automation.mlx_vlm_segmentation`、`automation.mlx_vlm_ime` はすべて **omlx**（OpenAI 互換 API、ポート 8000）を使用します。事前に omlx サーバーを起動してください。
+`automation.mlx_vlm_history`, `automation.mlx_vlm_segmentation`, and `automation.mlx_vlm_ime` all use **omlx** (OpenAI-compatible API on port 8000). Start the omlx server before running these tools.
 
 ```bash
-# サーバー状態を確認
+# Check server status
 curl -s -H "Authorization: Bearer omlxkey" http://localhost:8000/v1/models
 ```
 
-> **Known Issue:** `click_history` / `mlx_vlm_history` では過去カルテ列での日付誤選択が残っています。
+> **Known Issue:** `click_history` / `mlx_vlm_history` still has occasional incorrect date selection in the past chart column.
 
 ---
 
 ### EHR Input (`ehr_input`)
 
-テキストや日本語ファイルを BLE キーボード経由で入力するデバッグ用ツールです。`ehr_composer` の入力フェーズの単体テストに使います。
+Debug tool for inputting text and Japanese files via BLE keyboard. Used for unit testing the input phase of `ehr_composer`.
 
 The current `ehr_input` uses **Gemma 4 26B** as the main model for Japanese segment splitting during long text input, with romaji corrected via a local dictionary while typing sequentially. IME candidate verification is also done primarily with Gemma 4 26B, avoiding blind Enter confirmation of unverified candidates. **Katakana segments are always extracted even within mixed segments and confirmed via F7 full-width katakana conversion**, so katakana parts of words like `アレルギー性` are not passed through kanji conversion candidates. Symbols that are difficult to handle over BLE are normalized to readable alternatives before input; for example, `℃` is sent as `C` and `×` as `x`. Furthermore, in helper reset, **the patient_record third pane coordinates are detected once at command start and validated by VLM, and the same crop coordinates are reused for subsequent Escape comparisons**. On the comparison string side, an **anchor tail** consisting of the last Japanese anchor concatenated with any immediately following confirmed ASCII/symbol suffix (e.g., `症状(`) is preserved, so even if that suffix remains after Escape, it is treated as a normal state.
 
@@ -173,7 +173,7 @@ During input, a single `a` is typed and a screen capture is passed to the VLM to
 
 ### HDMI Capture Stream Monitor
 
-HDMI キャプチャデバイスの接続確認や YOLO 検出のリアルタイム可視化に使うデバッグツールです。
+Debug tool for verifying HDMI capture device connection and real-time YOLO detection visualization.
 
 ```bash
 ./scripts/run_monitor.sh
@@ -182,7 +182,7 @@ HDMI キャプチャデバイスの接続確認や YOLO 検出のリアルタイ
 ./scripts/run_monitor.sh --confidence 0.3 --detection-on
 ```
 
-**Interactive Controls:** Q/ESC — Quit、D — Toggle YOLO、S — Screenshot、F — FPS counter、H — Help、+/- — Confidence
+**Interactive Controls:** Q/ESC — Quit, D — Toggle YOLO, S — Screenshot, F — FPS counter, H — Help, +/- — Confidence
 
 **Output:** Screenshots saved to `monitor_outputs/`, logs in `automation_outputs/logs/`
 
@@ -190,7 +190,7 @@ HDMI キャプチャデバイスの接続確認や YOLO 検出のリアルタイ
 
 ### HDMI Snapshot Capture
 
-HDMI キャプチャデバイスから静止画を1枚保存します。
+Saves a single still image from the HDMI capture device.
 
 ```bash
 python scripts/capture_windows.py
@@ -203,7 +203,7 @@ python scripts/capture_windows.py myshot.jpg
 
 ### Past Chart Column OCR / Layout Comparison
 
-保存済み画像に対して OCR 戦略の比較分析を行うデバッグツールです。
+Debug tool for comparative analysis of OCR strategies on saved images.
 
 ```bash
 ./scripts/run_history_panel_analyzer.sh captures/0410.jpg --date 20260410
@@ -215,7 +215,7 @@ Output is saved to `automation_outputs/history_panel_analysis/<run-name>/`.
 
 ### BLE Test CLI
 
-ESP32 BLE キーボード/マウスの単体テストツールです。
+Unit testing tool for ESP32 BLE keyboard/mouse HID.
 
 ```bash
 python -m automation.ble_test_cli
@@ -225,7 +225,7 @@ python -m automation.ble_test_cli
 
 ### GUI Image Analyzer
 
-スクリーンショットからテキスト座標やテキストボックス位置を検出するデバッグツールです。
+Debug tool for detecting text coordinates and textbox positions from screenshots.
 
 ```bash
 python -m automation.gui_image_analyzer screenshot.png "患者検索"
