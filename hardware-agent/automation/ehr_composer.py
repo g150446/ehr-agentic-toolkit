@@ -110,13 +110,48 @@ def _save_summary(summary_text: str) -> Path:
     return path
 
 
-def _load_latest_summary() -> str:
+def _load_latest_summary() -> tuple[str, str]:
+    """最新のサマリファイルを読み込み (テキスト, ファイル名) を返す。"""
     files = sorted(_LOGS_DIR.glob("summary_*.txt"), key=lambda p: p.name, reverse=True)
     if not files:
         raise FileNotFoundError(f"保存されたサマリが見つかりません: {_LOGS_DIR}")
     path = files[0]
     print(f"[INFO] 保存済みサマリを読み込みます: {path.name}")
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8"), path.name
+
+
+_RESUME_STATE_PATH = _LOGS_DIR / "resume_state.json"
+
+
+def _save_resume_state(
+    start_chunk: int,
+    current_mode: Optional[str],
+    summary_file: str,
+    total_chunks: int,
+) -> None:
+    import json as _json
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    state = {
+        "start_chunk": start_chunk,
+        "current_mode": current_mode,
+        "summary_file": summary_file,
+        "total_chunks": total_chunks,
+    }
+    _RESUME_STATE_PATH.write_text(_json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[INFO] 再開ステートを保存しました: チャンク {start_chunk+1}/{total_chunks} から再開可能")
+
+
+def _load_resume_state() -> dict:
+    import json as _json
+    if not _RESUME_STATE_PATH.exists():
+        raise FileNotFoundError(f"再開ステートが見つかりません: {_RESUME_STATE_PATH}")
+    return _json.loads(_RESUME_STATE_PATH.read_text(encoding="utf-8"))
+
+
+def _clear_resume_state() -> None:
+    if _RESUME_STATE_PATH.exists():
+        _RESUME_STATE_PATH.unlink()
+        print("[INFO] 再開ステートをクリアしました（正常完了）")
 
 
 _MOVIE_DIR = _CAPTURES_DIR / "movie"
@@ -697,20 +732,18 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
 
-    # --summary / --summary-no-scroll チェック
+    # --summary / --summary-no-scroll / --continue チェック
     do_summary = "--summary" in args
     do_summary_no_scroll = "--summary-no-scroll" in args
+    do_continue = "--continue" in args
 
-    if not do_summary and not do_summary_no_scroll:
-        print("[ERROR] --summary または --summary-no-scroll オプションが必要です", file=sys.stderr)
+    if not do_summary and not do_summary_no_scroll and not do_continue:
+        print("[ERROR] --summary, --summary-no-scroll, または --continue オプションが必要です", file=sys.stderr)
         print("使用例: python -m automation.ehr_composer --summary", file=sys.stderr)
         print("       python -m automation.ehr_composer --summary-no-scroll", file=sys.stderr)
+        print("       python -m automation.ehr_composer --continue", file=sys.stderr)
         print("       python -m automation.ehr_composer --summary --omlx gemma-4-26b-a4b-it-4bit", file=sys.stderr)
         return 1
-
-    # --summary-no-scroll が指定された場合、do_summary も True として扱う
-    if do_summary_no_scroll:
-        do_summary = True
 
     do_movie = "--movie" in args
 
@@ -755,15 +788,36 @@ def main(argv: list[str] | None = None) -> int:
         print("[movie] HDMIキャプチャ動画記録を有効化しました")
 
     with _capture_run_output():
-        if do_summary_no_scroll:
+        summary_fname: str = ""
+        start_chunk: int = 0
+        current_mode: Optional[str] = None
+
+        if do_continue:
+            # --continue: resume_state.json を読んで中断チャンクから再開
+            print("\n========== 再開モード（--continue） ==========")
+            try:
+                state = _load_resume_state()
+            except FileNotFoundError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                return 1
+            start_chunk = state["start_chunk"]
+            current_mode = state.get("current_mode")
+            summary_fname = state["summary_file"]
+            summary_text = (_LOGS_DIR / summary_fname).read_text(encoding="utf-8")
+            print(f"[INFO] サマリ: {summary_fname}")
+            print(f"[INFO] チャンク {start_chunk+1}/{state['total_chunks']} から再開します")
+            print(f"\n--- 再開サマリ ---\n{summary_text}\n--- 終了 ---\n")
+
+        elif do_summary_no_scroll:
             # --summary-no-scroll: Phase 1 と Phase 2 をスキップし、保存済みサマリを使用
             print("\n========== Phase 1 & 2: スキップ（--summary-no-scroll） ==========")
             try:
-                summary_text = _load_latest_summary()
+                summary_text, summary_fname = _load_latest_summary()
             except FileNotFoundError as exc:
                 print(f"[ERROR] {exc}", file=sys.stderr)
                 return 1
             print(f"\n--- 保存済みサマリ ---\n{summary_text}\n--- 終了 ---\n")
+
         else:
             # Phase 1: 過去カルテ読み取り
             print("\n========== Phase 1: 過去カルテ読み取り ==========")
@@ -797,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
             print(f"\n--- 生成されたサマリ ---\n{summary_text}\n--- 終了 ---\n")
-            _save_summary(summary_text)
+            summary_fname = _save_summary(summary_text).name
 
         # サマリを改行・読点で分割
         summary_chunks = _split_summary_chunks(summary_text)
@@ -807,55 +861,61 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"サマリを {len(summary_chunks)} チャンクに分割しました。")
 
-        # Phase 3: Word / ノートパッドを開く
-        print("\n========== Phase 3: Word・ノートパッド起動 ==========")
-        if do_movie:
-            _recorder.start_phase(_MOVIE_DIR / f"composer_other_{movie_ts}.mp4", frame_skip=1)
-        frame = _capture_screen_hdmi(
-            device_index=config.capture_device_index,
-            width=config.capture_width,
-            height=config.capture_height,
-        )
-        if frame is None:
-            print("[ERROR] 画面キャプチャに失敗しました", file=sys.stderr)
-            return 1
-
-        dividers = _detect_all_dividers(frame, debug=True)
-        if dividers is None:
-            print("[ERROR] 区切り線を検出できませんでした", file=sys.stderr)
-            return 1
-
-        try:
-            _open_word_and_notepad(frame, dividers, config)
-        except RuntimeError as exc:
-            print(f"[ERROR] {exc}", file=sys.stderr)
-            return 1
-        finally:
+        # Phase 3: Word / ノートパッドを開く（--continue 時はスキップ）
+        if not do_continue:
+            print("\n========== Phase 3: Word・ノートパッド起動 ==========")
             if do_movie:
-                _recorder.stop_phase()
+                _recorder.start_phase(_MOVIE_DIR / f"composer_other_{movie_ts}.mp4", frame_skip=1)
+            frame = _capture_screen_hdmi(
+                device_index=config.capture_device_index,
+                width=config.capture_width,
+                height=config.capture_height,
+            )
+            if frame is None:
+                print("[ERROR] 画面キャプチャに失敗しました", file=sys.stderr)
+                return 1
+
+            dividers = _detect_all_dividers(frame, debug=True)
+            if dividers is None:
+                print("[ERROR] 区切り線を検出できませんでした", file=sys.stderr)
+                return 1
+
+            try:
+                _open_word_and_notepad(frame, dividers, config)
+            except RuntimeError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                return 1
+            finally:
+                if do_movie:
+                    _recorder.stop_phase()
 
         # Phase 4: 1行ずつ入力（IME モードを継承）
         print("\n========== Phase 4: サマリ入力 ==========")
+        if start_chunk > 0:
+            print(f"[INFO] チャンク {start_chunk+1}/{len(summary_chunks)} から再開します")
         if do_movie:
             _recorder.start_phase(_MOVIE_DIR / f"composer_input_{movie_ts}.mp4", frame_skip=2)
-        current_mode: Optional[str] = None
         try:
             for i, (chunk, press_enter) in enumerate(summary_chunks):
+                if i < start_chunk:
+                    continue
                 try:
                     current_mode = _type_line_and_paste(
                         chunk,
-                        is_first_line=(i == 0),
+                        is_first_line=(i == 0 and start_chunk == 0),
                         _current_mode=current_mode,
                         press_enter=press_enter,
                     )
                 except Exception as exc:
                     print(f"[ERROR] チャンク入力に失敗しました ({i+1}/{len(summary_chunks)}): {exc}", file=sys.stderr)
+                    _save_resume_state(i, current_mode, summary_fname, len(summary_chunks))
                     return 1
         finally:
             if do_movie:
                 _recorder.stop_phase()
 
         print("\n========== 完了 ==========")
+        _clear_resume_state()
         if do_movie:
             print(f"[movie] 動画を {_MOVIE_DIR} に保存しました")
         return 0
