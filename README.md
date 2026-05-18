@@ -1,5 +1,8 @@
 # EHR Agentic Toolkit
 
+> 📢 **Notice for Judges:**
+> The `main` branch reflects the exact state of the project at the hackathon submission deadline. All ongoing development and post-hackathon improvements are conducted in the `dev` (or other) branch.
+
 ![Physical Setup](hardware-agent/images/relationships.png)
 
 **AI-powered clinical documentation automation toolkit for Electronic Health Record systems.**
