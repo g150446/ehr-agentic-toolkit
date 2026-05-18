@@ -87,6 +87,12 @@ Main command that fully automates discharge summary generation and input.
    ./scripts/start_ble_server.sh
    ```
    Keep this terminal running in the background throughout the session.
+4. **omlx VLM server** — Start the omlx server serving Gemma 4 26B on the Mac (port 8000). This model is used for OCR correction, IME candidate verification, and summary generation:
+   ```bash
+   # Verify the server is up and the model is loaded
+   curl -s -H "Authorization: Bearer omlxkey" http://localhost:8000/v1/models
+   ```
+   Keep this server running in the background throughout the session.
 
 **Workflow:**
 1. Scroll through past medical records and extract text with OCR + VLM
