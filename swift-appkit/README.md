@@ -61,6 +61,40 @@ Then manually grant permissions in System Settings when prompted.
 open ~/Applications/EHR-Agent.app
 ```
 
+## Commands
+
+Type the following commands in the EHR-Agent chat input to automate EHR operations.
+
+### Create Discharge Summary (サマリ作成)
+
+```
+サマリ作成
+```
+
+Scrolls through all past medical records, generates a discharge summary using AI, and pastes it into the summary form.
+
+**Flow:**
+1. Automatically opens the past records page if not already open
+2. Scrolls through all records, capturing screenshots and extracting data via VLM
+3. AI generates a discharge summary from the extracted data
+4. Opens the summary form and pastes the generated text into the body field
+
+### Create Referral Letter (診療情報提供書作成)
+
+```
+診療情報提供書作成
+```
+
+Scrolls through all past medical records, generates a referral letter addressed to the patient's primary care physician using AI, and pastes it into the referral letter form.
+
+**Flow:**
+1. Automatically opens the past records page if not already open
+2. Scrolls through all records, capturing screenshots and extracting data via VLM
+3. AI generates a referral letter covering: hospitalization period, reason for admission, clinical course, discharge diagnosis, discharge medications, and follow-up instructions
+4. Opens the referral letter form and pastes the generated text into the body field
+
+**Prerequisite:** Open the target patient's EHR page in the browser before sending either command.
+
 ## Debug Mode
 
 - Press **Command+D** to toggle Debug Mode

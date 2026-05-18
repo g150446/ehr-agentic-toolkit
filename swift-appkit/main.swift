@@ -280,6 +280,33 @@ class ChatViewController: NSViewController {
             }
         }
 
+        if text.contains("診療情報提供書作成") {
+            isStreaming = true
+            sendButton.isEnabled = false
+            inputView.isEditable = false
+
+            appendMessage(role: "assistant", content: "")
+
+            Task {
+                do {
+                    try await runCreateReferralLetterAction()
+                } catch {
+                    await MainActor.run {
+                        updateLastMessage(content: "Error: \(error.localizedDescription)")
+                    }
+                }
+                await MainActor.run {
+                    isStreaming = false
+                    sendButton.isEnabled = true
+                    inputView.isEditable = true
+                    if inputView.window != nil {
+                        inputView.becomeFirstResponder()
+                    }
+                }
+            }
+            return
+        }
+
         if text.contains("letter") || text.contains("情報提供書") {
             isStreaming = true
             sendButton.isEnabled = false
@@ -529,9 +556,9 @@ class ChatViewController: NSViewController {
         let scaleY = CGFloat(captureImage.height) / captureBounds.height
         let clickX = captureBounds.origin.x + (match.position.x + CGFloat(template.width)  / 2) / scaleX
         let clickY = captureBounds.origin.y + (match.position.y + CGFloat(template.height) / 2) / scaleY
-        logger.log("activating Chrome window (postCommandTab)...")
+        logger.log("activating Chrome window...")
         logger.saveToFile()
-        postCommandTab()
+        activateChrome()
         try? await Task.sleep(nanoseconds: 500_000_000)
 
         logger.log("clicking at screen (\(Int(clickX)), \(Int(clickY)))")
@@ -611,7 +638,28 @@ class ChatViewController: NSViewController {
         let scWindow = chromeResult.scWindow
         logger.log("Found Chrome window: ID=\(scWindow.windowID), bounds=\(chromeResult.bounds)")
 
-        logger.log("Capturing initial screenshot via SCK (AI window stays in front)...")
+        // Scroll to oldest records first (past_records button opens latest record by default)
+        logger.log("\n=== Scrolling to oldest records first ===")
+        logger.log("Switching to EHR window for initial upward scroll...")
+        activateChrome()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let upwardScrollAmount: Int32 = 10
+        logger.log("Scrolling up by \(upwardScrollAmount) lines for 20 times...")
+        for i in 1...20 {
+            postScrollEvent(at: centerPoint, amount: upwardScrollAmount)
+            logger.log("Upward scroll \(i)/20 completed")
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        logger.log("Initial upward scroll completed - should be at oldest records now")
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        logger.log("Switching back to AI chat window after upward scroll...")
+        activateSelf()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Capture initial screenshot at oldest records position
+        logger.log("Capturing initial screenshot at oldest records position via SCK (AI window in front)...")
         guard let captureResult = await captureWindowViaSCK(scWindow) else {
             logger.log("ERROR: Failed to capture initial screenshot")
             throw NSError(domain: "EHRReader", code: 12, userInfo: [NSLocalizedDescriptionKey: "Failed to capture initial screenshot"])
@@ -659,7 +707,8 @@ class ChatViewController: NSViewController {
         }
         logger.log("PNG conversion OK: \(croppedData.count) bytes")
 
-        logger.log("Calling VLM (initial read)...")
+        logger.log("Calling VLM (initial read at oldest records)...")
+        activateSelf()
         await MainActor.run {
             appendMessage(role: "assistant", content: "VLMへ送信中（1回目）... 画面を操作しないでください")
         }
@@ -680,21 +729,21 @@ class ChatViewController: NSViewController {
 
         for iteration in 1...maxIterations {
             logger.log("\n--- Scroll Set \(iteration) ---")
-            try await Task.sleep(nanoseconds: 300_000_000)
+            try await Task.sleep(nanoseconds: 100_000_000)
 
             logger.log("Switching to EHR window for scroll...")
-            postCommandTab()
-            try await Task.sleep(nanoseconds: 500_000_000)
+            activateChrome()
+            try await Task.sleep(nanoseconds: 200_000_000)
 
-            let scrollAmount = Int32(bounds.height / 3)
-            logger.log("Scrolling down by \(scrollAmount)px (screen height / 3)...")
-            postScrollEvent(at: centerPoint, amount: -scrollAmount)
-            try await Task.sleep(nanoseconds: 1_000_000_000)
-            logger.log("Waited 1.0s after scroll")
+            let scrollAmount: Int32 = -10
+            logger.log("Scrolling down by \(scrollAmount) lines...")
+            postScrollEvent(at: centerPoint, amount: scrollAmount)
+            try await Task.sleep(nanoseconds: 500_000_000)
+            logger.log("Waited 0.5s after scroll")
 
             logger.log("Switching back to AI chat window after scroll...")
-            postCommandTab()
-            try await Task.sleep(nanoseconds: 500_000_000)
+            activateSelf()
+            try await Task.sleep(nanoseconds: 200_000_000)
 
             logger.log("Capturing screenshot after scroll via SCK (AI window in front)...")
             guard let newCaptureResult = await captureWindowViaSCK(scWindow) else {
@@ -891,7 +940,7 @@ class ChatViewController: NSViewController {
         }
 
         // Switch to EHR app
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         let mainDisplay = CGMainDisplayID()
@@ -945,7 +994,7 @@ class ChatViewController: NSViewController {
         logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
 
         // Switch back to AI chat window for progress display
-        postCommandTab()
+        activateSelf()
         
         // Detect exact vertical divider to isolate side panel (VLM first, fallback to pixel)
         let gaugeTask1 = showProgressGauge { [self] msg in
@@ -1014,7 +1063,7 @@ class ChatViewController: NSViewController {
         }
 
         // Ensure EHR window is in foreground before clicking
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
@@ -1049,8 +1098,8 @@ class ChatViewController: NSViewController {
         logger.log("Waiting for screen transition after サマリ button click...")
         try await Task.sleep(nanoseconds: 1_500_000_000)
 
-        // Switch to keep EHR in foreground before capturing for body input
-        postCommandTab()
+        // Switch to AI chat while capturing (screencapture -l works without Chrome in front)
+        activateSelf()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         // Re-capture active window for summary body analysis
@@ -1068,8 +1117,7 @@ class ChatViewController: NSViewController {
         let bodyScaleY = CGFloat(summaryBodyImage.height) / summaryBodyBounds.height
         logger.log("Summary body scale factors: scaleX=\(bodyScaleX), scaleY=\(bodyScaleY)")
 
-        // Switch back to AI chat window for progress display
-        postCommandTab()
+        // AI is already in front for VLM analysis
         
         // Crop main panel and search for "サマリの本文"
         let gaugeTaskBody = showProgressGauge { [self] msg in
@@ -1132,6 +1180,9 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "「サマリの本文」を発見、クリックします...")
         }
 
+        activateChrome()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
         CGDisplayMoveCursorToPoint(mainDisplay, bodyClickPoint)
         try await Task.sleep(nanoseconds: 500_000_000)
 
@@ -1160,7 +1211,7 @@ class ChatViewController: NSViewController {
         }
 
         // Switch back to EHR-Agent
-        postCommandTab()
+        activateSelf()
         logger.log("Switched back to EHR-Agent")
     }
 
@@ -1221,6 +1272,8 @@ class ChatViewController: NSViewController {
         }
 
         // Step 1: 診療録読み取り
+        activateSelf()
+        try await Task.sleep(nanoseconds: 300_000_000)
         await MainActor.run {
             updateLastMessage(content: "診療録を読み取ります...")
         }
@@ -1277,7 +1330,81 @@ class ChatViewController: NSViewController {
         try await runSummaryAction(content: summaryText)
     }
 
-    private func runLetterAction() async throws {
+    private func runCreateReferralLetterAction() async throws {
+        let logger = EHRLogger()
+        defer { logger.saveToFile() }
+        logger.log("===== Create Referral Letter Action Started =====")
+
+        // Step 0: 過去診療録ページが開いていなければ開く（サマリ作成と同様）
+        await MainActor.run {
+            appendMessage(role: "assistant", content: "過去診療録ページを確認中...")
+        }
+        if let chromeResult = await findChromeWindowSCK(),
+           let captureResult = await captureWindowViaSCK(chromeResult.scWindow) {
+            await checkAndOpenPastRecordsIfNeeded(
+                captureImage: captureResult.image,
+                captureBounds: captureResult.bounds,
+                logger: logger
+            )
+        } else {
+            logger.log("Chrome window not found for past_records check, proceeding anyway")
+        }
+
+        // Step 1: 診療録読み取り（サマリ作成と同様）
+        activateSelf()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await MainActor.run {
+            updateLastMessage(content: "診療録を読み取ります...")
+        }
+        let ehrJSON = try await runEHRReader()
+
+        // Step 2: LLM で診療情報提供書生成
+        await MainActor.run {
+            updateLastMessage(content: "診療録読み取り完了。診療情報提供書を生成中...")
+        }
+        let prompt = """
+        ### 指示
+        以下の過去診療録データを元に、かかりつけ医宛の入院に関する診療情報提供書（紹介状）の本文を作成してください。
+
+        ### 過去診療録データ
+        ```json
+        \(ehrJSON)
+        ```
+
+        ### 重要：日付・時刻の表現について
+        - 診療録データの**最初の `date`** を入院日として扱ってください。
+        - 診療録データの**最後の `date`** を退院日として扱ってください。
+        - **相対的な時間表現は一切使用禁止**です。以下の語句はすべて禁止します：
+          「本日」「今日」「昨日」「昨晩」「今朝」「翌日」「前日」「一昨日」「先日」「〇日後」「〇日前」「入院〇日目」「今週」「今月」「現在」「最近」など
+        - 時間を指す際は、必ず診療録の `date` フィールドの具体的な日付（例：2025年4月10日）を使用してください。
+        - 日付が診療録に明記されていない出来事（例：夜間の症状）は、「〇月〇日夜」のように当日の日付を基準に表現してください。
+
+        ### 出力形式
+        診療情報提供書の本文として、以下の項目を含めてください：
+
+        1. **入院期間**（入院日〜退院日）
+        2. **入院理由・主訴**
+        3. **入院中の経過**（治療内容・検査所見・投薬を含む詳細な経過）
+        4. **退院時診断**
+        5. **退院時処方**（薬剤名・用量・用法）
+        6. **今後の方針・お願い**（かかりつけ医へのフォローアップ依頼事項）
+
+        ### 出力の書式
+        - 各項目は「【項目名】」の形式で見出しを付けてください
+        - 読みやすい文章形式で記載してください
+        - 診療録に記載されている情報のみを使用し、推測や補完は行わないでください
+        - 「本日」「今日」などの相対的な時間表現は絶対に使用しないでください
+        """
+        let letterText = try await callTextLLM(prompt: prompt, logger: logger)
+
+        // Step 3: 情報提供書フォームに本文を貼り付け
+        await MainActor.run {
+            updateLastMessage(content: "診療情報提供書生成完了。フォームに入力します...")
+        }
+        try await runLetterAction(content: letterText)
+    }
+
+    private func runLetterAction(content: String? = nil) async throws {
         let logger = EHRLogger()
         defer { logger.saveToFile() }
         logger.log("===== Letter Action Started =====")
@@ -1287,7 +1414,7 @@ class ChatViewController: NSViewController {
         }
 
         // Switch to EHR app
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         let mainDisplay = CGMainDisplayID()
@@ -1340,71 +1467,58 @@ class ChatViewController: NSViewController {
         let windowBounds = firstCapture.bounds
         logger.log("Active window captured: \(fullImage.width)x\(fullImage.height), bounds: \(windowBounds)")
 
-        // Switch back to AI chat window for progress display
-        postCommandTab()
-
-        let panelWidth: Int
-        if let dividerX = await detectVerticalDividerWithVLM(image: fullImage, logger: logger) {
-            panelWidth = dividerX
-            logger.log("VLM detected vertical divider at x=\(dividerX), cropping side panel")
-        } else if let dividerX = detectVerticalDivider(image: fullImage) {
-            panelWidth = dividerX
-            logger.log("Pixel-based vertical divider detected at x=\(dividerX), cropping side panel")
-        } else {
-            panelWidth = fullImage.width / 2
-            logger.log("Vertical divider not detected, falling back to half width")
-        }
-
-        let panelRect = CGRect(x: 0, y: 0, width: panelWidth, height: fullImage.height)
-        guard let panelImage = fullImage.cropping(to: panelRect) else {
-            logger.log("ERROR: Failed to crop left panel")
-            throw NSError(domain: "LetterAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to crop left panel"])
-        }
-        logger.log("Cropped left panel: \(panelImage.width)x\(panelImage.height)")
-
         let fullPanelPath = saveDebugImage(fullImage, name: "letter_fullscreen")
-        let panelPath = saveDebugImage(panelImage, name: "letter_left_panel")
-        logger.log("Saved debug images: full=\(fullPanelPath ?? "FAILED"), panel=\(panelPath ?? "FAILED")")
+        logger.log("Saved debug image: full=\(fullPanelPath ?? "FAILED")")
 
-        logger.log("Searching for '情報提供書' button via Tesseract OCR...")
-        let (matchedBoxOpt, allBoxes) = findTextLineBoxWithTesseract(on: panelImage, searchText: "情報提供書", logger: logger)
+        logger.log("Searching for '情報提供書' button via template matching...")
+        guard let templatePath = Bundle.main.path(
+            forResource: "letter_button_gray",
+            ofType: "png",
+            inDirectory: "match_templates"
+        ) else {
+            logger.log("ERROR: letter_button_gray template not found in bundle")
+            await MainActor.run {
+                updateLastMessage(content: "テンプレート画像が見つかりませんでした")
+            }
+            throw NSError(domain: "LetterAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Template not found"])
+        }
+        guard let nsTemplateImg = NSImage(contentsOfFile: templatePath),
+              let template = nsTemplateImg.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            logger.log("ERROR: Failed to load letter_button_gray template")
+            throw NSError(domain: "LetterAction", code: 4, userInfo: [NSLocalizedDescriptionKey: "Template load failed"])
+        }
+        logger.log("Template loaded: \(template.width)x\(template.height)px")
 
-        let overlayPath = saveTesseractOCROverlayImage(original: panelImage, boxes: allBoxes, matched: matchedBoxOpt, name: "letter_ocr_overlay")
-        logger.log("Saved OCR overlay: \(overlayPath ?? "FAILED")")
-
-        guard let matchedBox = matchedBoxOpt else {
-            logger.log("ERROR: '情報提供書' text not found in left panel.")
+        let t0 = Date()
+        guard let match = TemplateMatchingWrapper.matchSource(
+            fullImage,
+            template: template,
+            searchRegion: CGRect(x: 0, y: 0, width: CGFloat(fullImage.width), height: CGFloat(fullImage.height)),
+            threshold: 0.7
+        ) else {
+            logger.log("ERROR: '情報提供書' template not matched (elapsed \(String(format: "%.2f", -t0.timeIntervalSinceNow))s)")
             await MainActor.run {
                 updateLastMessage(content: "左側パネルに「情報提供書」ボタンが見つかりませんでした")
             }
             return
         }
-
-        logger.log("Found '情報提供書' line box: x=\(matchedBox.x), y=\(matchedBox.y), w=\(matchedBox.w), h=\(matchedBox.h)")
+        logger.log("Template matched at (\(Int(match.position.x)), \(Int(match.position.y))) score=\(String(format: "%.3f", match.score)) elapsed=\(String(format: "%.2f", -t0.timeIntervalSinceNow))s")
 
         let scaleX = CGFloat(fullImage.width) / windowBounds.width
         let scaleY = CGFloat(fullImage.height) / windowBounds.height
-        logger.log("Scale factors: scaleX=\(scaleX), scaleY=\(scaleY)")
-
-        let clickPixelX = CGFloat(matchedBox.x) + CGFloat(matchedBox.w) * 0.7
-        let clickPixelY = CGFloat(matchedBox.y) + CGFloat(matchedBox.h) * 0.5
-        logger.log("Click position in pixel coords: (\(clickPixelX)px, \(clickPixelY)px)")
-
+        let clickPixelX = match.position.x + CGFloat(template.width) / 2
+        let clickPixelY = match.position.y + CGFloat(template.height) / 2
         let screenX = windowBounds.origin.x + clickPixelX / scaleX
         let screenY = windowBounds.origin.y + clickPixelY / scaleY
         let buttonCenter = CGPoint(x: screenX, y: screenY)
-        logger.log("Calculated button center in screen point coords: (\(screenX)pt, \(screenY)pt)")
+        logger.log("Calculated button center: (\(Int(screenX))pt, \(Int(screenY))pt)")
 
         logger.log("Clicking '情報提供書' button at \(buttonCenter)")
         await MainActor.run {
             updateLastMessage(content: "「情報提供書」ボタンを発見（\(Int(buttonCenter.x)), \(Int(buttonCenter.y))）、クリックします...")
         }
 
-        // Ensure EHR window is in foreground before clicking
-        postCommandTab()
-        try await Task.sleep(nanoseconds: 500_000_000)
-
-        CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         CGDisplayMoveCursorToPoint(mainDisplay, buttonCenter)
@@ -1427,7 +1541,7 @@ class ChatViewController: NSViewController {
 
         try await Task.sleep(nanoseconds: 1_500_000_000)
 
-        postCommandTab()
+        activateSelf()
         try await Task.sleep(nanoseconds: 500_000_000)
 
         logger.log("Re-capturing active window for main panel analysis...")
@@ -1443,7 +1557,7 @@ class ChatViewController: NSViewController {
         let postScaleY = CGFloat(postClickImage.height) / postClickBounds.height
         logger.log("Post-click scale factors: scaleX=\(postScaleX), scaleY=\(postScaleY)")
 
-        postCommandTab()
+        activateSelf()
 
         let mainPanelDividerX: Int
         if let dividerX = await detectVerticalDividerWithVLM(image: postClickImage, logger: logger) {
@@ -1493,7 +1607,7 @@ class ChatViewController: NSViewController {
 
         logger.log("Clicking input area at \(inputClickPoint)")
         // Ensure EHR is in foreground before clicking
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
         await MainActor.run {
             updateLastMessage(content: "「医療機関名を入力」を発見、入力欄をクリックします...")
@@ -1528,6 +1642,7 @@ class ChatViewController: NSViewController {
 
         // Re-capture for body input
         logger.log("Re-capturing active window for body detection...")
+        activateSelf()
         guard let captureResult3 = captureActiveWindow(windowID: windowID) else {
             logger.log("ERROR: Failed to re-capture active window for body")
             throw NSError(domain: "LetterAction", code: 9, userInfo: [NSLocalizedDescriptionKey: "Failed to re-capture active window for body"])
@@ -1540,7 +1655,7 @@ class ChatViewController: NSViewController {
         let bodyScaleY = CGFloat(bodyImage.height) / bodyBounds.height
         logger.log("Body scale factors: scaleX=\(bodyScaleX), scaleY=\(bodyScaleY)")
 
-        postCommandTab()
+        activateSelf()
 
         let bodyDividerX: Int
         if let dividerX = await detectVerticalDividerWithVLM(image: bodyImage, logger: logger) {
@@ -1591,7 +1706,7 @@ class ChatViewController: NSViewController {
 
         logger.log("Clicking '本文を入力' at \(bodyClickPoint)")
         // Ensure EHR is in foreground before clicking
-        postCommandTab()
+        activateChrome()
         try await Task.sleep(nanoseconds: 500_000_000)
         await MainActor.run {
             updateLastMessage(content: "「本文を入力」を発見、クリックします...")
@@ -1615,15 +1730,16 @@ class ChatViewController: NSViewController {
             updateLastMessage(content: "「本文を入力」をクリックしました。テスト本文を入力します...")
         }
 
-        logger.log("Typing 'テスト本文' in body field...")
-        await pasteText("テスト本文")
-        logger.log("'テスト本文' typed in body field")
+        logger.log("Typing body text in body field...")
+        let bodyContent = content ?? "テスト本文"
+        await pasteText(bodyContent)
+        logger.log("Body text typed in body field (\(bodyContent.count) chars)")
 
         await MainActor.run {
             updateLastMessage(content: "テスト本文を入力しました。")
         }
 
-        postCommandTab()
+        activateSelf()
         logger.log("Switched back to EHR-Agent")
     }
 
@@ -1648,6 +1764,31 @@ class ChatViewController: NSViewController {
                 
                 try await Task.sleep(nanoseconds: 1_000_000_000)
             }
+        }
+    }
+
+    private func activateSelf() {
+        DispatchQueue.main.async {
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.google.Chrome" else { return }
+            let cmdDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: true)
+            let tabDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x30, keyDown: true)
+            let tabUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0x30, keyDown: false)
+            let cmdUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0x37, keyDown: false)
+            cmdDown?.flags = .maskCommand
+            tabDown?.flags = .maskCommand
+            tabUp?.flags   = .maskCommand
+            cmdDown?.post(tap: .cghidEventTap)
+            tabDown?.post(tap: .cghidEventTap)
+            tabUp?.post(tap: .cghidEventTap)
+            cmdUp?.post(tap: .cghidEventTap)
+        }
+    }
+
+    private func activateChrome() {
+        DispatchQueue.main.async {
+            NSWorkspace.shared.runningApplications
+                .first(where: { $0.bundleIdentifier == "com.google.Chrome" })?
+                .activate()
         }
     }
 
@@ -1774,8 +1915,17 @@ class ChatViewController: NSViewController {
         return nil
     }
 
+    private func moveMouseTo(_ point: CGPoint) {
+        guard let moveEvent = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) else { return }
+        moveEvent.post(tap: .cghidEventTap)
+    }
+
     private func postScrollEvent(at point: CGPoint, amount: Int32) {
-        guard let scrollEvent = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0) else { return }
+        // Move mouse cursor to the target point first so the scroll targets the correct window
+        moveMouseTo(point)
+        usleep(50_000) // 50ms wait for cursor move
+        
+        guard let scrollEvent = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0) else { return }
         scrollEvent.location = point
         scrollEvent.post(tap: .cghidEventTap)
     }
