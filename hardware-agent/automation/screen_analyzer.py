@@ -42,7 +42,8 @@ class PasswordField:
 
 
 def capture_screen(device_index: int = 0, width: int = 1920, height: int = 1080,
-                   flush_duration: float = 1.5) -> Optional[np.ndarray]:
+                   flush_duration: float = 1.5, retries: int = 2, retry_wait: float = 1.5
+                   ) -> Optional[np.ndarray]:
     """
     Capture screen from HDMI capture device.
 
@@ -56,43 +57,55 @@ def capture_screen(device_index: int = 0, width: int = 1920, height: int = 1080,
                         flush_duration seconds ensures the returned frame
                         reflects the *current* screen state rather than a
                         frame captured before the most recent BLE keystroke.
+        retries: Number of additional attempts after the first failure.
+        retry_wait: Seconds to wait between attempts (device is re-opened each time).
 
     Returns:
         Captured frame as numpy array, or None if capture failed
     """
     import time as _time
-    try:
-        logger.info(f"Opening video capture device {device_index}...")
-        cap = cv2.VideoCapture(device_index)
+    for attempt in range(retries + 1):
+        try:
+            logger.info(f"Opening video capture device {device_index}...")
+            cap = cv2.VideoCapture(device_index)
 
-        if not cap.isOpened():
-            logger.error(f"Failed to open capture device {device_index}")
-            return None
+            if not cap.isOpened():
+                logger.error(f"Failed to open capture device {device_index}")
+                cap.release()
+                if attempt < retries:
+                    logger.warning(f"キャプチャデバイスを開けません。{retry_wait}秒後リトライ ({attempt+1}/{retries})")
+                    _time.sleep(retry_wait)
+                continue
 
-        # Set capture resolution
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
-        # Drain the device's ring-buffer for flush_duration seconds so the
-        # final frame reflects the current on-screen state.
-        frame = None
-        deadline = _time.time() + flush_duration
-        while _time.time() < deadline:
-            ret, f = cap.read()
-            if ret and f is not None:
-                frame = f
-        cap.release()
+            # Drain the device's ring-buffer for flush_duration seconds so the
+            # final frame reflects the current on-screen state.
+            frame = None
+            deadline = _time.time() + flush_duration
+            while _time.time() < deadline:
+                ret, f = cap.read()
+                if ret and f is not None:
+                    frame = f
+            cap.release()
 
-        if frame is None:
-            logger.error("Failed to read frame from capture device")
-            return None
+            if frame is not None:
+                logger.info(f"Captured frame: {frame.shape[1]}x{frame.shape[0]} pixels")
+                return frame
 
-        logger.info(f"Captured frame: {frame.shape[1]}x{frame.shape[0]} pixels")
-        return frame
+            logger.warning(f"フレーム取得失敗 (attempt {attempt+1}/{retries+1})")
+            if attempt < retries:
+                logger.warning(f"{retry_wait}秒後リトライ...")
+                _time.sleep(retry_wait)
 
-    except Exception as e:
-        logger.error(f"Screen capture error: {e}")
-        return None
+        except Exception as e:
+            logger.error(f"Screen capture error: {e}")
+            if attempt < retries:
+                _time.sleep(retry_wait)
+
+    logger.error("Failed to read frame from capture device after retries")
+    return None
 
 
 _ocr_reader_cache: dict = {}
