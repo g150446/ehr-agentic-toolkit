@@ -4,80 +4,39 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-**Python automation pipeline for on-premises EHR systems.**
+**退院時要約を自動生成・入力する、オンプレミス電子カルテ向け Python 自動化パイプライン。**
 
-This component provides HDMI capture, OCR, AI-assisted text input, and automated clinical document generation for on-premises Electronic Health Record systems.
+HDMI キャプチャで画面を取得し、過去カルテを OCR + VLM でスクロール読み取り、7セクション構成の退院時要約を生成して Word ドキュメントへ自動入力します。すべての処理はローカルで完結し、患者情報は外部に送信されません。
 
 Part of the [EHR Agentic Toolkit](../README.md).
 
 ## Key Features
 
-- **Universal EHR Compatibility** - Works with any on-premises EHR via HDMI capture
-- **Privacy-First Design** - All processing happens locally, patient identifiers never stored
-- **AI-Assisted Clinical Support** - Summaries, differential diagnosis, treatment suggestions (planned)
-- **Plugin Architecture** - Easy to add support for new EHR systems
-- **Zero EHR Modification** - No changes to existing systems required
-- **Real-time Stream Monitor** - Debug HDMI capture with YOLO detection visualization
-- **ESP32 BLE Control** - Keyboard/mouse HID emulation over Bluetooth
-- **GUI Image Analyzer** - Find text coordinates and textbox positions in screenshots
-- **BLE Test CLI** - Interactive testing tool for ESP32 keyboard/mouse control
-- **Discharge Summary Automation** (`ehr_composer`) - Reads past charts via scroll + OCR/VLM, generates structured summaries, and inputs them into Word documents automatically
-- **Demo Video Recording** (`--movie`) - Records HDMI capture as phase-specific MP4s with fast-forward for hackathon demos
+- **Discharge Summary Automation** (`ehr_composer`) — 過去カルテの読み取りから退院時要約の Word 入力まで全自動
+- **Privacy-First Design** — 全処理がローカルで完結、患者識別情報は保存・送信なし
+- **Universal EHR Compatibility** — HDMI キャプチャ経由でどのオンプレミス EHR にも対応
+- **ESP32 BLE Control** — Bluetooth キーボード/マウス HID エミュレーション
+- **Zero EHR Modification** — 既存システムへの改変不要
+- **Demo Video Recording** (`--movie`) — フェーズ別 MP4 録画（ハッカソンデモ用）
 
 ## Project Status
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| **HDMI Capture** | Complete | Real-time video capture from MiraBox/compatible devices |
-| **Layout Analysis** | In Progress | Evaluating ROI inference and detector-first OCR for EHR layout parsing |
+| **ehr_composer (Discharge Summary)** | Complete | 過去カルテ読み取り → サマリ生成 → Word 自動入力 |
+| **HDMI Capture** | Complete | MiraBox/対応デバイスからのリアルタイム映像取得 |
 | **OCR** | Complete | ndlocr-lite (DEIM+PARSEQ) for past chart reading; EasyOCR for Word UI detection |
-| **Stream Monitor** | Complete | Interactive HDMI capture monitor with detection overlay |
 | **ESP32 BLE Control** | Complete | Keyboard/mouse HID emulation over Bluetooth |
-| **BLE Test CLI** | Complete | Interactive testing tool for ESP32 keyboard/mouse |
-| **GUI Image Analyzer** | Complete | Text coordinate detection and textbox finding |
 | **EHR Adapters** | In Progress | Fujitsu adapter framework implemented |
 | **AI Engine** | In Progress | Gemma 4 26B integration for clinical support |
 | **Clinical Decision Support** | Planned | Differential diagnosis, treatment suggestions |
-
-**Current Focus:** Building automation infrastructure and screen capture pipeline.
-**Next Steps:** EHR adapter development and AI engine integration.
-
-## Architecture
-
-```
-+-----------------+
-|  EHR System     |
-|  (On-Premises)  |
-+--------+--------+
-         | HDMI
-         ▼
-+-----------------+
-| Capture Layer   |◄── Screen Capture & OCR
-+--------+--------+
-         |
-         ▼
-+-----------------+
-| Adapter Layer   |◄── EHR-specific Parsing
-+--------+--------+
-         |
-         ▼
-+-----------------+
-| AI Engine       |◄── Gemma 4 26B / Local LLM
-+--------+--------+
-         |
-         ▼
-+-----------------+
-| Clinical Output |◄── Decision Support
-+-----------------+
-```
 
 ## Quick Start
 
 ### Prerequisites
 
 **Hardware:**
-- macOS 11+ (M1 or later recommended) or Linux
-- **For AI inference (Gemma 4 26B 4-bit): Apple Silicon M4+ with 24GB+ RAM** (runs via omlx or ollama)
+- macOS 11+ (Apple Silicon M4+ with 24GB+ RAM recommended for Gemma 4 26B 4-bit)
 - HDMI capture device (e.g., MiraBox, Elgato)
 - **ESP32-S3 device** (e.g., M5AtomS3U) with wireless-input-bridge.ino flashed (for Windows automation via BLE HID)
 
@@ -88,36 +47,22 @@ Part of the [EHR Agentic Toolkit](../README.md).
 
 **Option 1: Automated Setup (Recommended)**
 ```bash
-# Clone the repository (including submodules)
 git clone --recurse-submodules https://github.com/g150446/ehr-agentic-toolkit.git
 cd ehr-agentic-toolkit
-
-# Run setup script (installs everything)
 ./scripts/setup_automation.sh
-
-# Edit configuration
 cp .env.example .env
-nano .env  # Configure your settings
+nano .env
 ```
 
 **Option 2: Manual Setup**
 ```bash
-# Clone and enter directory (including submodules)
 git clone --recurse-submodules https://github.com/g150446/ehr-agentic-toolkit.git
 cd ehr-agentic-toolkit
-
-# Create virtual environment (Python 3.12 recommended)
 python3.12 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Install OCR dependencies
 cd hardware-agent
 ./venv/bin/pip install onnxruntime
-
-# Create .env file
 cp .env.example .env
 ```
 
@@ -129,93 +74,67 @@ cp .env.example .env
 
 ## Usage
 
-### HDMI Capture Stream Monitor
+### Discharge Summary Composer (`ehr_composer`)
 
-Real-time video monitoring tool with optional YOLO detection overlay.
+退院時要約の生成・入力を全自動で行うメインコマンドです。
 
-**Use Cases:**
-- Debug HDMI capture device connection
-- Monitor Windows login screen during automation
-- Visualize YOLO detection in real-time
-- Capture screenshots for analysis
+**Workflow:**
+1. 過去カルテをスクロールしながら OCR + VLM で読み取る
+2. 7セクション構成の退院時要約を生成（主訴、現病歴、既往歴、入院後経過、退院時状況、退院時方針、退院時処方）
+3. EHR から退院時要約 Word テンプレートを開く
+4. ノートパッドで IME 変換 → 切り取り（`Ctrl+X`）→ Word へ貼り付け（`Ctrl+V`）を行ごとに繰り返す
 
-**Basic Usage:**
 ```bash
-# Start monitor (5 FPS, raw video)
-./scripts/run_monitor.sh
+# 過去カルテを読み取り、退院時要約を生成して Word に入力する（メインコマンド）
+python -m automation.ehr_composer --summary
 
-# Enable YOLO detection from start
-./scripts/run_monitor.sh --detection-on
+# 前回生成・保存したサマリを再利用して入力のみ実行（カルテ読み取り・生成をスキップ）
+python -m automation.ehr_composer --summary-no-scroll
 
-# Custom frame rate
-./scripts/run_monitor.sh --fps 10
-
-# Higher confidence threshold
-./scripts/run_monitor.sh --confidence 0.3 --detection-on
+# デモ動画も同時録画
+python -m automation.ehr_composer --summary --movie
 ```
 
-**Interactive Controls (While Running):**
-- **Q** or **ESC** - Quit
-- **D** - Toggle YOLO detection ON/OFF
-- **S** - Save screenshot
-- **F** - Toggle FPS counter
-- **H** - Toggle help overlay
-- **+** / **-** - Adjust confidence threshold
+**Summary Persistence**: `--summary` 実行後、生成サマリは `logs/summary_YYYYMMDD_HHMMSS.txt` に自動保存されます。`--summary-no-scroll` は最新の保存済みサマリを読み込むので、入力フェーズだけ再実行できます。
 
-**Output:** Screenshots saved to `monitor_outputs/`, logs in `automation_outputs/logs/`
+**OCR Backends**:
+- 過去カルテ読み取り: **ndlocr-lite** (DEIM + PARSEQ) をデフォルトで使用。`OCR_BACKEND=easyocr` で切り替え可能。
+- Word UI ラベル検出（「担当医」等）: **EasyOCR**（固定 — ndlocr-lite は Word の小サイズ印刷フォントを検出できないため）
+- IME ポップアップ候補: **ndlocr-lite → EasyOCR → VLM** の cascade
+
+```bash
+# 過去カルテ読み取りを EasyOCR に切り替える場合
+OCR_BACKEND=easyocr python -m automation.ehr_composer --summary
+```
+
+**Demo Video (`--movie`)**: フェーズごとの MP4 を `captures/movie/` に保存します。
+- スクロールフェーズ: 3倍速
+- UI 操作フェーズ: 等速
+- テキスト入力フェーズ: 2倍速
+- VLM 処理フェーズ: スキップ（画面変化なし）
 
 ---
 
-### HDMI Snapshot Capture
+## Debug / Development Tools
 
-Simple capture tool to save a single still image from the HDMI capture device.
+> 以下のツールは `ehr_composer` のデバッグや開発時のトラブルシュートに使用します。通常の運用では不要です。
 
-```bash
-# Save with a timestamped filename (captures/windows_capture_YYYYMMDD_HHMMSS.jpg)
-python scripts/capture_windows.py
+### omlx VLM Server（前提条件）
 
-# Specify a filename (saved to captures/)
-python scripts/capture_windows.py myshot.jpg
-
-# Extension is auto-added if omitted
-python scripts/capture_windows.py myshot
-```
-
-**Output:** All images are saved to the `captures/` directory.
-
----
-
-### Past Chart Column OCR / Layout Comparison
-
-Run **OCR anchor ROI estimation** and **OCR / layout strategy comparison** for past chart columns on saved images.
+`automation.mlx_vlm_history`、`automation.mlx_vlm_segmentation`、`automation.mlx_vlm_ime` はすべて **omlx**（OpenAI 互換 API、ポート 8000）を使用します。事前に omlx サーバーを起動してください。
 
 ```bash
-./scripts/run_history_panel_analyzer.sh captures/0410.jpg --date 20260410
-```
-
-This command compares:
-
-- EasyOCR + full-screen OCR
-- EasyOCR + UI detection OCR
-
-Output is saved to `automation_outputs/history_panel_analysis/<run-name>/`.
-
----
-
-### omlx VLM Server
-
-`automation.mlx_vlm_history`, `automation.mlx_vlm_segmentation`, and `automation.mlx_vlm_ime` all use **omlx** (OpenAI-compatible API, port 8000). Start the omlx server beforehand.
-
-```bash
-# Check omlx server status
+# サーバー状態を確認
 curl -s -H "Authorization: Bearer omlxkey" http://localhost:8000/v1/models
 ```
 
-> **Known Issue:** `click_history` / `mlx_vlm_history` still has date misselection issues in the past chart column. This remains unresolved at this time.
+> **Known Issue:** `click_history` / `mlx_vlm_history` では過去カルテ列での日付誤選択が残っています。
 
-### EHR Input with Text Files
+---
 
-`automation.ehr_input` accepts not only plain text but also **text file paths**. If a readable file is specified, its contents are sent via the remote keyboard using the existing Japanese/English/mixed input flow.
+### EHR Input (`ehr_input`)
+
+テキストや日本語ファイルを BLE キーボード経由で入力するデバッグ用ツールです。`ehr_composer` の入力フェーズの単体テストに使います。
 
 The current `ehr_input` uses **Gemma 4 26B** as the main model for Japanese segment splitting during long text input, with romaji corrected via a local dictionary while typing sequentially. IME candidate verification is also done primarily with Gemma 4 26B, avoiding blind Enter confirmation of unverified candidates. **Katakana segments are always extracted even within mixed segments and confirmed via F7 full-width katakana conversion**, so katakana parts of words like `アレルギー性` are not passed through kanji conversion candidates. Symbols that are difficult to handle over BLE are normalized to readable alternatives before input; for example, `℃` is sent as `C` and `×` as `x`. Furthermore, in helper reset, **the patient_record third pane coordinates are detected once at command start and validated by VLM, and the same crop coordinates are reused for subsequent Escape comparisons**. On the comparison string side, an **anchor tail** consisting of the last Japanese anchor concatenated with any immediately following confirmed ASCII/symbol suffix (e.g., `症状(`) is preserved, so even if that suffix remains after Escape, it is treated as a normal state.
 
@@ -224,11 +143,6 @@ Full-width symbols that should be displayed as-is are currently given special ha
 ```bash
 python -m automation.ehr_input data/patient_records/asthma_1.txt
 python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
-```
-
-To show help:
-
-```bash
 python -m automation.ehr_input --help
 ```
 
@@ -257,94 +171,66 @@ During input, a single `a` is typed and a screen capture is passed to the VLM to
 
 ---
 
-### Discharge Summary Composer (`ehr_composer`)
+### HDMI Capture Stream Monitor
 
-Fully automated discharge summary pipeline that reads past charts, generates a structured summary via VLM, and inputs it into a Word document.
-
-**Workflow:**
-1. Scroll and read past chart entries via OCR + VLM
-2. Generate a 7-section discharge summary (Chief Complaint, Present Illness, Past History, Hospital Course, Discharge Status, Discharge Plan, Discharge Prescriptions)
-3. Open the discharge summary Word template from the EHR
-4. Input each line via Notepad IME conversion, cut (`Ctrl+X`), switch to Word (`Alt+Tab`), and paste (`Ctrl+V`)
+HDMI キャプチャデバイスの接続確認や YOLO 検出のリアルタイム可視化に使うデバッグツールです。
 
 ```bash
-# Generate discharge summary (saves summary to logs/summary_YYYYMMDD_HHMMSS.txt)
-python -m automation.ehr_composer --summary
-
-# Skip chart reading — reload latest saved summary and input directly
-python -m automation.ehr_composer --summary-no-scroll
-
-# With demo video recording (--movie)
-python -m automation.ehr_composer --summary --movie
+./scripts/run_monitor.sh
+./scripts/run_monitor.sh --detection-on
+./scripts/run_monitor.sh --fps 10
+./scripts/run_monitor.sh --confidence 0.3 --detection-on
 ```
 
-**Summary Persistence**: Generated summaries are saved to `logs/summary_YYYYMMDD_HHMMSS.txt` after Phase 2. `--summary-no-scroll` loads the most recent saved summary, so you can re-run the input phase without repeating chart reading and VLM generation.
+**Interactive Controls:** Q/ESC — Quit、D — Toggle YOLO、S — Screenshot、F — FPS counter、H — Help、+/- — Confidence
 
-**OCR Backends**:
-- Past chart reading: **ndlocr-lite** (DEIM detector + PARSEQ recognizer) by default. Switch to EasyOCR with `OCR_BACKEND=easyocr`.
-- Word UI label detection ("担当医" etc.): **EasyOCR** (fixed — ndlocr-lite cannot detect small printed fonts in modern Word documents).
-- IME popup candidates: **ndlocr-lite → EasyOCR → VLM** cascade.
+**Output:** Screenshots saved to `monitor_outputs/`, logs in `automation_outputs/logs/`
+
+---
+
+### HDMI Snapshot Capture
+
+HDMI キャプチャデバイスから静止画を1枚保存します。
 
 ```bash
-# Use EasyOCR for past chart reading instead
-OCR_BACKEND=easyocr python -m automation.ehr_composer --summary
+python scripts/capture_windows.py
+python scripts/capture_windows.py myshot.jpg
 ```
 
-**Demo Video (`--movie`)**: Records HDMI capture as phase-specific MP4s with fast-forward:
-- Scroll phase: 3x speed
-- UI interaction phase: Normal speed
-- Text input phase: 2x speed
-- VLM processing phase: Skipped (no screen changes)
+**Output:** All images are saved to the `captures/` directory.
 
-Videos are saved to `captures/movie/`.
+---
+
+### Past Chart Column OCR / Layout Comparison
+
+保存済み画像に対して OCR 戦略の比較分析を行うデバッグツールです。
+
+```bash
+./scripts/run_history_panel_analyzer.sh captures/0410.jpg --date 20260410
+```
+
+Output is saved to `automation_outputs/history_panel_analysis/<run-name>/`.
 
 ---
 
 ### BLE Test CLI
 
-Use `automation.ble_test_cli` for standalone testing of the ESP32 BLE keyboard/mouse.
+ESP32 BLE キーボード/マウスの単体テストツールです。
 
 ```bash
 python -m automation.ble_test_cli
 ```
 
-After connecting, you can confirm the Escape key with either of the following:
-
-```text
-press esc
-esc
-```
-
-`press escape` is also normalized to `esc` and behaves the same.
-
 ---
 
 ### GUI Image Analyzer
 
-Analyze screenshots to find text coordinates and textbox positions for GUI automation.
+スクリーンショットからテキスト座標やテキストボックス位置を検出するデバッグツールです。
 
-**Find Text Coordinates:**
 ```bash
-# Find coordinates of specific text
 python -m automation.gui_image_analyzer screenshot.png "患者検索"
-# Output: Text "患者検索" found at coordinates: (x=80, y=462)
-```
-
-**Find Textbox Next to Label:**
-```bash
-# Find textbox to the right of a label
 python -m automation.gui_image_analyzer screenshot.png --find-textbox "フリガナ"
-# Output: Textbox right of "フリガナ" detected visually at: (x=333, y=684)
-
-# Works for any form label
-python -m automation.gui_image_analyzer form.png --find-textbox "氏名"
-python -m automation.gui_image_analyzer form.png --find-textbox "生年月日"
 ```
-
-**Use Cases:**
-- Locate form fields before automated data entry
-- Find button positions for click automation
-- Analyze existing GUI layouts programmatically
 
 ---
 
@@ -353,46 +239,9 @@ python -m automation.gui_image_analyzer form.png --find-textbox "生年月日"
 Full EHR integration with AI decision support (planned).
 
 ```bash
-# Configure EHR system
 ehr-bridge configure --ehr-type fujitsu
-
-# Start the bridge
 ehr-bridge start
-
-# Run in interactive mode
-ehr-bridge start --interactive
-
-# Test EHR connection
-ehr-bridge test-ehr
-
-# View logs
-ehr-bridge logs --tail 50
 ```
-
-## Supported EHR Systems
-
-| EHR System | Status | Adapter |
-|------------|--------|---------|
-| Fujitsu EHR | Supported | Built-in |
-| NEC MegaOak HR | In Progress | Community |
-| Philips Tasy | In Progress | Community |
-| Medicom | Planned | - |
-| Custom/Generic | Supported | Configuration-based |
-
-Don't see your EHR? Create a custom adapter using our [adapter development guide](docs/custom-ehr-setup.md).
-
-## Documentation
-
-**User Guides:**
-- [Getting Started Guide](docs/getting-started.md)
-- [Automation Tools Guide](automation/README.md) - Start here for automation
-- [Script Reference](scripts/README.md)
-
-**Technical Documentation:**
-- [Architecture Overview](docs/architecture.md)
-- [EHR Configuration Guide](docs/ehr-configuration-guide.md)
-- [API Reference](docs/api-reference.md)
-- [Custom Adapter Development](docs/custom-ehr-setup.md)
 
 ## Troubleshooting
 
@@ -400,21 +249,13 @@ Don't see your EHR? Create a custom adapter using our [adapter development guide
 
 #### "ModuleNotFoundError: No module named 'automation'"
 
-**Solution:** Make sure you're using the helper scripts from the project root:
-```bash
-cd /path/to/ehr-agentic-toolkit
-./scripts/run_monitor.sh
-```
-
-Or set PYTHONPATH manually:
 ```bash
 export PYTHONPATH=/path/to/ehr-agentic-toolkit:$PYTHONPATH
-python -m automation.monitor_stream
+python -m automation.ehr_composer --summary
 ```
 
 #### "No module named 'easyocr'"
 
-**Solution:** Install EasyOCR in the active virtual environment:
 ```bash
 source venv/bin/activate
 python -m pip install easyocr
@@ -422,7 +263,6 @@ python -m pip install easyocr
 
 #### "No module named 'onnxruntime'"
 
-**Solution:** Install onnxruntime in the active virtual environment:
 ```bash
 source venv/bin/activate
 pip install onnxruntime
@@ -430,7 +270,6 @@ pip install onnxruntime
 
 #### ESP32 Not Connecting
 
-**Checklist:**
 1. Bluetooth enabled on Mac/PC
 2. ESP32 powered and advertising
 3. Device name in `.env` matches ESP32's advertised name
@@ -438,82 +277,28 @@ pip install onnxruntime
 
 #### Screen Capture Not Working
 
-**Device Detection:**
 ```bash
-# List video devices (macOS)
 system_profiler SPCameraDataType
-
-# Test specific device index
 ./scripts/run_monitor.sh --device 1
 ```
 
-#### OpenCV Window Not Appearing (macOS)
-
-**Solution:** OpenCV requires GUI access. Run from terminal, not SSH:
-```bash
-# Run locally, not via SSH
-./scripts/run_monitor.sh
-```
-
-If using remote connection, use VNC or enable X11 forwarding.
-
 #### Virtual Environment Issues
 
-**Solution:** Recreate the virtual environment:
 ```bash
-# Remove old venv
 rm -rf venv
-
-# Run setup again
 ./scripts/setup_automation.sh
 ```
 
 ### Getting Help
 
-- **Documentation:** Check [automation/README.md](automation/README.md) for detailed usage
 - **Issues:** Report bugs at [GitHub Issues](https://github.com/g150446/ehr-agentic-toolkit/issues)
-- **Logs:** Check `automation_outputs/logs/` for detailed error messages
+- **Logs:** Check `logs/` for detailed run logs
 
 ## Security & Privacy
 
-This toolkit is designed with healthcare privacy regulations in mind:
-
 - **No PHI Storage**: Patient identifiable information is never persisted
-- **Local Processing**: All AI processing can run entirely offline
-- **Audit Logging**: Comprehensive activity logs for compliance
-
-See [Security Guidelines](docs/security-guidelines.md) for detailed information.
-
-## Development
-
-```bash
-# Install development dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Run tests with coverage
-pytest --cov
-
-# Format code
-black ehr_ai_bridge/
-ruff check ehr_ai_bridge/
-
-# Type checking
-mypy ehr_ai_bridge/
-```
+- **Local Processing**: All AI processing runs entirely offline
 
 ## Contributing
 
 Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) first.
-
-### Adding Support for a New EHR
-
-1. Create adapter in `ehr_ai_bridge/adapters/your_ehr/`
-2. Implement `BaseEHRAdapter` interface
-3. Add configuration YAML
-4. Write tests
-5. Submit PR with documentation
-
-
