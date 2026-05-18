@@ -78,6 +78,16 @@ cp .env.example .env
 
 Main command that fully automates discharge summary generation and input.
 
+**Hardware setup required before running:**
+
+1. **HDMI capture board** — Connect the Windows EHR PC (video source) to the AI Mac (capture host) via an HDMI capture card (e.g., MiraBox). The Mac reads the EHR screen through this link.
+2. **M5Atom S3 BLE device** — Flash the M5Atom S3 (or compatible ESP32-S3) with `wireless-input-bridge.ino` and plug it into a USB port on the Windows EHR PC. It acts as a BLE keyboard/mouse, receiving keystrokes from the Mac and replaying them on the Windows machine.
+3. **BLE server** — Start the BLE relay server on the Mac before running `ehr_composer`:
+   ```bash
+   ./scripts/start_ble_server.sh
+   ```
+   Keep this terminal running in the background throughout the session.
+
 **Workflow:**
 1. Scroll through past medical records and extract text with OCR + VLM
 2. Generate a 7-section discharge summary (chief complaint, present illness, past history, hospital course, discharge status, discharge plan, discharge prescriptions)
