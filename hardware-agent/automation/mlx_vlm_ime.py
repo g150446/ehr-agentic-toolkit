@@ -2610,9 +2610,10 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
             backspace_count (int): len(word) - len(target) (算出値)
     """
     prompt = (
-        f"{target}、という漢字をIMEで変換して入力したいです。"
-        "この漢字を先頭に含む単語を三つ提案してください。"
+        f"「{target}」という漢字1文字を日本語 IME で変換入力します。"
+        f"先頭の1文字が必ず「{target}」である単語を三つ提案してください。"
         "【重要な制約】"
+        f"0. 先頭の文字が「{target}」であること（他の漢字で始まる単語は絶対に不可）"
         "1. 助詞（の、は、が、を、に、で、へ、と、から、よりなど）を含まないこと"
         "2. 1つの文節（単語）であること。フレーズや複数の文節に分かれたものは不可"
         "3. MS-IMEの変換辞書に確実に存在する一般的な単語であること"
@@ -2665,6 +2666,12 @@ def suggest_ime_helper_word(target: str) -> list[dict]:
             except (TypeError, ValueError):
                 continue
             for word in words:
+                if not word.startswith(target):
+                    print(
+                        f"  [ヘルパー単語提案] スキップ（先頭文字不一致）: "
+                        f"{word!r} は {target!r} で始まりません"
+                    )
+                    continue
                 if word in seen:
                     continue
                 seen.add(word)
