@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -50,12 +51,14 @@ from automation.ehr_reader import (
     _find_word_return_mark_x,
     _is_frame_unchanged,
     _parse_vlm_response,
+    _extend_last_entry_with_vlm,
+    _find_new_entries_with_vlm,
     _read_past_chart_with_vlm,
-    _read_past_chart_with_vlm_merge,
     _save_debug_frame,
     _scroll_past_chart_down,
     _wait_for_ble_connected,
     _build_runtime_config,
+    _unload_omlx_model,
     _OMLX_DEFAULT_MODEL,
 )
 
@@ -614,14 +617,14 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
     print(f"切り出しサイズ: {past_chart.shape[1]}x{past_chart.shape[0]} px")
 
     print("\nOCR でテキスト抽出中...")
-    ocr_text = _extract_ocr_text(past_chart)
+    ocr_text = _extract_ocr_text(past_chart, log_name="past_chart_initial")
     print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
 
     print("\nVLM で過去カルテの内容を読み取り中...")
     raw_response = _read_past_chart_with_vlm(
         past_chart,
         ocr_text,
-        model=runtime["model"],
+        model=runtime["chart_model"],
         url=runtime["url"],
         api_key=runtime["api_key"],
         timeout=MLX_VLM_IME_TIMEOUT,
@@ -645,6 +648,7 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
 
     # スクロール読み取り
     prev_frame = frame.copy()
+    prev_past_chart = None
     iteration = 0
     max_iterations = 20
 
@@ -688,6 +692,7 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
             break
 
         print(f"区切り線検出: x={dividers}")
+        prev_past_chart = past_chart.copy()
         try:
             past_chart = _extract_past_chart_region(frame, dividers, debug=True)
         except RuntimeError as exc:
@@ -695,27 +700,49 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
             break
 
         print("\nOCR でテキスト抽出中...")
-        ocr_text = _extract_ocr_text(past_chart)
+        ocr_text = _extract_ocr_text(past_chart, log_name=f"past_chart_scroll_{iteration}")
         print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
 
-        print(f"\n[セット {iteration}] VLM で統合読み取り中...")
-        raw_response = _read_past_chart_with_vlm_merge(
+        print(f"\n[セット {iteration}] VLM で最後エントリ補完中...")
+        if structured:
+            continuation = _extend_last_entry_with_vlm(
+                prev_past_chart,
+                past_chart,
+                structured[-1],
+                ocr_text,
+                model=runtime["chart_model"],
+                url=runtime["url"],
+                api_key=runtime["api_key"],
+                timeout=MLX_VLM_IME_TIMEOUT,
+            )
+            print(f"  続きテキスト: {repr(continuation[:80]) if continuation else '(なし)'}")
+            if continuation:
+                structured[-1]["content"] = structured[-1]["content"].rstrip() + "\n" + continuation
+
+        print(f"[セット {iteration}] VLM で新規エントリ抽出中...")
+        known_dates = [e["date"] for e in structured]
+        raw_new_entries = _find_new_entries_with_vlm(
+            prev_past_chart,
             past_chart,
-            structured,
+            known_dates,
             ocr_text,
-            model=runtime["model"],
+            last_entry=structured[-1] if structured else None,
+            model=runtime["chart_model"],
             url=runtime["url"],
             api_key=runtime["api_key"],
             timeout=MLX_VLM_IME_TIMEOUT,
         )
-
-        print(f"\n--- VLM 生応答 (セット {iteration}) ---\n{raw_response}\n--- 終了 ---\n")
-
-        try:
-            structured = _parse_vlm_response(raw_response)
-        except ValueError as exc:
-            print(f"[ERROR] {exc}", file=sys.stderr)
-            break
+        known_dates_set = {e["date"] for e in structured}
+        new_entries = [
+            e for e in raw_new_entries
+            if e["date"] not in known_dates_set
+            and re.match(r"\d{4}年\d{1,2}月\d{1,2}日", e["date"])
+        ]
+        if len(raw_new_entries) != len(new_entries):
+            skipped = [e["date"] for e in raw_new_entries if e not in new_entries]
+            print(f"  スキップ(重複/無効日付): {skipped}")
+        print(f"  新規エントリ: {[e['date'] for e in new_entries]}")
+        structured.extend(new_entries)
 
         print("--- 構造化出力 (JSON) ---")
         print(json.dumps(structured, ensure_ascii=False, indent=2))
@@ -768,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
 
     runtime = _build_runtime_config(omlx_model=omlx_model)
     _configure_runtime(omlx=True, omlx_model=omlx_model)
-    print(f"VLM ランタイム: {runtime['model']} ({runtime['url']})")
+    print(f"VLM ランタイム: 過去カルテ={runtime['chart_model']} / サマリ={runtime['model']} ({runtime['url']})")
 
     config = load_config(skip_password=True)
     global _config
@@ -821,6 +848,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # Phase 1: 過去カルテ読み取り
             print("\n========== Phase 1: 過去カルテ読み取り ==========")
+            _unload_omlx_model(_OMLX_DEFAULT_MODEL, runtime["base_url"], runtime["api_key"])
             if do_movie:
                 _recorder.start_phase(_MOVIE_DIR / f"composer_scroll_{movie_ts}.mp4", frame_skip=3)
             try:
@@ -831,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 if do_movie:
                     _recorder.stop_phase()
+                _unload_omlx_model(runtime["chart_model"], runtime["base_url"], runtime["api_key"])
 
             if not chart_data:
                 print("[ERROR] 過去カルテからデータを読み取れませんでした", file=sys.stderr)

@@ -183,13 +183,20 @@ def run_ocr_ndlocr(image: np.ndarray) -> List[tuple]:
 
     Returns:
         List of (bbox, text, confidence) tuples — EasyOCR 互換フォーマット。
-        bbox は [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]、confidence は常に 1.0。
+        bbox は [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]。
     """
     from automation.mlx_vlm_ime import _get_ndlocr  # lazy import
     detector, recognizer = _get_ndlocr()
     detections = detector.detect(image)
+    # line_main クラスかつ高信頼度のみを処理する。
+    # DEIM は text_block（段落）・block_fig 等でも同一箇所を多重検出するため、
+    # これらをレコグナイザーに渡すとゴミテキストが生成される。
+    line_dets = [
+        d for d in detections
+        if d["class_name"] == "line_main" and d["confidence"] >= 0.75
+    ]
     results = []
-    for det in sorted(detections, key=lambda d: d["box"][1]):
+    for det in sorted(line_dets, key=lambda d: d["box"][1]):
         x1, y1, x2, y2 = [int(v) for v in det["box"]]
         region = image[max(0, y1):y2, max(0, x1):x2]
         if region.size == 0:
@@ -198,7 +205,7 @@ def run_ocr_ndlocr(image: np.ndarray) -> List[tuple]:
         if not text:
             continue
         bbox = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-        results.append((bbox, text, 1.0))
+        results.append((bbox, text, float(det["confidence"])))
     return results
 
 

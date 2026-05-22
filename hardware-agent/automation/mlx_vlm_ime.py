@@ -24,7 +24,16 @@ import cv2
 import numpy as np
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
-_NDLOCR_SRC = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "ndlocr-lite", "src"))
+_NDLOCR_SRC = os.environ.get(
+    "NDLOCR_SRC",
+    os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "ndlocr-lite", "src")),
+)
+if not os.path.isfile(os.path.join(_NDLOCR_SRC, "deim.py")):
+    _NDLOCR_SRC_FALLBACK = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "ndlocr-lite", "src")
+    )
+    if os.path.isfile(os.path.join(_NDLOCR_SRC_FALLBACK, "deim.py")):
+        _NDLOCR_SRC = _NDLOCR_SRC_FALLBACK
 if _NDLOCR_SRC not in _sys.path:
     _sys.path.insert(0, _NDLOCR_SRC)
 

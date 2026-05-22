@@ -22,9 +22,11 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from string import Template
 from typing import Optional
 
 import cv2
@@ -44,37 +46,58 @@ from automation.ble_client import BLEClient
 
 _OMLX_CHAT_URL = "http://localhost:8000/v1/chat/completions"
 _OMLX_DEFAULT_MODEL = "gemma-4-26b-a4b-it-4bit"
+_OMLX_CHART_MODEL = "gemma-4-26b-a4b-it-4bit"
 _OMLX_API_KEY = "penguin"
 
 _CAPTURES_DIR = Path(__file__).resolve().parent.parent / "captures"
 _LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+_PROMPT_DIR = Path(__file__).resolve().parent
+
+_TMPL_PAST_CHART_READ = Template(
+    (_PROMPT_DIR / "prompt_past_chart_read.txt").read_text(encoding="utf-8")
+)
+_TMPL_PAST_CHART_EXTEND = Template(
+    (_PROMPT_DIR / "prompt_past_chart_extend.txt").read_text(encoding="utf-8")
+)
+_TMPL_PAST_CHART_NEW_ENTRIES = Template(
+    (_PROMPT_DIR / "prompt_past_chart_new_entries.txt").read_text(encoding="utf-8")
+)
 
 import os as _os
 _OCR_BACKEND = _os.getenv("OCR_BACKEND", "ndlocr")
 
 
-def _extract_ocr_text(image: np.ndarray) -> str:
+def _extract_ocr_text(image: np.ndarray, *, log_name: str | None = None) -> str:
     """OCRで画像からテキストを抽出し、整形して返す。"""
     print(f"  OCRバックエンド: {_OCR_BACKEND}")
     results = run_ocr_backend(image, _OCR_BACKEND)
-    
-    # Y座標でソートして上から下に並べる
+
     lines = []
     for bbox, text, conf in results:
-        if conf < 0.3:  # 低信頼度はスキップ
+        if conf < 0.3:
             continue
         y = min(p[1] for p in bbox)
         lines.append((y, text))
-    
+
     lines.sort(key=lambda x: x[0])
-    return "\n".join(text for _, text in lines)
+    ocr_text = "\n".join(text for _, text in lines)
+
+    if log_name is not None:
+        _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = _LOGS_DIR / f"ocr_{log_name}_{ts}.txt"
+        path.write_text(ocr_text, encoding="utf-8")
+        print(f"  [debug] OCRテキストログ保存: {path}")
+
+    return ocr_text
 
 
-def _save_debug_frame(frame: np.ndarray, name: str) -> str:
-    """デバッグ用フレームを captures/ に保存する。"""
-    _CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+def _save_debug_frame(frame: np.ndarray, name: str, *, subdir: str | None = None) -> str:
+    """デバッグ用フレームを captures/ (またはサブディレクトリ) に保存する。"""
+    base = _CAPTURES_DIR / subdir if subdir else _CAPTURES_DIR
+    base.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = _CAPTURES_DIR / f"ehr_reader_{name}_{ts}.png"
+    path = base / f"ehr_reader_{name}_{ts}.png"
     cv2.imwrite(str(path), frame)
     print(f"  [debug] 保存: {path}")
     return str(path)
@@ -606,8 +629,8 @@ def _extract_past_chart_region(
         for x in dividers:
             cv2.line(overlay, (x, 0), (x, h - 1), (0, 255, 0), 2)
         cv2.rectangle(overlay, (x_start, y_start), (x_end, h - 1), (0, 0, 255), 2)
-        _save_debug_frame(overlay, "past_chart_region")
-        _save_debug_frame(cropped, "past_chart_crop")
+        _save_debug_frame(overlay, "past_chart_region", subdir="crop")
+        _save_debug_frame(cropped, "past_chart_crop", subdir="crop")
 
     return cropped
 
@@ -621,42 +644,13 @@ def _read_past_chart_with_vlm(
     api_key: str,
     timeout: float,
 ) -> str:
-    """VLM に過去カルテ領域の画像を渡してテキストを読み取る。
+    """画像と OCR テキストを VLM に渡して過去カルテを構造化する。
 
     max_tokens を 4096 に設定し、長いカルテ内容でも途中で切れないようにする。
     """
     data_url = _encode_image_data_url(cropped, debug_name="vlm_past_chart")
 
-    prompt = (
-        "### 指示\n"
-        "添付された画像は電子カルテシステムの「過去カルテ」領域のスクリーンショットです。\n"
-        "画像の内容を読み取り、日付ごとに整理された診療録データ（JSON形式）を作成してください。\n\n"
-        "### EasyOCR認識結果（参考）\n"
-        "以下は画像からEasyOCRで抽出したテキストです。レイアウト情報は失われている可能性があるため、画像も併せて確認してください。\n"
-        "```\n"
-        f"{ocr_text}\n"
-        "```\n\n"
-        "### 処理のガイドライン\n"
-        "1. **情報の抽出（すべての医療情報を漏らさず）**:\n"
-        "   - 画像とOCR結果の両方を参考にし、「日付」とそれに対応する診療録の本文を「すべて」抽出してください。\n"
-        "   - [S][O][A][P]の各セクションに加え、『血液検査』『生化学検査』『尿検査』『画像検査』『胸部X線』『動脈血ガス』など、明示的にラベル付けされたすべての検査結果・所見を抽出してください。\n"
-        "   - 『自由』『自由記載』などのラベルが付いた欄の内容も、診療録の一部として漏らさず抽出してください。\n"
-        "   - Vitals、身体所見の間や前後に記載されている検査数値・結果（WBC、CRP、Hbなど）も見逃さずに抽出してください。\n"
-        "   - 処方内容、投与薬の詳細（薬剤名・容量・単位・頻度・投与方法など）など、画像内にある「すべての医療情報」を漏らさず含めてください。\n"
-        "   - テキストは画像に書かれているものをそのまま、改行を維持して抽出してください。要約や再構成は絶対に行わないでください。\n"
-        "   - 画像に存在しない情報は、一切追加・補完・推測しないでください（ハルシネーション防止）。\n"
-        "   - 日付が明記されていないセクションがある場合、同じ画像内や前後の文脈から正しい日付を特定して紐付けてください。\n\n"
-        "2. **出力フォーマット**:\n"
-        "   - 必ず以下の構造のJSON形式のみを出力してください。\n"
-        "[\n"
-        "  {\n"
-        '    "date": "YYYY年MM月DD日(曜日)",\n'
-        '    "content": "抽出された本文テキスト（改行を含む）"\n'
-        "  }\n"
-        "]\n\n"
-        "### 出力\n"
-        "抽出・統合が完了したJSONデータのみを出力してください。"
-    )
+    prompt = _TMPL_PAST_CHART_READ.safe_substitute(ocr_text=ocr_text)
 
     payload = {
         "model": model,
@@ -706,6 +700,11 @@ def _read_past_chart_with_vlm_merge(
     prompt = (
         "### 指示\n"
         "添付された「新しい画像」の内容を読み取り、以下の【現在のJSONデータ】と統合して、最新の診療録データを作成してください。\n\n"
+        "### このシステムの表示レイアウト\n"
+        "- 各診療録エントリは「本文テキスト」の直後（下部）に「日付・著者スタンプ」"
+        "（例: `2026年04月10日 15:51 内科 診療記録`）が表示されます。\n"
+        "- 日付スタンプの直上に書かれているテキストが、その日付に属する本文です。\n"
+        "- 本文が「TEST」などの短い文字列のみのエントリも有効なエントリとして扱ってください。\n\n"
         "### EasyOCR認識結果（参考）\n"
         "以下は新しい画像からEasyOCRで抽出したテキストです。レイアウト情報は失われている可能性があるため、画像も併せて確認してください。\n"
         "```\n"
@@ -727,11 +726,18 @@ def _read_past_chart_with_vlm_merge(
         "   - テキストは画像に書かれているものをそのまま、改行を維持して抽出してください。要約や再構成は絶対に行わないでください。\n"
         "   - 文章が途切れている場合は、自然に繋がるように結合してください。\n\n"
         "3. **新規データの追加**:\n"
-        "   - JSONに含まれていない新しい日付の診療録が画像内にある場合は、新しいオブジェクトとして末尾に追加してください。\n\n"
+        "   - JSONに含まれていない新しい日付の診療録が画像内にある場合は、新しいオブジェクトとして末尾に追加してください。\n"
+        "   - 新しいエントリを追加する際、そのエントリの本文が画像上で短い（例: 「TEST」「確認のみ」）場合でも、"
+        "画像に書かれている内容のみを記録してください。内容を補完・拡張しないでください。\n\n"
         "4. **ハルシネーション防止**:\n"
         "   - 画像に存在しない情報は、一切追加・補完・推測しないでください。\n"
         "   - 「および酸素療法」など、画像にないフレーズを勝手に挿入しないでください。\n"
-        "   - 画像にない薬剤名、検査結果、処置内容は追加しないでください。\n\n"
+        "   - 画像にない薬剤名、検査結果、処置内容は追加しないでください。\n"
+        "   - **【重要】前の日付のカルテに「明日退院予定」「次回○○予定」などと書かれていても、"
+        "その翌日以降の日付のカルテ内容を推測・補完しないでください。"
+        "各日付の内容は画像に実際に書かれているテキストのみを記録してください。**\n"
+        "   - **【重要】ある日付のエントリ本文が「TEST」など非常に短い場合でも、"
+        "医療的に不完全と判断して補完・置換することを禁止します。短い内容はそのまま記録してください。**\n\n"
         "5. **出力フォーマット**:\n"
         "   - 以下の構造を維持したJSON形式のみを出力してください。\n"
         "[\n"
@@ -772,6 +778,160 @@ def _read_past_chart_with_vlm_merge(
         result = json.loads(resp.read())
 
     return result["choices"][0]["message"]["content"]
+
+
+def _extend_last_entry_with_vlm(
+    prev_cropped: np.ndarray | None,
+    cropped: np.ndarray,
+    last_entry: dict,
+    ocr_text: str,
+    *,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> str:
+    """最後のエントリが途中で切れている場合、続きのテキストのみを画像・OCR テキストから取得する。
+
+    臨床的な文脈バイアスを避けるため、末尾5行のみをモデルに提示する。
+    prev_cropped があればスクロール前の画面（前）、cropped がスクロール後の画面（後）。
+    """
+    content = last_entry["content"]
+    lines = content.split("\n")
+    tail_lines = lines[-5:] if len(lines) > 5 else lines
+    tail_display = ("（前略）\n" if len(lines) > 5 else "") + "\n".join(tail_lines)
+
+    has_prev = prev_cropped is not None
+    image_desc = (
+        "2枚の画像（前の画面・後の画面）が添付されています。"
+        if has_prev else
+        "画像（現在の画面）が添付されています。"
+    )
+
+    prompt = _TMPL_PAST_CHART_EXTEND.safe_substitute(
+        image_desc=image_desc,
+        date=last_entry["date"],
+        tail_display=tail_display,
+        ocr_text=ocr_text,
+    )
+
+    images = []
+    if has_prev:
+        images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(prev_cropped, debug_name="vlm_extend_prev")}})
+    images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(cropped, debug_name="vlm_extend_last")}})
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}, *images],
+            }
+        ],
+        "stream": False,
+        "max_tokens": 2048,
+    }
+
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read())
+
+    raw = result["choices"][0]["message"]["content"]
+    raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"```\s*$", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+    try:
+        parsed = json.loads(raw)
+        return parsed.get("continuation", "").strip()
+    except (json.JSONDecodeError, AttributeError):
+        return ""
+
+
+def _find_new_entries_with_vlm(
+    prev_cropped: np.ndarray | None,
+    cropped: np.ndarray,
+    known_dates: list[str],
+    ocr_text: str,
+    *,
+    last_entry: dict | None = None,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> list[dict]:
+    """既知の日付以外の新しいエントリを画像・OCR テキストから逐語的に抽出する。
+
+    臨床的な文脈を一切渡さず、日付リストのみを提示する。
+    これによりモデルが前エントリの内容から新エントリを補完するハルシネーションを防ぐ。
+    prev_cropped があればスクロール前の画面（前）、cropped がスクロール後の画面（後）。
+    last_entry を渡すとスクロール残存テキストの誤帰属を防ぐプロンプトが追加される。
+    """
+    known_dates_str = json.dumps(known_dates, ensure_ascii=False)
+    has_prev = prev_cropped is not None
+    image_desc = (
+        "2枚の画像（前の画面・後の画面）が添付されています。"
+        if has_prev else
+        "画像（現在の画面）が添付されています。"
+    )
+
+    # 最終取得済みエントリの末尾テキストを組み立てる
+    last_entry_section = ""
+    if last_entry is not None:
+        lines = last_entry["content"].split("\n")
+        tail_lines = lines[-10:] if len(lines) > 10 else lines
+        tail_display = ("（前略）\n" if len(lines) > 10 else "") + "\n".join(tail_lines)
+        last_entry_section = (
+            "### スクロール残存テキストの除外（重要）\n"
+            "画面上部には前のスクロール位置から継続して表示されているテキストが残存している場合があります。\n"
+            "以下の「取得済み最終エントリの末尾テキスト」と同一または連続する内容は、"
+            "新しいエントリの本文として抽出せず、新しいエントリの content には含めないでください。\n\n"
+            f"取得済み最終エントリの日付: {last_entry['date']}\n"
+            "末尾テキスト:\n"
+            "```\n"
+            f"{tail_display}\n"
+            "```\n"
+            "このテキストより前（上側）に属する内容はすでに取得済みです。"
+            "新しい日付のエントリとして重複抽出しないでください。\n\n"
+        )
+
+    prompt = _TMPL_PAST_CHART_NEW_ENTRIES.safe_substitute(
+        image_desc=image_desc,
+        known_dates=known_dates_str,
+        last_entry_section=last_entry_section,
+        ocr_text=ocr_text,
+    )
+
+    images = []
+    if has_prev:
+        images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(prev_cropped, debug_name="vlm_new_entries_prev")}})
+    images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(cropped, debug_name="vlm_new_entries")}})
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": prompt}, *images],
+            }
+        ],
+        "stream": False,
+        "max_tokens": 2048,
+    }
+
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read())
+
+    raw = result["choices"][0]["message"]["content"]
+    try:
+        return _parse_vlm_response(raw)
+    except ValueError:
+        return []
 
 
 def _parse_vlm_response(raw: str) -> list[dict]:
@@ -857,16 +1017,40 @@ def _scroll_past_chart_down(
     print(f"スクロール: {base_scroll} 単位 × {scroll_count} 回（上方向）")
 
 
+def _unload_omlx_model(model_id: str, base_url: str, api_key: str) -> None:
+    """指定モデルをomlxからアンロードする。未ロードの場合(HTTP 400)は無視する。"""
+    unload_url = f"{base_url}/v1/models/{model_id}/unload"
+    req = urllib.request.Request(
+        unload_url,
+        method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        data=b"{}",
+    )
+    try:
+        with urllib.request.urlopen(req):
+            print(f"モデルアンロード完了: {model_id}")
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            print(f"モデル未ロード(スキップ): {model_id}")
+        else:
+            raise
+    except urllib.error.URLError as e:
+        print(f"[WARN] モデルアンロード失敗（サーバ接続不可）: {e.reason}")
+
+
 def _build_runtime_config(
     *,
     omlx_model: Optional[str] = None,
+    chart_model: Optional[str] = None,
 ) -> dict[str, str]:
     """VLM ランタイム設定を構築する。"""
     model = omlx_model or _OMLX_DEFAULT_MODEL
     return {
         "url": _OMLX_CHAT_URL,
+        "base_url": "http://localhost:8000",
         "model": model,
         "api_key": _OMLX_API_KEY,
+        "chart_model": chart_model or _OMLX_CHART_MODEL,
     }
 
 
