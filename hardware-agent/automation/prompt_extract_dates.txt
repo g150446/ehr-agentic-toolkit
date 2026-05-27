@@ -1,0 +1,10 @@
+以下のテキストから入院日と退院日を抽出してください。
+年が省略されている場合は $current_year 年を補完してください。
+
+入力: "$user_input"
+
+### 出力フォーマット（JSONのみ）
+{
+  "admission_date": "YYYY年MM月DD日",
+  "discharge_date": "YYYY年MM月DD日"
+}

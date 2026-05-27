@@ -25,6 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
+from datetime import date as _date
 from pathlib import Path
 from string import Template
 from typing import Optional
@@ -65,6 +66,12 @@ _TMPL_PAST_CHART_NEW_ENTRIES = Template(
 _TMPL_PAST_CHART_SCROLL = Template(
     (_PROMPT_DIR / "prompt_past_chart_scroll.txt").read_text(encoding="utf-8")
 )
+_TMPL_EXTRACT_DATES = Template(
+    (_PROMPT_DIR / "prompt_extract_dates.txt").read_text(encoding="utf-8")
+)
+_TMPL_FIND_ADMISSION = Template(
+    (_PROMPT_DIR / "prompt_find_admission.txt").read_text(encoding="utf-8")
+)
 
 import os as _os
 _OCR_BACKEND = _os.getenv("OCR_BACKEND", "ndlocr")
@@ -80,6 +87,14 @@ def _save_vlm_log(name: str, prompt: str, response: str) -> None:
         encoding="utf-8",
     )
     print(f"  [debug] VLMログ保存: {path}")
+
+
+def _parse_jp_date(date_str: str) -> "_date":
+    """'YYYY年MM月DD日' → datetime.date。パース失敗時は datetime.date.min を返す。"""
+    m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_str)
+    if m:
+        return _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return _date.min
 
 
 def _extract_ocr_text(image: np.ndarray, *, log_name: str | None = None) -> str:
@@ -1108,6 +1123,126 @@ def _scroll_past_chart_down(
     print(f"スクロール: {base_scroll} 単位 × {scroll_count} 回（上方向）")
 
 
+def _scroll_past_chart_up(
+    *,
+    dividers: list[int],
+    screen_width: int,
+    screen_height: int,
+    scroll_count: int = 1,
+) -> None:
+    """過去カルテ領域の右下をクリックし、指定回数だけ過去方向にスクロールする。
+
+    _scroll_past_chart_down() と同構造だが scroll の符号を反転し、過去（古い日付）方向へ移動する。
+    """
+    client = _wait_for_ble_connected()
+
+    click_x = dividers[1] - 70
+    click_y = screen_height - 150
+
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
+    ok = client.move_mouse_to_position(click_x, click_y)
+    print(f"moveto ({click_x}, {click_y}) -> {'OK' if ok else 'NG'}")
+
+    ok = client.click()
+    print(f"click (past chart focus) -> {'OK' if ok else 'NG'}")
+    print(f"過去カルテ領域右下をクリック: ({click_x}, {click_y})")
+
+    base_scroll = 1
+    for i in range(scroll_count):
+        ok = client.scroll(base_scroll)
+        print(f"scroll:+{base_scroll} ({i + 1}/{scroll_count}) -> {'OK' if ok else 'NG'}")
+        if i < scroll_count - 1:
+            time.sleep(0.5)
+    print(f"スクロール: {base_scroll} 単位 × {scroll_count} 回（過去方向）")
+
+
+def _extract_dates_from_text(
+    user_input: str,
+    *,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> dict:
+    """会話テキストから入院日・退院日を VLM で抽出する。
+
+    {"admission_date": "YYYY年MM月DD日", "discharge_date": "YYYY年MM月DD日"} を返す。
+    """
+    prompt = _TMPL_EXTRACT_DATES.safe_substitute(
+        current_year=_date.today().year,
+        user_input=user_input,
+    )
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        "stream": False,
+        "max_tokens": 256,
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read())
+    raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("extract_dates", prompt, raw)
+    raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"```\s*$", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    return json.loads(raw)
+
+
+def _check_admission_reached(
+    cropped: np.ndarray,
+    ocr_text: str,
+    admission_date: str,
+    *,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> tuple[bool, str | None]:
+    """過去カルテ crop 画像を VLM に渡し、入院日前日以前が画面に現れたか判定する。
+
+    Returns:
+        (reached, oldest_visible_date): reached=True なら前日以前が見えている。
+    """
+    prompt = _TMPL_FIND_ADMISSION.safe_substitute(
+        admission_date=admission_date,
+        ocr_text=ocr_text,
+    )
+    image_url = _encode_image_data_url(cropped, debug_name="vlm_find_admission")
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_url}},
+        ]}],
+        "stream": False,
+        "max_tokens": 256,
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read())
+    raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("find_admission", prompt, raw)
+    raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"```\s*$", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    try:
+        parsed = json.loads(raw)
+        reached = bool(parsed.get("reached", False))
+        oldest = parsed.get("oldest_visible_date")
+        if not isinstance(oldest, str):
+            oldest = None
+        return reached, oldest
+    except (json.JSONDecodeError, AttributeError):
+        return False, None
+
+
 def _unload_omlx_model(model_id: str, base_url: str, api_key: str) -> None:
     """指定モデルをomlxからアンロードする。未ロードの場合(HTTP 400)は無視する。"""
     unload_url = f"{base_url}/v1/models/{model_id}/unload"
@@ -1121,8 +1256,8 @@ def _unload_omlx_model(model_id: str, base_url: str, api_key: str) -> None:
         with urllib.request.urlopen(req):
             print(f"モデルアンロード完了: {model_id}")
     except urllib.error.HTTPError as e:
-        if e.code == 400:
-            print(f"モデル未ロード(スキップ): {model_id}")
+        if e.code in (400, 404):
+            print(f"モデルアンロードスキップ(HTTP {e.code}): {model_id}")
         else:
             raise
     except urllib.error.URLError as e:

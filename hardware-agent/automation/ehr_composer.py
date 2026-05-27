@@ -27,7 +27,7 @@ import re
 import sys
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, date as _date
 from pathlib import Path
 from typing import Optional
 
@@ -50,11 +50,13 @@ from automation.ehr_reader import (
     _find_word_return_mark_bottom,
     _find_word_return_mark_x,
     _is_frame_unchanged,
+    _parse_jp_date,
     _parse_vlm_response,
     _process_scroll_with_vlm,
     _read_past_chart_with_vlm,
     _save_debug_frame,
     _scroll_past_chart_down,
+    _scroll_past_chart_up,
     _wait_for_ble_connected,
     _build_runtime_config,
     _unload_omlx_model,
@@ -588,7 +590,166 @@ def _type_line_and_paste(
     return current_mode
 
 
-def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
+def _parse_date_input(text: str) -> tuple[str, str]:
+    """会話形式の日付テキストから入院日・退院日を抽出する。
+
+    対応フォーマット:
+    - 4/7から4/10  (スラッシュ区切り)
+    - 4月7日から4月10日
+    - 2026/4/7-2026/4/10  (年付きスラッシュ)
+    - 2026年4月7日から2026年4月10日
+
+    Returns:
+        (admission_date, discharge_date) のタプル（例: ('2026年04月07日', '2026年04月10日')）
+
+    Raises:
+        ValueError: 2つの日付を検出できなかった場合
+    """
+    current_year = _date.today().year
+    # YYYY年?M月D日 or YYYY/?M/?D or M月D日 or M/D
+    pattern = r"(?:(\d{4})[年/\-])?(\d{1,2})[月/](\d{1,2})(?:日)?"
+    matches = re.findall(pattern, text)
+    if len(matches) < 2:
+        raise ValueError(f"2つの日付を認識できませんでした: {text!r}")
+    dates = []
+    for year_str, month_str, day_str in matches[:2]:
+        year = int(year_str) if year_str else current_year
+        month = int(month_str)
+        day = int(day_str)
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            raise ValueError(f"無効な日付: {year}/{month}/{day}")
+        dates.append(f"{year}年{month:02d}月{day:02d}日")
+    return dates[0], dates[1]
+
+
+def _filter_entries_by_date(
+    entries: list[dict],
+    admission_date: str | None,
+    discharge_date: str | None,
+) -> list[dict]:
+    """日付範囲外のエントリを除外する。"""
+    result = []
+    for e in entries:
+        if not re.match(r"\d{4}年\d{1,2}月\d{1,2}日", e.get("date", "")):
+            continue
+        d = _parse_jp_date(e["date"])
+        if admission_date and d < _parse_jp_date(admission_date):
+            continue
+        if discharge_date and d > _parse_jp_date(discharge_date):
+            continue
+        result.append(e)
+    return result
+
+
+def _ocr_check_admission(ocr_text: str, admission_date: str) -> tuple[bool, str | None]:
+    """OCR+regexで入院日の前日以前に到達したか判定する（VLM不要、≈1.5s/回）。"""
+    dates_found = re.findall(r'(\d{4})年(\d{1,2})月(\d{1,2})日', ocr_text)
+    parsed = []
+    for y, m, d in dates_found:
+        try:
+            parsed.append(_date(int(y), int(m), int(d)))
+        except ValueError:
+            pass
+    if not parsed:
+        return False, None
+    oldest = min(parsed)
+    oldest_str = f"{oldest.year}年{oldest.month:02d}月{oldest.day:02d}日"
+    return oldest < _parse_jp_date(admission_date), oldest_str
+
+
+def _scroll_to_admission_date(
+    admission_date: str,
+    config,
+    *,
+    max_iterations: int = 100,
+) -> bool:
+    """入院日の前日以前が画面に現れるまで過去方向にスクロールする。
+
+    到達したら True、スクロール限界（画面変化なし）に達したら False を返す。
+    入院日当日に複数エントリがある場合も全て収集できるよう、前日まで確実に遡る。
+    """
+    frame = _capture_screen_hdmi(
+        device_index=config.capture_device_index,
+        width=config.capture_width,
+        height=config.capture_height,
+    )
+    if frame is None:
+        print("  [WARNING] 初期キャプチャ失敗")
+        return False
+
+    dividers = _detect_all_dividers(frame)
+    if dividers is None:
+        print("  [WARNING] 区切り線未検出、過去スクロールをスキップ")
+        return False
+
+    # 初期位置の確認（OCR+regex）
+    try:
+        cropped = _extract_past_chart_region(frame, dividers)
+        ocr_text = _extract_ocr_text(cropped, log_name="find_admission_0")
+        reached, oldest = _ocr_check_admission(ocr_text, admission_date)
+        print(f"  [過去スクロール 初期] 最古表示日: {oldest}, 前日以前到達: {reached}")
+        if reached:
+            return True
+    except RuntimeError as exc:
+        print(f"  [WARNING] 初期チェック失敗: {exc}")
+        cropped = None
+
+    # prev_crop: フル解像度フレームではなく過去カルテcrop同士を比較する。
+    # フル解像度比較では1行分の変化（≈0.6%）が閾値0.5%を下回り誤判定する場合があるため。
+    prev_crop = cropped.copy() if cropped is not None else None
+
+    for i in range(max_iterations):
+        _scroll_past_chart_up(
+            dividers=dividers,
+            screen_width=config.capture_width,
+            screen_height=config.capture_height,
+            scroll_count=5,
+        )
+        time.sleep(1.0)  # スクロールアニメーション完了待ち
+
+        frame = _capture_screen_hdmi(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if frame is None:
+            print("  [WARNING] キャプチャ失敗")
+            return False
+
+        _save_debug_frame_local(frame, f"backward_scroll_{i + 1}")
+
+        new_dividers = _detect_all_dividers(frame)
+        if new_dividers:
+            dividers = new_dividers
+
+        try:
+            cropped = _extract_past_chart_region(frame, dividers)
+        except RuntimeError as exc:
+            print(f"  [WARNING] クロップ失敗: {exc}")
+            continue
+
+        if prev_crop is not None and _is_frame_unchanged(prev_crop, cropped):
+            print("  [過去スクロール] 画面変化なし、スクロール限界に到達")
+            return False
+        prev_crop = cropped.copy()
+
+        ocr_text = _extract_ocr_text(cropped, log_name=f"find_admission_{i + 1}")
+        reached, oldest = _ocr_check_admission(ocr_text, admission_date)
+        print(f"  [過去スクロール {i + 1}] 最古表示日: {oldest}, 前日以前到達: {reached}")
+        if reached:
+            return True
+
+    print(f"  [警告] {max_iterations}回スクロールしても入院日前日以前に到達しませんでした")
+    return False
+
+
+def _read_past_chart_scroll(
+    config,
+    runtime: dict[str, str],
+    *,
+    admission_date: str | None = None,
+    discharge_date: str | None = None,
+) -> list[dict]:
     """過去カルテ領域をスクロールしながら読み取る。"""
     print("HDMIデバイスからキャプチャ中...")
     frame = _capture_screen_hdmi(
@@ -607,6 +768,31 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
         raise RuntimeError("患者カルテ画面の区切り線を検出できませんでした")
 
     print(f"区切り線検出: x={dividers}")
+
+    # 過去方向スクロールフェーズ（入院日が指定されている場合）
+    if admission_date:
+        print(f"\n[フェーズ1] 入院日 {admission_date} の前日以前まで過去方向にスクロール中...")
+        reached = _scroll_to_admission_date(admission_date, config)
+        if reached:
+            print("  入院日前日以前に到達しました")
+        else:
+            print("  [警告] スクロール限界に到達しました（前日以前未到達）")
+        print("\n[フェーズ2] エントリ収集スクロール開始...")
+        # 再キャプチャして前進スクロールの起点を確立
+        print("HDMIデバイスから再キャプチャ中...")
+        frame = _capture_screen_hdmi(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if frame is None:
+            raise RuntimeError("過去方向スクロール後の再キャプチャに失敗しました")
+        _save_debug_frame_local(frame, "full_screen_after_backward")
+        print("画面を再解析中...")
+        dividers = _detect_all_dividers(frame, debug=True)
+        if dividers is None:
+            raise RuntimeError("過去方向スクロール後の区切り線を検出できませんでした")
+        print(f"区切り線検出: x={dividers}")
 
     print("\n過去カルテ領域を切り出し中...")
     try:
@@ -635,6 +821,9 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
         structured = _parse_vlm_response(raw_response)
     except ValueError as exc:
         raise RuntimeError(str(exc))
+
+    if admission_date or discharge_date:
+        structured = _filter_entries_by_date(structured, admission_date, discharge_date)
 
     print("--- 構造化出力 (JSON) ---")
     print(json.dumps(structured, ensure_ascii=False, indent=2))
@@ -720,16 +909,32 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
         if continuation and structured:
             structured[-1]["content"] = structured[-1]["content"].rstrip() + "\n" + continuation
         known_dates_set = {e["date"] for e in structured}
+        discharge_dt = _parse_jp_date(discharge_date) if discharge_date else None
+        admission_dt = _parse_jp_date(admission_date) if admission_date else None
         new_entries = [
             e for e in raw_new_entries
             if e["date"] not in known_dates_set
             and re.match(r"\d{4}年\d{1,2}月\d{1,2}日", e["date"])
+            and (admission_dt is None or _parse_jp_date(e["date"]) >= admission_dt)
+            and (discharge_dt is None or _parse_jp_date(e["date"]) <= discharge_dt)
         ]
         if len(raw_new_entries) != len(new_entries):
             skipped = [e["date"] for e in raw_new_entries if e not in new_entries]
-            print(f"  スキップ(重複/無効日付): {skipped}")
+            print(f"  スキップ(重複/無効日付/範囲外): {skipped}")
         print(f"  新規エントリ: {[e['date'] for e in new_entries]}")
         structured.extend(new_entries)
+
+        # 退院日超過チェック（有効な日付が全て退院日より新しければ収集完了）
+        if discharge_dt and raw_new_entries:
+            valid_raw_dates = [
+                _parse_jp_date(e["date"]) for e in raw_new_entries
+                if re.match(r"\d{4}年\d{1,2}月\d{1,2}日", e["date"])
+            ]
+            if valid_raw_dates and all(d > discharge_dt for d in valid_raw_dates):
+                in_range = any(_parse_jp_date(e["date"]) <= discharge_dt for e in structured)
+                if in_range:
+                    print(f"  退院日 {discharge_date} 超過、収集完了")
+                    break
 
         print("--- 構造化出力 (JSON) ---")
         print(json.dumps(structured, ensure_ascii=False, indent=2))
@@ -746,14 +951,16 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
 
-    # --summary / --summary-no-scroll / --continue チェック
+    # --summary / --summary-no-scroll / --continue / --test-scroll チェック
     do_summary = "--summary" in args
     do_summary_no_scroll = "--summary-no-scroll" in args
     do_continue = "--continue" in args
+    do_test_scroll = "--test-scroll" in args
 
-    if not do_summary and not do_summary_no_scroll and not do_continue:
-        print("[ERROR] --summary, --summary-no-scroll, または --continue オプションが必要です", file=sys.stderr)
+    if not do_summary and not do_summary_no_scroll and not do_continue and not do_test_scroll:
+        print("[ERROR] --summary, --summary-no-scroll, --continue, または --test-scroll オプションが必要です", file=sys.stderr)
         print("使用例: python -m automation.ehr_composer --summary", file=sys.stderr)
+        print("       python -m automation.ehr_composer --test-scroll", file=sys.stderr)
         print("       python -m automation.ehr_composer --summary-no-scroll", file=sys.stderr)
         print("       python -m automation.ehr_composer --continue", file=sys.stderr)
         print("       python -m automation.ehr_composer --summary --omlx gemma-4-26b-a4b-it-4bit", file=sys.stderr)
@@ -835,11 +1042,29 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # Phase 1: 過去カルテ読み取り
             print("\n========== Phase 1: 過去カルテ読み取り ==========")
+
+            # 入院日・退院日の入力
+            admission_date: str | None = None
+            discharge_date: str | None = None
+            while True:
+                print("入院日と退院日を入力してください（例: 4/7から4/10、4月7日から4月10日）: ", end="", flush=True)
+                date_input = input().strip()
+                try:
+                    admission_date, discharge_date = _parse_date_input(date_input)
+                    print(f"  入院日: {admission_date}  退院日: {discharge_date}")
+                    break
+                except ValueError as exc:
+                    print(f"  [ERROR] {exc}。再入力してください。")
+
             _unload_omlx_model(_OMLX_DEFAULT_MODEL, runtime["base_url"], runtime["api_key"])
             if do_movie:
                 _recorder.start_phase(_MOVIE_DIR / f"composer_scroll_{movie_ts}.mp4", frame_skip=3)
             try:
-                chart_data = _read_past_chart_scroll(config, runtime)
+                chart_data = _read_past_chart_scroll(
+                    config, runtime,
+                    admission_date=admission_date,
+                    discharge_date=discharge_date,
+                )
             except RuntimeError as exc:
                 print(f"[ERROR] {exc}", file=sys.stderr)
                 return 1
@@ -851,6 +1076,12 @@ def main(argv: list[str] | None = None) -> int:
             if not chart_data:
                 print("[ERROR] 過去カルテからデータを読み取れませんでした", file=sys.stderr)
                 return 1
+
+            if do_test_scroll:
+                print("\n========== テストスクロール結果 ==========")
+                print(json.dumps(chart_data, ensure_ascii=False, indent=2))
+                print(f"\n合計 {len(chart_data)} 件のエントリを収集しました。")
+                return 0
 
             # Phase 2: サマリ生成（画面変化なし → 録画しない）
             print("\n========== Phase 2: 退院時サマリ生成 ==========")
