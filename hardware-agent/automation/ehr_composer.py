@@ -51,8 +51,7 @@ from automation.ehr_reader import (
     _find_word_return_mark_x,
     _is_frame_unchanged,
     _parse_vlm_response,
-    _extend_last_entry_with_vlm,
-    _find_new_entries_with_vlm,
+    _process_scroll_with_vlm,
     _read_past_chart_with_vlm,
     _save_debug_frame,
     _scroll_past_chart_down,
@@ -649,6 +648,7 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
     # スクロール読み取り
     prev_frame = frame.copy()
     prev_past_chart = None
+    ocr_history = [ocr_text]
     iteration = 0
     max_iterations = 20
 
@@ -703,35 +703,22 @@ def _read_past_chart_scroll(config, runtime: dict[str, str]) -> list[dict]:
         ocr_text = _extract_ocr_text(past_chart, log_name=f"past_chart_scroll_{iteration}")
         print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
 
-        print(f"\n[セット {iteration}] VLM で最後エントリ補完中...")
-        if structured:
-            continuation = _extend_last_entry_with_vlm(
-                prev_past_chart,
-                past_chart,
-                structured[-1],
-                ocr_text,
-                model=runtime["chart_model"],
-                url=runtime["url"],
-                api_key=runtime["api_key"],
-                timeout=MLX_VLM_IME_TIMEOUT,
-            )
-            print(f"  続きテキスト: {repr(continuation[:80]) if continuation else '(なし)'}")
-            if continuation:
-                structured[-1]["content"] = structured[-1]["content"].rstrip() + "\n" + continuation
-
-        print(f"[セット {iteration}] VLM で新規エントリ抽出中...")
-        known_dates = [e["date"] for e in structured]
-        raw_new_entries = _find_new_entries_with_vlm(
+        print(f"\n[セット {iteration}] VLM でスクロール処理中...")
+        continuation, raw_new_entries = _process_scroll_with_vlm(
             prev_past_chart,
             past_chart,
-            known_dates,
+            structured,
+            ocr_history,
             ocr_text,
-            last_entry=structured[-1] if structured else None,
             model=runtime["chart_model"],
             url=runtime["url"],
             api_key=runtime["api_key"],
             timeout=MLX_VLM_IME_TIMEOUT,
         )
+        ocr_history.append(ocr_text)
+        print(f"  続きテキスト: {repr(continuation[:80]) if continuation else '(なし)'}")
+        if continuation and structured:
+            structured[-1]["content"] = structured[-1]["content"].rstrip() + "\n" + continuation
         known_dates_set = {e["date"] for e in structured}
         new_entries = [
             e for e in raw_new_entries

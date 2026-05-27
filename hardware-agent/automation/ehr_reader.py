@@ -62,9 +62,24 @@ _TMPL_PAST_CHART_EXTEND = Template(
 _TMPL_PAST_CHART_NEW_ENTRIES = Template(
     (_PROMPT_DIR / "prompt_past_chart_new_entries.txt").read_text(encoding="utf-8")
 )
+_TMPL_PAST_CHART_SCROLL = Template(
+    (_PROMPT_DIR / "prompt_past_chart_scroll.txt").read_text(encoding="utf-8")
+)
 
 import os as _os
 _OCR_BACKEND = _os.getenv("OCR_BACKEND", "ndlocr")
+
+
+def _save_vlm_log(name: str, prompt: str, response: str) -> None:
+    """VLM へのプロンプトとレスポンスをログファイルに保存する。"""
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = _LOGS_DIR / f"vlm_{name}_{ts}.txt"
+    path.write_text(
+        f"=== PROMPT ===\n{prompt}\n\n=== RESPONSE ===\n{response}\n",
+        encoding="utf-8",
+    )
+    print(f"  [debug] VLMログ保存: {path}")
 
 
 def _extract_ocr_text(image: np.ndarray, *, log_name: str | None = None) -> str:
@@ -679,7 +694,9 @@ def _read_past_chart_with_vlm(
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         result = json.loads(resp.read())
 
-    return result["choices"][0]["message"]["content"]
+    raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("past_chart_read", prompt, raw)
+    return raw
 
 
 def _read_past_chart_with_vlm_merge(
@@ -777,7 +794,9 @@ def _read_past_chart_with_vlm_merge(
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         result = json.loads(resp.read())
 
-    return result["choices"][0]["message"]["content"]
+    raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("past_chart_merge", prompt, raw)
+    return raw
 
 
 def _extend_last_entry_with_vlm(
@@ -839,6 +858,7 @@ def _extend_last_entry_with_vlm(
         result = json.loads(resp.read())
 
     raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("extend_last_entry", prompt, raw)
     raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
     raw = re.sub(r"```\s*$", "", raw, flags=re.DOTALL).strip()
     raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -928,10 +948,81 @@ def _find_new_entries_with_vlm(
         result = json.loads(resp.read())
 
     raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("find_new_entries", prompt, raw)
     try:
         return _parse_vlm_response(raw)
     except ValueError:
         return []
+
+
+def _process_scroll_with_vlm(
+    prev_cropped: np.ndarray | None,
+    cropped: np.ndarray,
+    structured: list[dict],
+    prev_ocr_texts: list[str],
+    ocr_text: str,
+    *,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> tuple[str, list[dict]]:
+    """スクロール後の画像から continuation と new_entries を1回の VLM 呼び出しで取得する。
+
+    structured（初回から蓄積した全エントリ）をコンテキストとして渡すことで、
+    VLM が取得済み内容を正確に把握し、重複抽出を防ぐ。
+    prev_ocr_texts は過去スクロール分の OCR テキスト履歴、ocr_text は今回の画像の OCR テキスト。
+    """
+    last_entry = structured[-1] if structured else {"date": "", "content": ""}
+    accumulated_chart = json.dumps(structured, ensure_ascii=False, indent=2)
+    has_prev = prev_cropped is not None
+    image_desc = (
+        "2枚の画像（前の画面・後の画面）が添付されています。"
+        if has_prev else
+        "画像（現在の画面）が添付されています。"
+    )
+    prev_ocr_text = "\n\n---\n\n".join(prev_ocr_texts) if prev_ocr_texts else "(なし)"
+
+    prompt = _TMPL_PAST_CHART_SCROLL.safe_substitute(
+        image_desc=image_desc,
+        last_date=last_entry["date"],
+        accumulated_chart=accumulated_chart,
+        prev_ocr_text=prev_ocr_text,
+        ocr_text=ocr_text,
+    )
+
+    images = []
+    if has_prev:
+        images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(prev_cropped, debug_name="vlm_scroll_prev")}})
+    images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(cropped, debug_name="vlm_scroll")}})
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, *images]}],
+        "stream": False,
+        "max_tokens": 4096,
+    }
+
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read())
+
+    raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("scroll", prompt, raw)
+    raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"```\s*$", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    try:
+        parsed = json.loads(raw)
+        continuation = parsed.get("continuation", "").strip()
+        new_entries = parsed.get("new_entries", [])
+        if not isinstance(new_entries, list):
+            new_entries = []
+        return continuation, new_entries
+    except (json.JSONDecodeError, AttributeError):
+        return "", []
 
 
 def _parse_vlm_response(raw: str) -> list[dict]:
