@@ -54,17 +54,17 @@ _CAPTURES_DIR = Path(__file__).resolve().parent.parent / "captures"
 _LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 _PROMPT_DIR = Path(__file__).resolve().parent
 
-_TMPL_PAST_CHART_READ = Template(
-    (_PROMPT_DIR / "prompt_past_chart_read.txt").read_text(encoding="utf-8")
-)
-_TMPL_PAST_CHART_EXTEND = Template(
-    (_PROMPT_DIR / "prompt_past_chart_extend.txt").read_text(encoding="utf-8")
-)
 _TMPL_PAST_CHART_NEW_ENTRIES = Template(
     (_PROMPT_DIR / "prompt_past_chart_new_entries.txt").read_text(encoding="utf-8")
 )
 _TMPL_PAST_CHART_SCROLL = Template(
     (_PROMPT_DIR / "prompt_past_chart_scroll.txt").read_text(encoding="utf-8")
+)
+_TMPL_PAST_CHART_MARKDOWN = Template(
+    (_PROMPT_DIR / "prompt_past_chart_markdown.txt").read_text(encoding="utf-8")
+)
+_TMPL_PAST_CHART_FROM_MARKDOWN = Template(
+    (_PROMPT_DIR / "prompt_past_chart_from_markdown.txt").read_text(encoding="utf-8")
 )
 _TMPL_EXTRACT_DATES = Template(
     (_PROMPT_DIR / "prompt_extract_dates.txt").read_text(encoding="utf-8")
@@ -300,11 +300,11 @@ def _detect_edit_button_bottom(
     *,
     threshold: float = 0.7,
 ) -> int | None:
-    """過去カルテパネル内の edit_button.jpg（ペンアイコン）を検出し、下側一致位置の下端 y 座標を返す。"""
+    """過去カルテパネル内の printer_button.png を検出し、下側一致位置の下端 y 座標を返す。"""
     template_path = (
         Path(__file__).resolve().parent.parent
         / "match_templates"
-        / "edit_button.jpg"
+        / "printer_button.png"
     )
     if not template_path.exists():
         print(f"[WARNING] テンプレート画像が見つかりません: {template_path}")
@@ -334,7 +334,7 @@ def _detect_edit_button_bottom(
     best_x, best_y = max(points, key=lambda p: p[1])
     bottom_y = best_y + h
 
-    print(f"  edit_button 検出: ({best_x + x_start}, {best_y})〜({best_x + x_start + w}, {bottom_y}) (score={result[best_y, best_x]:.3f})")
+    print(f"  printer_button 検出: ({best_x + x_start}, {best_y})〜({best_x + x_start + w}, {bottom_y}) (score={result[best_y, best_x]:.3f})")
     return bottom_y
 
 
@@ -665,55 +665,6 @@ def _extract_past_chart_region(
     return cropped
 
 
-def _read_past_chart_with_vlm(
-    cropped: np.ndarray,
-    ocr_text: str,
-    *,
-    model: str,
-    url: str,
-    api_key: str,
-    timeout: float,
-) -> str:
-    """画像と OCR テキストを VLM に渡して過去カルテを構造化する。
-
-    max_tokens を 4096 に設定し、長いカルテ内容でも途中で切れないようにする。
-    """
-    data_url = _encode_image_data_url(cropped, debug_name="vlm_past_chart")
-
-    prompt = _TMPL_PAST_CHART_READ.safe_substitute(ocr_text=ocr_text)
-
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url}},
-                ],
-            }
-        ],
-        "stream": False,
-        "max_tokens": 4096,
-    }
-
-    headers = {"Content-Type": "application/json"}
-    headers["Authorization"] = f"Bearer {api_key}"
-
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers=headers,
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
-
-    raw = result["choices"][0]["message"]["content"]
-    _save_vlm_log("past_chart_read", prompt, raw)
-    return raw
-
-
 def _read_past_chart_with_vlm_merge(
     cropped: np.ndarray,
     current_json: list[dict],
@@ -812,77 +763,6 @@ def _read_past_chart_with_vlm_merge(
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("past_chart_merge", prompt, raw)
     return raw
-
-
-def _extend_last_entry_with_vlm(
-    prev_cropped: np.ndarray | None,
-    cropped: np.ndarray,
-    last_entry: dict,
-    ocr_text: str,
-    *,
-    model: str,
-    url: str,
-    api_key: str,
-    timeout: float,
-) -> str:
-    """最後のエントリが途中で切れている場合、続きのテキストのみを画像・OCR テキストから取得する。
-
-    臨床的な文脈バイアスを避けるため、末尾5行のみをモデルに提示する。
-    prev_cropped があればスクロール前の画面（前）、cropped がスクロール後の画面（後）。
-    """
-    content = last_entry["content"]
-    lines = content.split("\n")
-    tail_lines = lines[-5:] if len(lines) > 5 else lines
-    tail_display = ("（前略）\n" if len(lines) > 5 else "") + "\n".join(tail_lines)
-
-    has_prev = prev_cropped is not None
-    image_desc = (
-        "2枚の画像（前の画面・後の画面）が添付されています。"
-        if has_prev else
-        "画像（現在の画面）が添付されています。"
-    )
-
-    prompt = _TMPL_PAST_CHART_EXTEND.safe_substitute(
-        image_desc=image_desc,
-        date=last_entry["date"],
-        tail_display=tail_display,
-        ocr_text=ocr_text,
-    )
-
-    images = []
-    if has_prev:
-        images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(prev_cropped, debug_name="vlm_extend_prev")}})
-    images.append({"type": "image_url", "image_url": {"url": _encode_image_data_url(cropped, debug_name="vlm_extend_last")}})
-
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}, *images],
-            }
-        ],
-        "stream": False,
-        "max_tokens": 2048,
-    }
-
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
-
-    raw = result["choices"][0]["message"]["content"]
-    _save_vlm_log("extend_last_entry", prompt, raw)
-    raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
-    raw = re.sub(r"```\s*$", "", raw, flags=re.DOTALL).strip()
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-
-    try:
-        parsed = json.loads(raw)
-        return parsed.get("continuation", "").strip()
-    except (json.JSONDecodeError, AttributeError):
-        return ""
 
 
 def _find_new_entries_with_vlm(
@@ -988,7 +868,7 @@ def _process_scroll_with_vlm(
     VLM が取得済み内容を正確に把握し、重複抽出を防ぐ。
     prev_ocr_texts は過去スクロール分の OCR テキスト履歴、ocr_text は今回の画像の OCR テキスト。
     """
-    last_entry = structured[-1] if structured else {"date": "", "content": ""}
+    last_entry = structured[-1] if structured else {"date": "", "content": "", "record_type": ""}
     accumulated_chart = json.dumps(structured, ensure_ascii=False, indent=2)
     has_prev = prev_cropped is not None
     image_desc = (
@@ -1001,6 +881,7 @@ def _process_scroll_with_vlm(
     prompt = _TMPL_PAST_CHART_SCROLL.safe_substitute(
         image_desc=image_desc,
         last_date=last_entry["date"],
+        last_record_type=last_entry.get("record_type", ""),
         accumulated_chart=accumulated_chart,
         prev_ocr_text=prev_ocr_text,
         ocr_text=ocr_text,
@@ -1060,6 +941,357 @@ def _parse_vlm_response(raw: str) -> list[dict]:
     if not isinstance(result, list):
         raise ValueError(f"VLM 応答が配列ではありません: {result!r}")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Markdown-based past chart reader (VLM → markdown → rule-based parser)
+# ---------------------------------------------------------------------------
+
+_MD_HEADER_RE = re.compile(
+    r"(\d{4}年\d{1,2}月\d{1,2}日)[^\n]*(診療記録|看護記録|チーム記録)"
+)
+_MD_NUMBERED_EXCLUDE_RE = re.compile(r"^\d+\s*[生血尿免微看臨]")
+_MD_TABLE_SKIP_RE = re.compile(r"^\s*\|?\s*[-:]+[-| :]*$")  # |---|--- 区切り行
+
+
+def _read_past_chart_as_markdown(
+    cropped: np.ndarray,
+    *,
+    ocr_text: str | None = None,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> str:
+    """VLM に crop 画像の表構造をマークダウンで出力させる。
+
+    ocr_text を渡すと OCR を再実行しない（呼び出し元で事前計算済みの場合）。
+    """
+    if ocr_text is None:
+        ocr_text = _extract_ocr_text(cropped)
+    data_url = _encode_image_data_url(cropped, debug_name="vlm_past_chart_md")
+    prompt = _TMPL_PAST_CHART_MARKDOWN.safe_substitute(ocr_text=ocr_text)
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+        "stream": False,
+        "max_tokens": 4096,
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"VLMサーバーへの接続に失敗しました: {exc}") from exc
+    raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("past_chart_markdown", prompt, raw)
+    return raw
+
+
+def _parse_markdown_chart_entries(md: str) -> tuple[str, list[dict]]:
+    """VLM が出力したマークダウンから (continuation, new_entries) を返す。
+
+    continuation: 最初のヘッダー前に出現したコンテンツ（前スクロールの末尾続き）
+    new_entries:  各ヘッダーに対応する診療記録エントリ（診療記録のみ）
+    """
+    # <think> タグを除去
+    md = re.sub(r"<think>.*?</think>", "", md, flags=re.DOTALL).strip()
+
+    continuation_parts: list[str] = []
+    entries: list[dict] = []
+    current: dict | None = None
+    first_header_found = False
+
+    for raw_line in md.splitlines():
+        line = raw_line.strip()
+
+        # ## ヘッダー行チェック
+        if line.startswith("#"):
+            m = _MD_HEADER_RE.search(line)
+            if m:
+                if current is not None:
+                    entries.append(current)
+                current = {
+                    "date": m.group(1),
+                    "record_type": m.group(2),
+                    "parts": [],
+                }
+                first_header_found = True
+                continue
+
+        # テーブル区切り行（|---|---）をスキップ
+        if _MD_TABLE_SKIP_RE.match(line):
+            continue
+
+        # テーブルデータ行: | label | content |
+        if "|" in line:
+            cells = [c.strip() for c in line.split("|") if c.strip()]
+            if not cells:
+                continue
+            # ヘッダー行（ラベル/内容）をスキップ
+            if cells[0] in ("ラベル", "label", "Label"):
+                continue
+            label = cells[0]
+            content = " ".join(cells[1:]) if len(cells) > 1 else ""
+            # 番号付き除外カテゴリ行をスキップ
+            if _MD_NUMBERED_EXCLUDE_RE.match(label):
+                continue
+            if content:
+                if not first_header_found:
+                    continuation_parts.append(content)
+                elif current is not None:
+                    current["parts"].append(content)
+            continue
+
+        # 通常テキスト行（非テーブル・非ヘッダー）
+        if line and not line.startswith("#"):
+            if not first_header_found:
+                continuation_parts.append(line)
+            elif current is not None:
+                current["parts"].append(line)
+
+    if current is not None:
+        entries.append(current)
+
+    new_entries = [
+        {
+            "date": e["date"],
+            "record_type": e["record_type"],
+            "content": "\n".join(e["parts"]),
+        }
+        for e in entries
+        if e["record_type"] == "診療記録" and e["parts"]
+    ]
+    return "\n".join(continuation_parts), new_entries
+
+
+_TIME_IN_ZUMI_RE = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?")
+
+
+def _remove_times_from_zumi_lines(md: str) -> str:
+    """[済] を含む行から時刻パターン (HH:MM, HH:MM:SS) を削除する。"""
+    lines = md.splitlines()
+    result = []
+    for line in lines:
+        if "[済]" in line:
+            line = _TIME_IN_ZUMI_RE.sub("", line)
+        result.append(line)
+    return "\n".join(result)
+
+
+def _build_json_from_markdown(
+    prev_markdown: str,
+    markdown: str,
+    accumulated_chart: list[dict],
+    last_date: str,
+    last_record_type: str,
+    *,
+    model: str,
+    url: str,
+    api_key: str,
+    timeout: float,
+) -> tuple[str, list[dict]]:
+    """マークダウン2枚から continuation と new_entries を VLM で生成する。"""
+    # [済] 行に含まれる時刻を削除して VLM の誤認識を防ぐ
+    prev_markdown = _remove_times_from_zumi_lines(prev_markdown) if prev_markdown else prev_markdown
+    markdown = _remove_times_from_zumi_lines(markdown)
+
+    accumulated_chart_str = json.dumps(accumulated_chart, ensure_ascii=False, indent=2)
+    prompt = _TMPL_PAST_CHART_FROM_MARKDOWN.safe_substitute(
+        prev_markdown=prev_markdown or "(なし)",
+        markdown=markdown,
+        accumulated_chart=accumulated_chart_str,
+        last_date=last_date,
+        last_record_type=last_record_type,
+    )
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "max_tokens": 4096,
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read())
+
+    raw = result["choices"][0]["message"]["content"]
+    _save_vlm_log("past_chart_from_markdown", prompt, raw)
+
+    raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"```\s*$", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    try:
+        parsed = json.loads(raw)
+        continuation = parsed.get("continuation", "").strip()
+        new_entries = parsed.get("new_entries", [])
+        if not isinstance(new_entries, list):
+            new_entries = []
+        return continuation, new_entries
+    except (json.JSONDecodeError, AttributeError):
+        return "", []
+
+
+# ---------------------------------------------------------------------------
+# surya-ocr based past chart parser
+# ---------------------------------------------------------------------------
+
+_SURYA_HEADER_RE = re.compile(
+    r"(\d{4}年\d{1,2}月\d{1,2}日)\s+\d{2}:\d{2}\s+\S+\s+(診療記録|看護記録|チーム記録)"
+)
+# Row labels embedded at the start of content blocks (longest first to avoid partial match)
+_SURYA_ROW_LABEL_PREFIXES = ("自由", "○", "主", "S", "O", "A", "P")
+# First character of numbered-row category → decide include/exclude
+_SURYA_NUMBERED_INCLUDE_STARTS = frozenset("内注")   # 内服, 注そ
+_SURYA_NUMBERED_EXCLUDE_STARTS = frozenset("生血尿免微看臨")
+_SURYA_NUMBERED_ROW_RE = re.compile(r"^(\d+)\s*([^\d\s])(.*)", re.DOTALL)
+_SURYA_NARROW_X_MAX = 55  # x_max 以下のブロックは縦書きラベルのみ → スキップ
+
+_surya_predictor = None  # lazy singleton
+
+
+def _get_surya_predictor():
+    global _surya_predictor
+    if _surya_predictor is None:
+        from surya.recognition import RecognitionPredictor
+        print("surya RecognitionPredictor をロード中...")
+        _surya_predictor = RecognitionPredictor()
+    return _surya_predictor
+
+
+def _html_to_text(html: str) -> str:
+    return re.sub(r"<[^>]+>", "", html).strip()
+
+
+def _np_to_pil(arr: np.ndarray):
+    from PIL import Image as _PILImage
+    rgb = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+    return _PILImage.fromarray(rgb)
+
+
+def _parse_surya_blocks_to_entries(blocks) -> tuple[str, list[dict]]:
+    """surya OCR ブロックリストから (continuation, new_entries) を返す。
+
+    continuation: 最初のヘッダー行より上にあるテキスト（前スクロールの末尾続き）
+    new_entries: ヘッダー行ごとの診療記録エントリ（診療記録のみ、record_type フィールド付き）
+    """
+    blocks = sorted(blocks, key=lambda b: (b.bbox[1], b.bbox[0]))
+
+    continuation_parts: list[str] = []
+    entries: list[dict] = []
+    current: dict | None = None
+    first_header_found = False
+
+    for block in blocks:
+        if getattr(block, "skipped", False):
+            continue
+
+        text = _html_to_text(block.html)
+        if not text:
+            continue
+
+        x1, y1, x2, y2 = [int(v) for v in block.bbox]
+
+        # ヘッダー行チェック（ピンク/青の日付スタンプ行）
+        m = _SURYA_HEADER_RE.search(text)
+        if m:
+            if current is not None:
+                entries.append(current)
+            current = {
+                "date": m.group(1),
+                "record_type": m.group(2),
+                "parts": [],
+            }
+            first_header_found = True
+            continue
+
+        # 縦書きラベルのみの狭いブロックはスキップ
+        if x2 < _SURYA_NARROW_X_MAX:
+            continue
+
+        # Table ブロック（薬剤処方グリッド）はスキップ
+        if getattr(block, "label", "") == "Table":
+            continue
+
+        # 番号付き行チェック: "1 内服...", "2 生化..."
+        nm = _SURYA_NUMBERED_ROW_RE.match(text)
+        if nm:
+            _num, cat_char, rest = nm.groups()
+            if cat_char in _SURYA_NUMBERED_EXCLUDE_STARTS:
+                continue
+            if cat_char in _SURYA_NUMBERED_INCLUDE_STARTS:
+                content = (cat_char + rest).strip()
+                if content and current is not None:
+                    current["parts"].append(content)
+            continue
+
+        # 行ラベルプレフィックスを除去（"自由 体調変わり..." → "体調変わり..."）
+        content = text
+        for label in _SURYA_ROW_LABEL_PREFIXES:
+            if text.startswith(label + " ") or text.startswith(label + "　"):
+                content = text[len(label):].strip()
+                break
+            if text == label:
+                content = ""
+                break
+
+        if not content:
+            continue
+
+        if not first_header_found:
+            continuation_parts.append(content)
+        elif current is not None:
+            current["parts"].append(content)
+
+    if current is not None:
+        entries.append(current)
+
+    new_entries = [
+        {
+            "date": e["date"],
+            "record_type": e["record_type"],
+            "content": "\n".join(e["parts"]),
+        }
+        for e in entries
+        if e["record_type"] == "診療記録" and e["parts"]
+    ]
+
+    return "\n".join(continuation_parts), new_entries
+
+
+def _read_past_chart_with_surya(cropped: np.ndarray) -> list[dict]:
+    """surya-ocr で過去カルテ初期画像を解析し、診療記録エントリリストを返す。"""
+    pil = _np_to_pil(cropped)
+    predictor = _get_surya_predictor()
+    pages = predictor([pil])
+    _continuation, entries = _parse_surya_blocks_to_entries(pages[0].blocks)
+    return entries
+
+
+def _process_scroll_with_surya(
+    cropped: np.ndarray,
+    structured: list[dict],
+) -> tuple[str, list[dict]]:
+    """スクロール後画像を surya-ocr で解析し、(continuation, new_entries) を返す。"""
+    pil = _np_to_pil(cropped)
+    predictor = _get_surya_predictor()
+    pages = predictor([pil])
+    return _parse_surya_blocks_to_entries(pages[0].blocks)
+
+
+# ---------------------------------------------------------------------------
 
 
 def _wait_for_ble_connected(timeout: float = 70.0) -> BLEClient:

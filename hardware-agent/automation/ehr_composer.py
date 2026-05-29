@@ -17,11 +17,13 @@
   python -m automation.ehr_composer --summary --omlx gemma-4-26b-a4b-it-4bit
   python -m automation.ehr_composer --summary-no-scroll
   python -m automation.ehr_composer --summary-no-scroll --movie
+  python -m automation.ehr_composer --summary --clear   # 実行前に captures/ と logs/ を消去
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+import difflib
 import json
 import re
 import sys
@@ -51,9 +53,10 @@ from automation.ehr_reader import (
     _find_word_return_mark_x,
     _is_frame_unchanged,
     _parse_jp_date,
-    _parse_vlm_response,
-    _process_scroll_with_vlm,
-    _read_past_chart_with_vlm,
+    _read_past_chart_as_markdown,
+    _build_json_from_markdown,
+    _process_scroll_with_surya,
+    _read_past_chart_with_surya,
     _save_debug_frame,
     _scroll_past_chart_down,
     _scroll_past_chart_up,
@@ -65,6 +68,47 @@ from automation.ehr_reader import (
 
 _CAPTURES_DIR = Path(__file__).resolve().parent.parent / "captures"
 _LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+_EXCLUDED_CONTENT_PREFIXES = ("【 有症状指示", "【 入院その他の指示")
+
+
+def _normalize_content_for_dedup(content: str) -> str:
+    """content を正規化して重複判定用の文字列を返す。"""
+    content = content.replace("<br>", "\n").replace("<br/>", "\n")
+    content = re.sub(r"\s+", " ", content)
+    return content.strip()
+
+
+def _filter_duplicate_and_empty_entries(
+    raw_new_entries: list[dict],
+    structured: list[dict],
+    *,
+    similarity_threshold: float = 0.8,
+) -> list[dict]:
+    """raw_new_entries から空 content と既存エントリと高類似な content を除外する。"""
+    filtered: list[dict] = []
+    existing_norms = [
+        _normalize_content_for_dedup(e.get("content", ""))
+        for e in structured
+    ]
+    for e in raw_new_entries:
+        content = e.get("content", "")
+        # 1. 空 content を棄却
+        if not content or not content.strip():
+            continue
+        norm = _normalize_content_for_dedup(content)
+        # 2. 既存エントリと 80% 以上類似 → 棄却
+        is_dup = False
+        for existing_norm in existing_norms:
+            if not existing_norm:
+                continue
+            ratio = difflib.SequenceMatcher(None, norm, existing_norm).ratio()
+            if ratio >= similarity_threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            filtered.append(e)
+    return filtered
 
 
 class _TeeStream:
@@ -703,7 +747,7 @@ def _scroll_to_admission_date(
             dividers=dividers,
             screen_width=config.capture_width,
             screen_height=config.capture_height,
-            scroll_count=5,
+            scroll_count=3,
         )
         time.sleep(1.0)  # スクロールアニメーション完了待ち
 
@@ -729,7 +773,35 @@ def _scroll_to_admission_date(
             continue
 
         if prev_crop is not None and _is_frame_unchanged(prev_crop, cropped):
-            print("  [過去スクロール] 画面変化なし、スクロール限界に到達")
+            # スタレフレームの可能性があるため最大3回リトライする（HDMI遅延が2秒を超える場合に対応）
+            stale_confirmed = False
+            for attempt in range(1, 4):
+                print(f"  [過去スクロール] 画面変化なし。スタレフレーム確認中... ({attempt}/3)")
+                time.sleep(2.0)
+                recheck_frame = _capture_screen_hdmi(
+                    device_index=config.capture_device_index,
+                    width=config.capture_width,
+                    height=config.capture_height,
+                )
+                if recheck_frame is None:
+                    break
+                try:
+                    recheck_crop = _extract_past_chart_region(recheck_frame, dividers)
+                    if not _is_frame_unchanged(cropped, recheck_crop):
+                        print("  [過去スクロール] スタレフレーム検出。スクロールを継続します...")
+                        prev_crop = recheck_crop.copy()
+                        ocr_text = _extract_ocr_text(recheck_crop, log_name=f"find_admission_{i + 1}")
+                        reached, oldest = _ocr_check_admission(ocr_text, admission_date)
+                        print(f"  [過去スクロール {i + 1}] 最古表示日: {oldest}, 前日以前到達: {reached}")
+                        if reached:
+                            return True
+                        stale_confirmed = True
+                        break
+                except RuntimeError:
+                    break
+            if stale_confirmed:
+                continue
+            print("  [過去スクロール] スクロール限界に到達")
             return False
         prev_crop = cropped.copy()
 
@@ -801,29 +873,32 @@ def _read_past_chart_scroll(
         raise RuntimeError(str(exc))
     print(f"切り出しサイズ: {past_chart.shape[1]}x{past_chart.shape[0]} px")
 
-    print("\nOCR でテキスト抽出中...")
-    ocr_text = _extract_ocr_text(past_chart, log_name="past_chart_initial")
-    print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
-
-    print("\nVLM で過去カルテの内容を読み取り中...")
-    raw_response = _read_past_chart_with_vlm(
+    print("\nVLM で過去カルテの表構造を読み取り中...")
+    raw_md = _read_past_chart_as_markdown(
         past_chart,
-        ocr_text,
         model=runtime["chart_model"],
         url=runtime["url"],
         api_key=runtime["api_key"],
         timeout=MLX_VLM_IME_TIMEOUT,
     )
-
-    print(f"\n--- VLM 生応答 ---\n{raw_response}\n--- 終了 ---\n")
-
-    try:
-        structured = _parse_vlm_response(raw_response)
-    except ValueError as exc:
-        raise RuntimeError(str(exc))
+    print(f"\n--- VLM マークダウン出力 ---\n{raw_md}\n--- 終了 ---\n")
+    print("VLM で JSON を生成中...")
+    _continuation_initial, structured = _build_json_from_markdown(
+        "", raw_md, [], "", "",
+        model=runtime["chart_model"],
+        url=runtime["url"],
+        api_key=runtime["api_key"],
+        timeout=MLX_VLM_IME_TIMEOUT,
+    )
+    prev_raw_md = raw_md
 
     if admission_date or discharge_date:
         structured = _filter_entries_by_date(structured, admission_date, discharge_date)
+    structured = [
+        e for e in structured
+        if e.get("record_type") == "診療記録"
+        and not e.get("content", "").lstrip().startswith(_EXCLUDED_CONTENT_PREFIXES)
+    ]
 
     print("--- 構造化出力 (JSON) ---")
     print(json.dumps(structured, ensure_ascii=False, indent=2))
@@ -835,17 +910,18 @@ def _read_past_chart_scroll(
         print("\n過去カルテにテキストが見つかりませんでした。")
 
     # スクロール読み取り
+    # Phase 1 と同様にクロップ同士を比較する（フル解像度比較では1行分の変化が閾値未満で誤検知するため）
+    admission_dt = _parse_jp_date(admission_date) if admission_date else None
+    discharge_dt = _parse_jp_date(discharge_date) if discharge_date else None
     prev_frame = frame.copy()
-    prev_past_chart = None
-    ocr_history = [ocr_text]
+    try:
+        prev_crop = _extract_past_chart_region(frame, dividers)
+    except RuntimeError:
+        prev_crop = None
     iteration = 0
-    max_iterations = 20
 
     while True:
         iteration += 1
-        if iteration > max_iterations:
-            print("\n安全上限(20セット)に達しました。自動終了します。")
-            break
 
         print(f"\n[セット {iteration}] 過去カルテ領域をスクロール中...")
         _scroll_past_chart_down(
@@ -854,6 +930,7 @@ def _read_past_chart_scroll(
             screen_height=config.capture_height,
             scroll_count=2,
         )
+        time.sleep(1.0)  # スクロールアニメーション完了待ち（Phase 1 と同様）
 
         # スクロール後に再キャプチャ
         print("スクロール後の画面をキャプチャ中...")
@@ -867,7 +944,14 @@ def _read_past_chart_scroll(
             break
 
         print("画面変化を確認中...")
-        if _is_frame_unchanged(prev_frame, frame):
+        try:
+            curr_crop = _extract_past_chart_region(frame, dividers)
+            _unchanged = _is_frame_unchanged(prev_crop, curr_crop) if prev_crop is not None else False
+            if not _unchanged:
+                prev_crop = curr_crop.copy()
+        except RuntimeError:
+            _unchanged = _is_frame_unchanged(prev_frame, frame)
+        if _unchanged:
             print("スクロール後の画面が変化しませんでした。自動終了します。")
             break
         prev_frame = frame.copy()
@@ -875,66 +959,110 @@ def _read_past_chart_scroll(
         _save_debug_frame_local(frame, f"full_screen_scroll_{iteration}")
         print("画面を解析中...")
 
-        dividers = _detect_all_dividers(frame, debug=True)
-        if dividers is None:
-            print("[ERROR] スクロール後の画面で区切り線を検出できませんでした", file=sys.stderr)
-            break
+        new_dividers = _detect_all_dividers(frame, debug=True)
+        if new_dividers is not None:
+            try:
+                past_chart = _extract_past_chart_region(frame, new_dividers, debug=True)
+                dividers = new_dividers
+                print(f"区切り線検出: x={dividers}")
+            except RuntimeError:
+                print(f"  [WARNING] 新規区切り線({new_dividers})でのクロップ失敗。前回の区切り線({dividers})にフォールバック。")
+                try:
+                    past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+                    print(f"区切り線検出(フォールバック): x={dividers}")
+                except RuntimeError as exc:
+                    print(f"[ERROR] {exc}", file=sys.stderr)
+                    break
+        else:
+            print(f"  [WARNING] 区切り線を検出できませんでした。前回の区切り線({dividers})にフォールバック。")
+            try:
+                past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+                print(f"区切り線検出(フォールバック): x={dividers}")
+            except RuntimeError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                break
 
-        print(f"区切り線検出: x={dividers}")
-        prev_past_chart = past_chart.copy()
+        # 入院日前の記録はVLMをスキップして高速スクロール
+        pre_ocr_text = _extract_ocr_text(past_chart)
+        pre_ocr_dates = [
+            _parse_jp_date(d)
+            for d in re.findall(r'\d{4}年\d{1,2}月\d{1,2}日', pre_ocr_text)
+        ]
+        if (
+            admission_dt is not None
+            and pre_ocr_dates
+            and all(d < admission_dt for d in pre_ocr_dates)
+        ):
+            print(f"  [事前スキップ] 入院日前の記録({pre_ocr_dates[0].strftime('%Y年%m月%d日')}等)。VLMをスキップ。")
+            prev_raw_md = ""
+            continue
+
+        print(f"\n[セット {iteration}] VLM で表構造を読み取り中...")
         try:
-            past_chart = _extract_past_chart_region(frame, dividers, debug=True)
+            raw_md = _read_past_chart_as_markdown(
+                past_chart,
+                ocr_text=pre_ocr_text,
+                model=runtime["chart_model"],
+                url=runtime["url"],
+                api_key=runtime["api_key"],
+                timeout=MLX_VLM_IME_TIMEOUT,
+            )
         except RuntimeError as exc:
-            print(f"[ERROR] {exc}", file=sys.stderr)
+            print(f"[ERROR] VLM呼び出し失敗: {exc}", file=sys.stderr)
             break
-
-        print("\nOCR でテキスト抽出中...")
-        ocr_text = _extract_ocr_text(past_chart, log_name=f"past_chart_scroll_{iteration}")
-        print(f"OCR抽出完了 ({len(ocr_text)} 文字)")
-
-        print(f"\n[セット {iteration}] VLM でスクロール処理中...")
-        continuation, raw_new_entries = _process_scroll_with_vlm(
-            prev_past_chart,
-            past_chart,
+        last_entry = structured[-1] if structured else {}
+        continuation, raw_new_entries = _build_json_from_markdown(
+            prev_raw_md,
+            raw_md,
             structured,
-            ocr_history,
-            ocr_text,
+            last_entry.get("date", ""),
+            last_entry.get("record_type", ""),
             model=runtime["chart_model"],
             url=runtime["url"],
             api_key=runtime["api_key"],
             timeout=MLX_VLM_IME_TIMEOUT,
         )
-        ocr_history.append(ocr_text)
+        prev_raw_md = raw_md
         print(f"  続きテキスト: {repr(continuation[:80]) if continuation else '(なし)'}")
         if continuation and structured:
             structured[-1]["content"] = structured[-1]["content"].rstrip() + "\n" + continuation
-        known_dates_set = {e["date"] for e in structured}
-        discharge_dt = _parse_jp_date(discharge_date) if discharge_date else None
-        admission_dt = _parse_jp_date(admission_date) if admission_date else None
+        # 空 content と既存エントリとの重複を後処理で除外
+        raw_new_entries = _filter_duplicate_and_empty_entries(raw_new_entries, structured)
+        known_keys_set = {(e["date"], e.get("time", "")) for e in structured}
         new_entries = [
             e for e in raw_new_entries
-            if e["date"] not in known_dates_set
+            if (e["date"], e.get("time", "")) not in known_keys_set
             and re.match(r"\d{4}年\d{1,2}月\d{1,2}日", e["date"])
             and (admission_dt is None or _parse_jp_date(e["date"]) >= admission_dt)
             and (discharge_dt is None or _parse_jp_date(e["date"]) <= discharge_dt)
+            and e.get("record_type") == "診療記録"
+            and not e.get("content", "").lstrip().startswith(_EXCLUDED_CONTENT_PREFIXES)
         ]
         if len(raw_new_entries) != len(new_entries):
-            skipped = [e["date"] for e in raw_new_entries if e not in new_entries]
+            skipped = [f"{e['date']} {e.get('time', '')}".strip() for e in raw_new_entries if e not in new_entries]
             print(f"  スキップ(重複/無効日付/範囲外): {skipped}")
-        print(f"  新規エントリ: {[e['date'] for e in new_entries]}")
+        print(f"  新規エントリ: {[(e['date'] + ' ' + e.get('time', '')).strip() for e in new_entries]}")
         structured.extend(new_entries)
 
-        # 退院日超過チェック（有効な日付が全て退院日より新しければ収集完了）
+        # 退院日超過チェック（有効な日付が1つでも退院日を超えていれば収集完了）
         if discharge_dt and raw_new_entries:
             valid_raw_dates = [
                 _parse_jp_date(e["date"]) for e in raw_new_entries
                 if re.match(r"\d{4}年\d{1,2}月\d{1,2}日", e["date"])
             ]
-            if valid_raw_dates and all(d > discharge_dt for d in valid_raw_dates):
-                in_range = any(_parse_jp_date(e["date"]) <= discharge_dt for e in structured)
-                if in_range:
-                    print(f"  退院日 {discharge_date} 超過、収集完了")
-                    break
+            if valid_raw_dates and any(d > discharge_dt for d in valid_raw_dates):
+                print(f"  退院日 {discharge_date} を超える記録が出現。収集完了。")
+                break
+
+        # 入院日未満チェック（有効な日付が1つでも入院日より前なら収集完了）
+        if admission_dt and raw_new_entries:
+            valid_raw_dates = [
+                _parse_jp_date(e["date"]) for e in raw_new_entries
+                if re.match(r"\d{4}年\d{1,2}月\d{1,2}日", e["date"])
+            ]
+            if valid_raw_dates and any(d < admission_dt for d in valid_raw_dates):
+                print(f"  入院日 {admission_date} より前の記録が出現。収集完了。")
+                break
 
         print("--- 構造化出力 (JSON) ---")
         print(json.dumps(structured, ensure_ascii=False, indent=2))
@@ -966,7 +1094,15 @@ def main(argv: list[str] | None = None) -> int:
         print("       python -m automation.ehr_composer --summary --omlx gemma-4-26b-a4b-it-4bit", file=sys.stderr)
         return 1
 
+    do_clear = "--clear" in args
     do_movie = "--movie" in args
+
+    if do_clear:
+        for folder in (_CAPTURES_DIR, _LOGS_DIR):
+            for f in folder.rglob("*"):
+                if f.is_file():
+                    f.unlink()
+        print(f"[clear] {_CAPTURES_DIR} と {_LOGS_DIR} のファイルを削除しました")
 
     # --omlx が指定されていなくても自動的に有効化
     omlx_model: Optional[str] = None

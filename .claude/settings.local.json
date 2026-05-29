@@ -32,7 +32,26 @@
       "Bash(xargs cat:*)",
       "Bash(mkdir -p .github)",
       "Bash(ln -s ../CLAUDE.md .github/copilot-instructions.md)",
-      "Bash(ping:*)"
+      "Bash(ping:*)",
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(git -C /Users/kazami/projects/ehr/toolkit-dev submodule status)",
+      "Bash(git *)",
+      "Read(//Users/kazami/projects/ndlocr-lite/**)",
+      "Read(//Users/kazami/projects/ndlocr-lite/src/**)",
+      "Bash(grep -E \"\\\\.\\(sh|py\\)$\")",
+      "Bash(curl -s -H \"Authorization: Bearer penguin\" http://localhost:8000/v1/models)",
+      "Bash(curl -s -X POST -H \"Authorization: Bearer penguin\" -H \"Content-Type: application/json\" http://localhost:8000/v1/models)",
+      "Bash(curl -s -X DELETE -H \"Authorization: Bearer penguin\" http://localhost:8000/v1/models/gemma-4-26b-a4b-it-4bit)",
+      "Bash(curl -s -H \"Authorization: Bearer penguin\" \"http://localhost:8000/v1/models/gemma-4-26b-a4b-it-4bit/unload\")",
+      "Bash(curl -s -X POST -H \"Authorization: Bearer penguin\" -H \"Content-Type: application/json\" \"http://localhost:8000/v1/models/gemma-4-26b-a4b-it-4bit/unload\")",
+      "Bash(curl -s -X POST -H \"Authorization: Bearer penguin\" -H \"Content-Type: application/json\" \"http://localhost:8000/v1/models/Qwen3.6-35B-A3B-4bit/load\")",
+      "Bash(curl -s -H \"Authorization: Bearer penguin\" \"http://localhost:8000/v1/models\")",
+      "Bash(curl -s -X POST -H \"Authorization: Bearer penguin\" -H \"Content-Type: application/json\" \"http://localhost:8000/v1/models/gemma-4-26b-a4b-it-4bit/load\")",
+      "Bash(curl -s -X POST -H \"Authorization: Bearer penguin\" \"http://localhost:8000/v1/models/load\")",
+      "Bash(curl -s -X POST -H \"Authorization: Bearer penguin\" -H \"Content-Type: application/json\" -d '{\"model\":\"Qwen3.6-35B-A3B-4bit\"}' \"http://localhost:8000/v1/models/load\")",
+      "Bash(curl -s -H \"Authorization: Bearer penguin\" \"http://localhost:8000/v1/models/status\")",
+      "Bash(curl *)"
     ]
   }
 }

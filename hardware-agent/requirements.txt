@@ -18,6 +18,7 @@ sudachidict_core>=20241021
 easyocr>=1.7.0
 onnxruntime>=1.18.0  # ndlocr-lite (DEIM + PARSEQ)
 paddleocr>=3.4.0
+surya-ocr>=0.20.0
 pillow>=9.0.0
 pyautogui>=0.9.54
 
