@@ -1,7 +1,7 @@
 """
 Remote HTTP サーバー
 
-ehr_controller の --last-prescription フローを HTTP API として公開する。
+ehr_controller のフローを HTTP API として公開する。
 別マシンの remote_client/client.py から呼び出すことができる。
 
 使用方法:
@@ -12,6 +12,11 @@ ehr_controller の --last-prescription フローを HTTP API として公開す�
 環境変数:
     REMOTE_SERVER_PORT      ポート番号 (デフォルト: 8765)
     REMOTE_SERVER_API_KEY   Bearer トークン (未設定なら認証なし・LAN 内限定想定)
+
+エンドポイント:
+    GET  /health                  ヘルスチェック
+    POST /run/last-prescription   --last-prescription フロー
+    POST /run/open-note           --open-note フロー
 """
 
 from __future__ import annotations
@@ -67,11 +72,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json(401, {"error": "unauthorized"})
             return
         if self.path == "/run/last-prescription":
-            self._run_last_prescription()
+            self._run_ehr_controller("--last-prescription")
+        elif self.path == "/run/open-note":
+            self._run_ehr_controller("--open-note")
         else:
             self._json(404, {"error": "not found"})
 
-    def _run_last_prescription(self) -> None:
+    def _run_ehr_controller(self, flag: str) -> None:
         global _is_running
         with _run_lock:
             if _is_running:
@@ -92,7 +99,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             env["PYTHONUNBUFFERED"] = "1"
 
             proc = subprocess.Popen(
-                [sys.executable, "-m", "automation.ehr_controller", "--last-prescription"],
+                [sys.executable, "-m", "automation.ehr_controller", flag],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=project_root,
@@ -105,7 +112,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._chunk(f"[exit {proc.returncode}]\n")
             self._chunk(b"")  # chunked transfer encoding terminator
         except Exception as e:
-            # ヘッダー送信後の例外はストリームに書き込む
             try:
                 self._chunk(f"[server error] {e}\n")
                 self._chunk(f"[exit 1]\n")

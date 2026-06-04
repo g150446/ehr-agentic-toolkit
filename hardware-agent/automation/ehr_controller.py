@@ -3,6 +3,7 @@
 
 実行方法:
   python -m automation.ehr_controller --last-prescription
+  python -m automation.ehr_controller --open-note
 """
 
 from __future__ import annotations
@@ -207,24 +208,39 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
 
     do_last_prescription = "--last-prescription" in args
+    do_open_note = "--open-note" in args
 
-    if not do_last_prescription:
-        print("[ERROR] --last-prescription オプションが必要です", file=sys.stderr)
+    if not do_last_prescription and not do_open_note:
+        print("[ERROR] --last-prescription または --open-note オプションが必要です", file=sys.stderr)
         print("使用例: python -m automation.ehr_controller --last-prescription", file=sys.stderr)
+        print("       python -m automation.ehr_controller --open-note", file=sys.stderr)
         return 1
 
-    config = load_config(skip_password=True)
-    print(f"HDMIデバイス (index={config.capture_device_index}) からキャプチャ中...")
-    frame = _capture_screen_hdmi(
-        device_index=config.capture_device_index,
-        width=config.capture_width,
-        height=config.capture_height,
-    )
-    if frame is None:
-        print("[ERROR] HDMIキャプチャデバイスからフレームを取得できませんでした", file=sys.stderr)
-        return 1
+    if do_open_note:
+        client = _wait_for_ble_connected()
+        ok = client.press_key("win")
+        print(f"press_key(win) -> {'OK' if ok else 'NG'}")
+        time.sleep(1.0)
+        ok = client.type_text("note")
+        print(f"type_text(note) -> {'OK' if ok else 'NG'}")
+        time.sleep(0.5)
+        ok = client.press_key("enter")
+        print(f"press_key(enter) -> {'OK' if ok else 'NG'}")
+        time.sleep(3.0)
+        print("メモ帳を開きました")
 
     if do_last_prescription:
+        config = load_config(skip_password=True)
+        print(f"HDMIデバイス (index={config.capture_device_index}) からキャプチャ中...")
+        frame = _capture_screen_hdmi(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if frame is None:
+            print("[ERROR] HDMIキャプチャデバイスからフレームを取得できませんでした", file=sys.stderr)
+            return 1
+
         print("\ntime_series_button.png を画面全体から検索中...")
         pos = _find_time_series_button(frame)
         if pos is None:
