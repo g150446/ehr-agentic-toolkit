@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SKETCH="wireless-input-bridge/wireless-input-bridge.ino"
-FQBN="esp32:esp32:esp32s3:USBMode=default"
+FQBN="esp32:esp32:m5stack_atoms3:USBMode=default,CDCOnBoot=default"
 
 PORT="${1:-}"
 if [ -z "$PORT" ]; then
