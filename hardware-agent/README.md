@@ -131,6 +131,64 @@ OCR_BACKEND=easyocr python -m automation.ehr_composer --summary
 
 ---
 
+### Last Prescription Flow (`ehr_controller`)
+
+EHR 画面のタイムシリーズボタンをクリックし、テーブルの列を検出して右クリック後に F12 を送信する。最終処方ダイアログをトリガーする際に使用する。
+
+#### ローカル実行（HDMI/BLE Mac 上で直接実行）
+
+```bash
+# BLE サーバーを起動しておく（別ターミナル）
+./scripts/start_ble_server.sh
+
+# フローを実行
+python -m automation.ehr_controller --last-prescription
+```
+
+#### リモート実行（別の Mac からネットワーク越しに呼び出す）
+
+HDMI キャプチャと BLE が接続された Mac 上で HTTP サーバーを立ち上げ、同一ネットワーク上の別 Mac からトリガーできる。
+
+**HDMI/BLE Mac（サーバー側）:**
+
+```bash
+# BLE サーバーと Remote サーバーをそれぞれ別ターミナルで起動
+./scripts/start_ble_server.sh
+./scripts/start_remote_server.sh
+```
+
+**別の Mac（クライアント側）— `remote_client/` フォルダをコピーして使用:**
+
+```bash
+pip install requests
+
+# 疎通確認
+python client.py --host <サーバーのIP> --health
+
+# フロー実行
+python client.py --host <サーバーのIP> --last-prescription
+```
+
+**サーバー環境変数（任意）:**
+
+| 変数名 | デフォルト | 説明 |
+|--------|-----------|------|
+| `REMOTE_SERVER_PORT` | `8765` | ポート番号 |
+| `REMOTE_SERVER_API_KEY` | なし | Bearer トークン（未設定なら認証なし・LAN 内限定想定） |
+
+API キーを設定する場合:
+```bash
+# サーバー側
+REMOTE_SERVER_API_KEY=mysecret ./scripts/start_remote_server.sh
+
+# クライアント側
+python client.py --host <IP> --api-key mysecret --last-prescription
+```
+
+サーバーのログはリアルタイムでクライアント側ターミナルにストリーミング表示される。クラッシュ時は `start_remote_server.sh` が自動再起動する。
+
+---
+
 ## Debug / Development Tools
 
 > The following tools are used for debugging and troubleshooting `ehr_composer` during development. Not needed for normal operation.
