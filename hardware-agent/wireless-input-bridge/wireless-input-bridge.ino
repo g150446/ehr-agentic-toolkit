@@ -240,6 +240,11 @@ bool pressNamedKey(const String &keyName) {
     Serial.println("-> key: F8 (半角カタカナ変換)");
     return true;
   }
+  if (keyName == "f12") {
+    Keyboard.write(KEY_F12);
+    Serial.println("-> key: F12");
+    return true;
+  }
   if (keyName == "f6") {
     Keyboard.write(KEY_F6);
     Serial.println("-> key: F6 (全角ひらがな変換)");
