@@ -16,6 +16,9 @@ ehr_controller のフローをネットワーク越しに呼び出す CLI。
     python client.py --host <サーバーIP> [--port 8765] [--api-key KEY] --copy-prev-rx
     python client.py --host <サーバーIP> [--port 8765] [--api-key KEY] --open-note
 
+    # 対話モード (--host のみ): "copy prev rx", "open note", "open test", "exit"
+    python client.py --host <サーバーIP>
+
     # ヘルスチェック
     python client.py --host 192.168.x.x --health
 """
@@ -94,6 +97,7 @@ def run_open_note(host: str, port: int, api_key: str) -> int:
 _COMMANDS: dict[str, str] = {
     "copy prev rx": "/run/copy-prev-rx",
     "open note":    "/run/open-note",
+    "open test":    "/run/open-test",
 }
 
 

@@ -1,7 +1,7 @@
 """
 Remote HTTP サーバー
 
-ehr_controller のフローを HTTP API として公開する。
+ehr_controller / ehr_input のフローを HTTP API として公開する。
 別マシンの remote_client/client.py から呼び出すことができる。
 
 使用方法:
@@ -15,8 +15,9 @@ ehr_controller のフローを HTTP API として公開する。
 
 エンドポイント:
     GET  /health                ヘルスチェック
-    POST /run/copy-prev-rx      --copy-prev-rx フロー
-    POST /run/open-note         --open-note フロー
+    POST /run/copy-prev-rx      --copy-prev-rx フロー (ehr_controller)
+    POST /run/open-note         --open-note フロー (ehr_controller)
+    POST /run/open-test         "open test" フロー (ehr_input)
 """
 
 from __future__ import annotations
@@ -72,13 +73,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._json(401, {"error": "unauthorized"})
             return
         if self.path == "/run/copy-prev-rx":
-            self._run_ehr_controller("--copy-prev-rx")
+            self._run_module("automation.ehr_controller", "--copy-prev-rx")
         elif self.path == "/run/open-note":
-            self._run_ehr_controller("--open-note")
+            self._run_module("automation.ehr_controller", "--open-note")
+        elif self.path == "/run/open-test":
+            self._run_module("automation.ehr_input", "open test")
         else:
             self._json(404, {"error": "not found"})
 
-    def _run_ehr_controller(self, flag: str) -> None:
+    def _run_module(self, module: str, *args: str) -> None:
         global _is_running
         with _run_lock:
             if _is_running:
@@ -99,7 +102,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             env["PYTHONUNBUFFERED"] = "1"
 
             proc = subprocess.Popen(
-                [sys.executable, "-m", "automation.ehr_controller", flag],
+                [sys.executable, "-m", module, *args],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=project_root,
