@@ -219,12 +219,12 @@ def _right_click_column2(click_x: int, click_y: int) -> bool:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
 
-    do_last_prescription = "--last-prescription" in args
+    do_last_prescription = "--copy-prev-rx" in args
     do_open_note = "--open-note" in args
 
     if not do_last_prescription and not do_open_note:
-        print("[ERROR] --last-prescription または --open-note オプションが必要です", file=sys.stderr)
-        print("使用例: python -m automation.ehr_controller --last-prescription", file=sys.stderr)
+        print("[ERROR] --copy-prev-rx または --open-note オプションが必要です", file=sys.stderr)
+        print("使用例: python -m automation.ehr_controller --copy-prev-rx", file=sys.stderr)
         print("       python -m automation.ehr_controller --open-note", file=sys.stderr)
         return 1
 

@@ -9,7 +9,11 @@ ehr_controller のフローをネットワーク越しに呼び出す CLI。
     pip install requests
 
 使用方法:
-    python client.py --host <サーバーIP> [--port 8765] [--api-key KEY] --last-prescription
+    # 対話モード (--host のみ指定)
+    python client.py --host <サーバーIP>
+
+    # 一発実行
+    python client.py --host <サーバーIP> [--port 8765] [--api-key KEY] --copy-prev-rx
     python client.py --host <サーバーIP> [--port 8765] [--api-key KEY] --open-note
 
     # ヘルスチェック
@@ -79,12 +83,39 @@ def _run_flow(host: str, port: int, api_key: str, endpoint: str) -> int:
         return 1
 
 
-def run_last_prescription(host: str, port: int, api_key: str) -> int:
-    return _run_flow(host, port, api_key, "/run/last-prescription")
+def run_copy_prev_rx(host: str, port: int, api_key: str) -> int:
+    return _run_flow(host, port, api_key, "/run/copy-prev-rx")
 
 
 def run_open_note(host: str, port: int, api_key: str) -> int:
     return _run_flow(host, port, api_key, "/run/open-note")
+
+
+_COMMANDS: dict[str, str] = {
+    "copy prev rx": "/run/copy-prev-rx",
+    "open note":    "/run/open-note",
+}
+
+
+def interactive_mode(host: str, port: int, api_key: str) -> int:
+    print(f"EHR remote client — {host}:{port}")
+    print("コマンド: " + ", ".join(f"'{k}'" for k in _COMMANDS) + ", 'exit'")
+    while True:
+        try:
+            line = input("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n終了します")
+            return 0
+        if not line:
+            continue
+        cmd = line.lower()
+        if cmd in ("exit", "quit"):
+            return 0
+        endpoint = _COMMANDS.get(cmd)
+        if endpoint is None:
+            print(f"不明なコマンド: {line!r}  (使用可能: {', '.join(_COMMANDS)})")
+            continue
+        _run_flow(host, port, api_key, endpoint)
 
 
 def main() -> None:
@@ -94,18 +125,20 @@ def main() -> None:
     parser.add_argument("--host", required=True, help="サーバーの IP アドレス")
     parser.add_argument("--port", type=int, default=8765, help="ポート番号 (デフォルト: 8765)")
     parser.add_argument("--api-key", default="", help="Bearer トークン (サーバーで設定している場合)")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--last-prescription", action="store_true", help="最終処方フローを実行")
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument("--copy-prev-rx", action="store_true", help="前回処方フローを実行")
     group.add_argument("--open-note", action="store_true", help="メモ帳を開く")
     group.add_argument("--health", action="store_true", help="サーバーのヘルスチェック")
     args = parser.parse_args()
 
     if args.health:
         sys.exit(health_check(args.host, args.port))
-    elif args.last_prescription:
-        sys.exit(run_last_prescription(args.host, args.port, args.api_key))
+    elif args.copy_prev_rx:
+        sys.exit(run_copy_prev_rx(args.host, args.port, args.api_key))
     elif args.open_note:
         sys.exit(run_open_note(args.host, args.port, args.api_key))
+    else:
+        sys.exit(interactive_mode(args.host, args.port, args.api_key))
 
 
 if __name__ == "__main__":

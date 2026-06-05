@@ -14,9 +14,9 @@ ehr_controller のフローを HTTP API として公開する。
     REMOTE_SERVER_API_KEY   Bearer トークン (未設定なら認証なし・LAN 内限定想定)
 
 エンドポイント:
-    GET  /health                  ヘルスチェック
-    POST /run/last-prescription   --last-prescription フロー
-    POST /run/open-note           --open-note フロー
+    GET  /health                ヘルスチェック
+    POST /run/copy-prev-rx      --copy-prev-rx フロー
+    POST /run/open-note         --open-note フロー
 """
 
 from __future__ import annotations
@@ -71,8 +71,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not self._check_auth():
             self._json(401, {"error": "unauthorized"})
             return
-        if self.path == "/run/last-prescription":
-            self._run_ehr_controller("--last-prescription")
+        if self.path == "/run/copy-prev-rx":
+            self._run_ehr_controller("--copy-prev-rx")
         elif self.path == "/run/open-note":
             self._run_ehr_controller("--open-note")
         else:
