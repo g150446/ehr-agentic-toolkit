@@ -96,8 +96,8 @@ def _find_column2_click_pos(frame: np.ndarray) -> tuple[int, int] | None:
     edges = cv2.Canny(gray, 30, 90)
     lines = cv2.HoughLinesP(
         edges, 1, np.pi / 2,
-        threshold=30,
-        minLineLength=60,
+        threshold=15,
+        minLineLength=30,
         maxLineGap=30,
     )
     raw_xs: list[int] = []
@@ -132,12 +132,24 @@ def _find_column2_click_pos(frame: np.ndarray) -> tuple[int, int] | None:
         ]
         print(f"  Hough列候補: {wide}")
 
-        if len(wide) >= 2:
-            col2_x0, col2_x1 = wide[1]
+        if len(wide) >= 3:
+            # 3列以上検出: 右から2番目の列（最新1つ前 = 最終処方が格納された列）
+            col2_x0, col2_x1 = wide[-2]
             cx = int((col2_x0 + col2_x1) // 2)
             cy = int(h * 0.17)
-            print(f"  列境界検出(Hough縦線): 第2列 x={col2_x0}-{col2_x1}")
-            print(f"  第2列中心: ({cx}, {cy})")
+            print(f"  列境界検出(Hough縦線): 右から2番目列 x={col2_x0}-{col2_x1}")
+            print(f"  列中心: ({cx}, {cy})")
+            return (int(cx), int(cy))
+
+        if len(wide) == 2:
+            # 1本しか区切り線を検出できなかった場合: 右列の幅から等幅と仮定してcol2を推定
+            right_col_w = wide[-1][1] - wide[-1][0]
+            col2_x1 = wide[-1][0]
+            col2_x0 = max(wide[0][0], col2_x1 - right_col_w)
+            cx = int((col2_x0 + col2_x1) // 2)
+            cy = int(h * 0.17)
+            print(f"  列境界検出(等幅推定): 推定col2 x={col2_x0}-{col2_x1}")
+            print(f"  列中心: ({cx}, {cy})")
             return (int(cx), int(cy))
 
     # --- Method 2: 彩度バンド → 垂直積み重ねレイアウト ---
