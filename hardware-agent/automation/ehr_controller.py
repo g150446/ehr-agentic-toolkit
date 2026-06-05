@@ -2,8 +2,9 @@
 音声操作による EHR コントローラー。
 
 実行方法:
-  python -m automation.ehr_controller --last-prescription
+  python -m automation.ehr_controller --copy-prev-rx
   python -m automation.ehr_controller --open-note
+  python -m automation.ehr_controller --open-test
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import cv2
 import numpy as np
 
 from automation.config import load_config
+from automation.ehr_input import open_test_patient_chart as _open_test_patient_chart
 from automation.ehr_reader import _wait_for_ble_connected
 from automation.screen_analyzer import capture_screen as _capture_screen_hdmi
 
@@ -221,12 +223,18 @@ def main(argv: list[str] | None = None) -> int:
 
     do_last_prescription = "--copy-prev-rx" in args
     do_open_note = "--open-note" in args
+    do_open_test = "--open-test" in args
 
-    if not do_last_prescription and not do_open_note:
-        print("[ERROR] --copy-prev-rx または --open-note オプションが必要です", file=sys.stderr)
+    if not do_last_prescription and not do_open_note and not do_open_test:
+        print("[ERROR] --copy-prev-rx / --open-note / --open-test オプションが必要です", file=sys.stderr)
         print("使用例: python -m automation.ehr_controller --copy-prev-rx", file=sys.stderr)
         print("       python -m automation.ehr_controller --open-note", file=sys.stderr)
+        print("       python -m automation.ehr_controller --open-test", file=sys.stderr)
         return 1
+
+    if do_open_test:
+        _open_test_patient_chart()
+        return 0
 
     if do_open_note:
         client = _wait_for_ble_connected()

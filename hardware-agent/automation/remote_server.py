@@ -17,7 +17,7 @@ ehr_controller / ehr_input のフローを HTTP API として公開する。
     GET  /health                ヘルスチェック
     POST /run/copy-prev-rx      --copy-prev-rx フロー (ehr_controller)
     POST /run/open-note         --open-note フロー (ehr_controller)
-    POST /run/open-test         "open test" フロー (ehr_input)
+    POST /run/open-test         --open-test フロー (ehr_controller)
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/run/open-note":
             self._run_module("automation.ehr_controller", "--open-note")
         elif self.path == "/run/open-test":
-            self._run_module("automation.ehr_input", "open test")
+            self._run_module("automation.ehr_controller", "--open-test")
         else:
             self._json(404, {"error": "not found"})
 
