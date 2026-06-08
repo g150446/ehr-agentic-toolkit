@@ -20,11 +20,26 @@ fi
 
 export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
-trap 'echo "Remote サーバーを停止します..."; exit 0' INT TERM
+REMOTE_PID=""
+
+cleanup() {
+    echo ""
+    echo "Remote サーバーを停止します..."
+    [ -n "$REMOTE_PID" ] && kill "$REMOTE_PID" 2>/dev/null
+    wait 2>/dev/null
+    exit 0
+}
+trap cleanup INT TERM
 
 while true; do
-    "$PYTHON" -m automation.remote_server "$@"
+    "$PYTHON" -m automation.remote_server "$@" &
+    REMOTE_PID=$!
+    wait "$REMOTE_PID"
     EXIT_CODE=$?
+    REMOTE_PID=""
+    if [ $EXIT_CODE -eq 0 ]; then
+        cleanup
+    fi
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Remote サーバーが終了しました (exit code: $EXIT_CODE)。3秒後に再起動します..."
     sleep 3
 done

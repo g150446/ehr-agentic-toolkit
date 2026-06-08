@@ -128,6 +128,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
+    allow_reuse_address = True
 
 
 def main() -> None:

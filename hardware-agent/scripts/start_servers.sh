@@ -26,6 +26,9 @@ fi
 
 export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
+BLE_LOOP_PID=""
+REMOTE_PID=""
+
 # BLE 再起動ループをバックグラウンドで実行
 _ble_loop() {
     while true; do
@@ -42,20 +45,40 @@ BLE_LOOP_PID=$!
 cleanup() {
     echo ""
     echo "サーバーを停止します..."
+    [ -n "$REMOTE_PID" ] && kill "$REMOTE_PID" 2>/dev/null
     kill -- -"$BLE_LOOP_PID" 2>/dev/null   # BLE プロセスグループ全体を終了
-    wait "$BLE_LOOP_PID" 2>/dev/null
+    wait 2>/dev/null
+    echo "停止しました"
     exit 0
 }
 trap cleanup INT TERM
 
+# 既存プロセスが残っていればポートを解放する
+_PORT="${REMOTE_SERVER_PORT:-8765}"
+_EXISTING=$(lsof -ti "tcp:$_PORT" 2>/dev/null)
+if [ -n "$_EXISTING" ]; then
+    echo "ポート $_PORT が使用中です (PID: $_EXISTING)。停止します..."
+    kill $_EXISTING 2>/dev/null
+    sleep 1
+fi
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] BLE サーバー起動 (PID: $BLE_LOOP_PID)"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Remote サーバー起動中... (port: ${REMOTE_SERVER_PORT:-8765})"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Remote サーバー起動中... (port: $_PORT)"
 echo "停止するには Ctrl+C を押してください。"
 
-# Remote サーバーをフォアグラウンドで実行（再起動ループ付き）
+# Remote サーバーをバックグラウンドで実行し wait する。
+# こうすることで bash がターミナルのフォアグラウンドとなり、
+# Ctrl+C の SIGINT を bash が受け取れるようになる（set -m 環境での回避策）。
 while true; do
-    "$PYTHON" -m automation.remote_server
+    "$PYTHON" -m automation.remote_server &
+    REMOTE_PID=$!
+    wait "$REMOTE_PID"
     EXIT_CODE=$?
+    REMOTE_PID=""
+    # 正常終了（Ctrl+C で Python が KeyboardInterrupt を処理した場合）はループを抜ける
+    if [ $EXIT_CODE -eq 0 ]; then
+        cleanup
+    fi
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Remote サーバーが終了しました (exit: $EXIT_CODE)。3秒後に再起動します..."
     sleep 3
 done
