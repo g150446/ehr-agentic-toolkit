@@ -26,6 +26,19 @@ fi
 
 export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
+# ── HDMI キャプチャデバイス ウォームアップ ──────────────────────
+# Mac Mini コールドスタート時、MiraBox が HDMI 信号をロックするまで待機する。
+# QT Player の「新規ムービー収録」と同等の AVCaptureSession 初期化を行う。
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] HDMI キャプチャデバイスをウォームアップ中..."
+"$PYTHON" "$SCRIPT_DIR/warmup_hdmi.py"
+WARMUP_EXIT=$?
+if [ $WARMUP_EXIT -ne 0 ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 警告: HDMI ウォームアップがタイムアウトしました。最初のキャプチャが失敗する可能性があります。"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] HDMI ウォームアップ完了。"
+fi
+# ──────────────────────────────────────────────────────────────
+
 BLE_LOOP_PID=""
 REMOTE_PID=""
 
