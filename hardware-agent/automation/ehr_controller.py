@@ -5,6 +5,7 @@
   python -m automation.ehr_controller --copy-prev-rx
   python -m automation.ehr_controller --open-note
   python -m automation.ehr_controller --open-test
+  python -m automation.ehr_controller --care-plan
 """
 
 from __future__ import annotations
@@ -18,8 +19,16 @@ import numpy as np
 
 from automation.config import load_config
 from automation.ehr_input import open_test_patient_chart as _open_test_patient_chart
-from automation.ehr_reader import _wait_for_ble_connected
-from automation.screen_analyzer import capture_screen as _capture_screen_hdmi
+from automation.ehr_reader import (
+    _wait_for_ble_connected,
+    _detect_all_dividers,
+    _detect_edit_button_bottom,
+    _save_debug_frame,
+)
+from automation.screen_analyzer import (
+    capture_screen as _capture_screen_hdmi,
+    run_ocr_backend,
+)
 
 
 def _find_time_series_button(
@@ -218,22 +227,171 @@ def _right_click_column2(click_x: int, click_y: int) -> bool:
     return ok
 
 
+def _find_care_plan_row(
+    frame: np.ndarray,
+    dividers: list[int],
+    *,
+    keyword: str = "生活",
+    min_confidence: float = 0.3,
+) -> tuple[int, int] | None:
+    """書状タブのテーブルから keyword を含む行を検出し、最上位行の全画面座標 (x, y) を返す。
+
+    1. printer_button.png でコンテンツ開始 y を検出（失敗時は OCR で「表示名」を探す）
+    2. 書状パネル領域を切り出して OCR
+    3. keyword を含む結果を y 昇順でソートし最小 y の行を返す
+    """
+    x_start = dividers[0]
+    x_end = dividers[1]
+
+    y_start = _detect_edit_button_bottom(frame, x_start, x_end)
+    if y_start is None:
+        print("  printer_button 未検出 → OCR で「表示名」を検索してフォールバック...")
+        panel = frame[:, x_start:x_end]
+        ocr_results = run_ocr_backend(panel, backend="ndlocr")
+        y_start = None
+        for bbox, text, conf in ocr_results:
+            if conf >= min_confidence and "表示名" in text:
+                ys = [p[1] for p in bbox]
+                y_start = int(max(ys))
+                print(f"  「表示名」ヘッダー検出: y_start={y_start}")
+                break
+        if y_start is None:
+            print("  「表示名」も未検出 → y_start=0 で全領域を対象とします")
+            y_start = 0
+
+    cropped = frame[y_start:, x_start:x_end]
+
+    overlay = frame.copy()
+    h = overlay.shape[0]
+    for x in dividers:
+        cv2.line(overlay, (x, 0), (x, h - 1), (0, 255, 0), 2)
+    cv2.rectangle(overlay, (x_start, y_start), (x_end, h - 1), (0, 0, 255), 2)
+    _save_debug_frame(overlay, "care_plan_region", subdir="crop")
+    _save_debug_frame(cropped, "care_plan_crop", subdir="crop")
+
+    from automation.mlx_vlm_ime import _get_ndlocr
+    _detector, _recognizer = _get_ndlocr()
+    _all_dets = _detector.detect(cropped)
+    # run_ocr_ndlocr のデフォルト閾値 0.75 ではテーブル行が除外されるため、
+    # ここでは 0.65 に下げて line_main を直接処理する。
+    _line_dets = [
+        d for d in _all_dets
+        if d["class_name"] == "line_main" and d["confidence"] >= 0.65
+    ]
+    ocr_results = []
+    for det in sorted(_line_dets, key=lambda d: d["box"][1]):
+        x1, y1, x2, y2 = [int(v) for v in det["box"]]
+        region = cropped[max(0, y1):y2, max(0, x1):x2]
+        if region.size == 0:
+            continue
+        text = _recognizer.read(region).strip()
+        if not text:
+            continue
+        bbox = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        ocr_results.append((bbox, text, float(det["confidence"])))
+
+    print(f"  OCR結果 ({len(ocr_results)}件):")
+    for bbox, text, conf in ocr_results:
+        print(f"    [{conf:.2f}] {text}")
+
+    candidates: list[tuple[int, int, str, float]] = []
+    for bbox, text, conf in ocr_results:
+        if conf < min_confidence:
+            continue
+        if keyword in text:
+            xs = [p[0] for p in bbox]
+            ys = [p[1] for p in bbox]
+            cx = x_start + int(sum(xs) / len(xs))
+            cy = y_start + int(sum(ys) / len(ys))
+            candidates.append((cy, cx, text, conf))
+            print(f"  '{keyword}' 候補: text='{text}' conf={conf:.2f} 座標=({cx}, {cy})")
+
+    if not candidates:
+        print(f"  '{keyword}' を含む行が見つかりませんでした")
+        return None
+
+    candidates.sort(key=lambda c: c[0])
+    cy, cx, text, conf = candidates[0]
+    print(f"  最上位行を選択: text='{text}' 座標=({cx}, {cy})")
+    return (cx, cy)
+
+
+def _right_click_care_plan_row(click_x: int, click_y: int) -> bool:
+    """指定座標へマウスを移動して左クリック → 500ms待機 → 右クリックする。"""
+    client = _wait_for_ble_connected()
+
+    ok = client.switch_to_mouse_mode()
+    print(f"mode:mouse -> {'OK' if ok else 'NG'}")
+
+    ok = client.move_mouse_to_position(click_x, click_y)
+    print(f"moveto ({click_x}, {click_y}) -> {'OK' if ok else 'NG'}")
+
+    ok = client.click()
+    print(f"left_click (care_plan_row) -> {'OK' if ok else 'NG'}")
+
+    time.sleep(0.5)
+
+    ok = client.right_click()
+    print(f"right_click (care_plan_row) -> {'OK' if ok else 'NG'}")
+
+    time.sleep(0.5)
+
+    ok = client.switch_to_keyboard_mode()
+    print(f"mode:keyboard -> {'OK' if ok else 'NG'}")
+
+    ok = client.press_key("f2")
+    print(f"press_key(f2) -> {'OK' if ok else 'NG'}")
+    return ok
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
 
     do_last_prescription = "--copy-prev-rx" in args
     do_open_note = "--open-note" in args
     do_open_test = "--open-test" in args
+    do_care_plan = "--care-plan" in args
 
-    if not do_last_prescription and not do_open_note and not do_open_test:
-        print("[ERROR] --copy-prev-rx / --open-note / --open-test オプションが必要です", file=sys.stderr)
+    if not any([do_last_prescription, do_open_note, do_open_test, do_care_plan]):
+        print("[ERROR] --copy-prev-rx / --open-note / --open-test / --care-plan オプションが必要です", file=sys.stderr)
         print("使用例: python -m automation.ehr_controller --copy-prev-rx", file=sys.stderr)
         print("       python -m automation.ehr_controller --open-note", file=sys.stderr)
         print("       python -m automation.ehr_controller --open-test", file=sys.stderr)
+        print("       python -m automation.ehr_controller --care-plan", file=sys.stderr)
         return 1
 
     if do_open_test:
         _open_test_patient_chart()
+        return 0
+
+    if do_care_plan:
+        config = load_config(skip_password=True)
+        print(f"HDMIデバイス (index={config.capture_device_index}) からキャプチャ中...")
+        frame = _capture_screen_hdmi(
+            device_index=config.capture_device_index,
+            width=config.capture_width,
+            height=config.capture_height,
+        )
+        if frame is None:
+            print("[ERROR] HDMIキャプチャデバイスからフレームを取得できませんでした", file=sys.stderr)
+            return 1
+
+        print("区切り線を検出中...")
+        dividers = _detect_all_dividers(frame)
+        if dividers is None:
+            print("[ERROR] 患者カルテ画面の区切り線（太いグレーの縦線3本）を検出できませんでした", file=sys.stderr)
+            return 1
+        print(f"区切り線検出: x={dividers}")
+
+        print("\n書状テーブルから '生活' 行を検索中...")
+        pos = _find_care_plan_row(frame, dividers)
+        if pos is None:
+            print("[ERROR] '生活' を含む行が見つかりませんでした", file=sys.stderr)
+            return 1
+
+        click_x, click_y = pos
+        print(f"\n右クリック: ({click_x}, {click_y})")
+        _right_click_care_plan_row(click_x, click_y)
         return 0
 
     if do_open_note:
