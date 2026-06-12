@@ -1,5 +1,11 @@
 # EHR-Agentic-Toolkit - Agent Notes
 
+## Branch Management
+
+- `main` ブランチ: **フリーズ** — ハッカソン提出後のコミット (`3e8c13d`) を維持。今後一切コミットしない。
+- `dev` ブランチ: すべての開発をここで行う。リモートマシン（hirotoihara）もこのブランチを使用。
+- `main` に誤って push した場合: 即座に `git reset --hard 3e8c13d` && `git push --force origin main` で復元。
+
 ## Swift AppKit (EHR-Agent)
 
 ### Build
