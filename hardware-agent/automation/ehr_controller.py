@@ -748,9 +748,9 @@ def _find_day_char_position(
 
 
 def _word_care_plan_interaction(click_x: int, click_y: int, config) -> bool:
-    """F2押下後: 4秒待機 → 同位置左クリック → Wordフレームキャプチャ → 記入日と回目の数字を更新。"""
-    print("5秒待機中 (Word 読み込み)...")
-    time.sleep(5.0)
+    """F2押下後: 6秒待機 → 同位置左クリック → Wordフレームキャプチャ → 記入日と回目の数字を更新。"""
+    print("6秒待機中 (Word 読み込み)...")
+    time.sleep(6.0)
 
     client = _wait_for_ble_connected()
     ok = client.switch_to_mouse_mode()
