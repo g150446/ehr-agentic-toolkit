@@ -83,3 +83,43 @@ codesign --force --deep --sign - EHR-Agent.app
 
 - The binary inside `EHR-Agent.app/Contents/MacOS/` must be re-signed after every `cp` or modification.
 - For distribution, use proper Developer ID signing: `codesign --force --deep --sign "Developer ID" EHR-Agent.app`
+
+## Hardware Agent (Python Automation)
+
+### ndlocr-lite Installation
+
+The hardware-agent requires `ndlocr-lite` for OCR operations.
+
+If `ndlocr-lite` is not installed, `start_servers.sh` will display an error and exit immediately.
+
+**Automatic Installation:**
+
+```bash
+./scripts/install_ndlocr.sh
+```
+
+This script will:
+1. Clone `https://github.com/ndl-lab/ndlocr-lite.git` into `hardware-agent/ndlocr-lite/`
+2. Install dependencies from `requirements.txt`
+3. Verify model files (`.onnx`) and config files exist
+
+**Manual Installation (if needed):**
+
+```bash
+cd hardware-agent
+git clone https://github.com/ndl-lab/ndlocr-lite.git
+pip install -r ndlocr-lite/requirements.txt
+```
+
+Note: The model files are tracked in the git repository, so `git clone` alone downloads all necessary `.onnx` models (approx. 155MB) and config files.
+
+### Running the Servers
+
+```bash
+./scripts/start_servers.sh
+```
+
+Prerequisites:
+- Python virtual environment at `venv/`
+- `ndlocr-lite` installed (see above)
+- `deim` module importable (verified at startup)
