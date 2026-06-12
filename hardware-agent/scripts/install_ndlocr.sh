@@ -22,7 +22,7 @@ if [ -d "$NDBOCR_DIR" ]; then
     echo "[ndlocr-lite] 既に存在します: $NDBOCR_DIR"
     echo "[ndlocr-lite] git pull で更新します..."
     cd "$NDBOCR_DIR"
-    git pull origin master
+    git pull
 else
     echo "[ndlocr-lite] クローン中: https://github.com/ndl-lab/ndlocr-lite ..."
     cd "$PROJECT_ROOT"
