@@ -26,6 +26,30 @@ fi
 
 export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
+# ── ndlocr-lite インストール確認 ──────────────────────────────
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ndlocr-lite のインストールを確認中..."
+if ! "$PYTHON" -c "import deim" 2>/dev/null; then
+    echo ""
+    echo "Error: ndlocr-lite がインストールされていません。"
+    echo ""
+    echo "インストール方法:"
+    echo "  1. ndlocr-lite リポジトリをクローン"
+    echo "     git clone https://github.com/ndl-lab/ndlocr-lite.git"
+    echo ""
+    echo "  2. 依存パッケージをインストール"
+    echo "     cd ndlocr-lite"
+    echo "     pip install -r requirements.txt"
+    echo ""
+    echo "  3. モデルファイルをダウンロードして配置"
+    echo "     (src/model/ および src/config/ ディレクトリに配置)"
+    echo ""
+    echo "詳細は ndlocr-lite の README を参照してください。"
+    echo ""
+    exit 1
+fi
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ndlocr-lite のインストールを確認しました。"
+# ──────────────────────────────────────────────────────────────
+
 # ── HDMI キャプチャデバイス ウォームアップ ──────────────────────
 # Mac Mini コールドスタート時、MiraBox が HDMI 信号をロックするまで待機する。
 # QT Player の「新規ムービー収録」と同等の AVCaptureSession 初期化を行う。
