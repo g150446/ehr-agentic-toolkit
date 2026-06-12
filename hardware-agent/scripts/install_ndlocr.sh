@@ -32,6 +32,18 @@ fi
 
 # ── 依存パッケージインストール ──────────────────────────────────
 echo "[ndlocr-lite] 依存パッケージをインストール中..."
+if [ ! -f "$NDBOCR_DIR/requirements.txt" ]; then
+    echo "Error: requirements.txt が見つかりません: $NDBOCR_DIR/requirements.txt"
+    echo ""
+    echo "リポジトリのクローンが不完全な可能性があります。"
+    echo "以下のコマンドで再クローンしてください："
+    echo "  rm -rf $NDBOCR_DIR"
+    echo "  ./scripts/install_ndlocr.sh"
+    echo ""
+    echo "または手動で requirements.txt を確認："
+    echo "  ls -la $NDBOCR_DIR/"
+    exit 1
+fi
 $PIP install -r "$NDBOCR_DIR/requirements.txt"
 
 # ── モデルファイル確認 ───────────────────────────────────────────
