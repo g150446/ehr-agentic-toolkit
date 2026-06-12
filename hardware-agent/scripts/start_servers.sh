@@ -24,7 +24,10 @@ else
     exit 1
 fi
 
-export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
+# ── ndlocr-lite パス設定 ────────────────────────────────────
+if [ -d "$PROJECT_ROOT/ndlocr-lite/src" ]; then
+    export PYTHONPATH="$PROJECT_ROOT/ndlocr-lite/src:$PYTHONPATH"
+fi
 
 # ── ndlocr-lite インストール確認 ──────────────────────────────
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ndlocr-lite のインストールを確認中..."
