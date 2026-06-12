@@ -218,7 +218,10 @@ def run_ocr_backend(image: np.ndarray, backend: str = "ndlocr") -> List[tuple]:
         List of (bbox, text, confidence) tuples
     """
     if backend == "ndlocr":
-        return run_ocr_ndlocr(image)
+        try:
+            return run_ocr_ndlocr(image)
+        except Exception as exc:
+            print(f"  [OCR] NDL-OCR 失敗: {exc} → EasyOCR にフォールバック")
     reader = load_ocr_reader(languages=["ja", "en"], use_gpu=False)
     return run_ocr_word_split(reader, image)
 
