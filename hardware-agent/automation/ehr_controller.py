@@ -274,12 +274,16 @@ def _find_care_plan_row(
     from automation.mlx_vlm_ime import _get_ndlocr
     _detector, _recognizer = _get_ndlocr()
     _all_dets = _detector.detect(cropped)
+    print(f"  NDLOCR検出結果: {len(_all_dets)}件")
+    for d in _all_dets:
+        print(f"    class={d['class_name']} conf={d['confidence']:.3f} box={d['box']}")
     # run_ocr_ndlocr のデフォルト閾値 0.75 ではテーブル行が除外されるため、
-    # ここでは 0.65 に下げて line_main を直接処理する。
+    # ここでは 0.55 に下げて line_main を直接処理する。
     _line_dets = [
         d for d in _all_dets
-        if d["class_name"] == "line_main" and d["confidence"] >= 0.65
+        if d["class_name"] == "line_main" and d["confidence"] >= 0.55
     ]
+    print(f"  line_main(>=0.65): {len(_line_dets)}件")
     ocr_results = []
     for det in sorted(_line_dets, key=lambda d: d["box"][1]):
         x1, y1, x2, y2 = [int(v) for v in det["box"]]
@@ -381,33 +385,85 @@ def _find_word_text_edges(
 
 def _find_age_to_delete(
     all_results: list,
+    frame: np.ndarray | None = None,
 ) -> tuple[int, int, int] | None:
     """OCR全結果から年齢パターン [（(]\d+才[)）] の位置を返す。
 
     テキストブロック内のマッチ位置を線形補間して、ドラッグ開始・終了X座標を計算する。
     1件目を見つけたら即座に返す（1箇所のみの出現を想定）。
+    frameを指定した場合、年齢行のクロップを行って追加OCR検出も行う。
     Returns: (drag_start_x, drag_end_x, y) or None.
     """
-    pattern = re.compile(r'[〔（(\[]\s*(\d+)\s*才\s*[)）〕\]]')
-    for bbox, text, conf in all_results:
-        if conf < 0.1:
-            continue
-        m = pattern.search(text)
-        if m:
-            xs = [p[0] for p in bbox]
-            ys = [p[1] for p in bbox]
-            bx1 = int(min(xs))
-            bx2 = int(max(xs))
-            y_c = int(sum(ys) / len(ys))
-            # パターンの開始・終了位置を線形補間してドラッグ範囲を計算
-            text_len = max(len(text), 1)
-            ratio_start = m.start() / text_len
-            ratio_end = m.end() / text_len
-            drag_x1 = int(bx1 + ratio_start * (bx2 - bx1))
-            drag_x2 = int(bx1 + ratio_end * (bx2 - bx1))
-            print(f"  年齢パターン検出: '{m.group()}' in '{text}'")
-            print(f"    drag range: ({drag_x1}, {y_c}) -> ({drag_x2}, {y_c})")
-            return (drag_x1, drag_x2, y_c)
+    pattern = re.compile(r'[\u3014\uFF08\(\[]\s*(\d+)\s*[才\u6B73\u30B5\u30A8\u30C8\u571FL\u4E5D\uFF15]\s*[\u3015\uFF09\)\]]?')
+    
+    def _check_results(results, offset_x=0, offset_y=0, scale=1):
+        for bbox, text, conf in results:
+            if conf < 0.1:
+                continue
+            m = pattern.search(text)
+            if m:
+                xs = [p[0] for p in bbox]
+                ys = [p[1] for p in bbox]
+                # 拡大OCRの場合は座標を元に戻す
+                bx1 = int(min(xs) / scale) + offset_x
+                bx2 = int(max(xs) / scale) + offset_x
+                y_c = int(sum(ys) / len(ys) / scale) + offset_y
+                # パターンの開始・終了位置を線形補間してドラッグ範囲を計算
+                text_len = max(len(text), 1)
+                ratio_start = m.start() / text_len
+                ratio_end = m.end() / text_len
+                drag_x1 = int(bx1 + ratio_start * (bx2 - bx1))
+                drag_x2 = int(bx1 + ratio_end * (bx2 - bx1))
+                print(f"  年齢パターン検出: '{m.group()}' in '{text}'")
+                print(f"    drag range: ({drag_x1}, {y_c}) -> ({drag_x2}, {y_c})")
+                return (drag_x1, drag_x2, y_c)
+        return None
+    
+    # 1. 全体OCR結果で検索
+    result = _check_results(all_results)
+    if result:
+        return result
+    
+    # 2. 全体で見つからない場合、frameがあれば年齢行付近をクロップして追加OCR
+    if frame is not None:
+        # 「生年月日」「日生」「年齢」などのキーワードを含む行を検索
+        # 年齢行は全体OCRで誤認識されることが多いため、信頼度閾値を低く設定
+        age_row_y = None
+        for bbox, text, conf in all_results:
+            if conf < 0.01:
+                continue
+            # 年齢関連のキーワードをチェック
+            if any(kw in text for kw in ['生年', '年月日', '日生', '年齢', '歳', '才']):
+                ys = [p[1] for p in bbox]
+                y_c = int(sum(ys) / len(ys))
+                if age_row_y is None or y_c > age_row_y:
+                    age_row_y = y_c
+                print(f"  年齢行候補: y={y_c}, conf={conf:.2f}, text={repr(text)}")
+        
+        if age_row_y is not None:
+            h, w = frame.shape[:2]
+            # 年齢行付近をクロップ（y方向±50px、x方向全幅）
+            y1 = max(0, age_row_y - 50)
+            y2 = min(h, age_row_y + 50)
+            age_crop = frame[y1:y2, 0:w]
+            if age_crop.size > 0:
+                print(f"  年齢行クロップ: y={y1}-{y2}, size={age_crop.shape}")
+                # 4x拡大してOCR精度を向上
+                scale = 4
+                upscaled = cv2.resize(
+                    age_crop,
+                    (age_crop.shape[1] * scale, age_crop.shape[0] * scale),
+                    interpolation=cv2.INTER_CUBIC,
+                )
+                crop_results = run_ocr_backend(upscaled, backend="easyocr")
+                print(f"  クロップ拡大OCR結果: {len(crop_results)}件")
+                for bbox, text, conf in crop_results:
+                    print(f"    conf={conf:.2f}, text={repr(text)}")
+                
+                result = _check_results(crop_results, offset_x=0, offset_y=y1, scale=scale)
+                if result:
+                    return result
+    
     print("  年齢パターンは検出されませんでした")
     return None
 
@@ -635,65 +691,66 @@ def _find_kaime_number(
     return None, None
 
 
-def _find_date_digit_positions(
-    frame: np.ndarray, rleft: int, rright: int, ry: int
-) -> dict[str, tuple[int, int]]:
-    """令和ブロックを4倍拡大OCRして year/month/day の (center_x, right_edge_x) を返す。
+def _find_day_char_position(
+    frame: np.ndarray, kinen_right_x: int, reiwa_right_x: int, ry: int
+) -> int | None:
+    """OCRで「日」文字を検索し、その right_x を返す。
 
-    right_edge_x はダブルクリックを避けるため、数字の右端（直後の漢字の直前）の座標。
-    Returns: {'year': (center, right), 'month': (center, right), 'day': (center, right)} — 検出分のみ
+    記入日〜令和ブロックの同じ高さの行をクロップして4x拡大OCRする。
     """
     h, w = frame.shape[:2]
     scale = 4
-    margin = 10
-    y1 = max(0, ry - 22)
-    y2 = min(h, ry + 22)
-    x1_c = max(0, rleft - margin)
-    x2_c = min(w, rright + margin)
+    y1 = max(0, ry - 25)
+    y2 = min(h, ry + 25)
+    x1_c = max(0, kinen_right_x - 5)
+    x2_c = min(w, reiwa_right_x + 5)
     crop = frame[y1:y2, x1_c:x2_c]
     if crop.size == 0:
-        return {}
+        print("  [ERROR] 日文字検索クロップが空です")
+        return None
+
+    print(f"  日文字検索クロップ: x={x1_c}-{x2_c}, y={y1}-{y2}, size={crop.shape}")
+    
     upscaled = cv2.resize(
         crop,
         (crop.shape[1] * scale, crop.shape[0] * scale),
         interpolation=cv2.INTER_CUBIC,
     )
     crop_results = run_ocr_backend(upscaled, backend="easyocr")
-    positions: dict[str, tuple[int, int]] = {}
+    print(f"  日文字検索OCR結果: {len(crop_results)}件")
     for bbox, text, conf in crop_results:
-        if conf < 0.2:
+        print(f"    text={repr(text)} conf={conf:.2f}")
+    
+    for bbox, text, conf in crop_results:
+        if conf < 0.15:
             continue
-        xs = [p[0] for p in bbox]
-        bx1, bx2 = int(min(xs)), int(max(xs))
-        for landmark, key in [("年", "year"), ("月", "month"), ("日", "day")]:
-            if key in positions or landmark not in text:
+        if "日" in text:
+            # 「記入日」などの「日」は無視して、実際の日付の「日」を探す
+            if "記入" in text:
+                print(f"  日文字スキップ(記入日): {repr(text)} conf={conf:.2f}")
                 continue
-            idx = text.find(landmark)
-            before = text[:idx]
-            dm = re.search(r'(\d+)\s*$', before)
-            if not dm:
-                continue
-            digit = dm.group(1)
-            d_idx = before.rfind(digit)
-            # center of digit
-            center_char = d_idx + len(digit) / 2
-            ratio_c = center_char / max(len(text), 1)
-            cx_up = bx1 + ratio_c * (bx2 - bx1)
-            center_x = int(cx_up / scale + x1_c)
-            # right edge of digit (just before the following kanji)
-            ratio_r = (d_idx + len(digit)) / max(len(text), 1)
-            rx_up = bx1 + ratio_r * (bx2 - bx1)
-            right_edge_x = int(rx_up / scale + x1_c)
-            positions[key] = (center_x, right_edge_x)
-            print(f"  {key}数字位置(高解像度OCR): center={center_x}, right={right_edge_x} ({repr(text)} conf={conf:.2f})")
-    return positions
+            xs = [p[0] for p in bbox]
+            bx1 = int(min(xs))
+            bx2 = int(max(xs))
+            # テキスト中の「日」の位置を線形補間
+            idx = text.find("日")
+            if idx >= 0:
+                # 「日」文字の右端までの比率
+                ratio = (idx + 1) / max(len(text), 1)
+                right_edge_scaled = bx1 + ratio * (bx2 - bx1)
+                right_x = int(right_edge_scaled / scale + x1_c)
+                print(f"  日文字検出: right_x={right_x} ({repr(text)} conf={conf:.2f})")
+                return right_x
+
+    print("  [ERROR] 日文字が検出できませんでした")
+    return None
 
 
 
 def _word_care_plan_interaction(click_x: int, click_y: int, config) -> bool:
     """F2押下後: 4秒待機 → 同位置左クリック → Wordフレームキャプチャ → 記入日と回目の数字を更新。"""
-    print("4秒待機中 (Word 読み込み)...")
-    time.sleep(4.0)
+    print("5秒待機中 (Word 読み込み)...")
+    time.sleep(5.0)
 
     client = _wait_for_ble_connected()
     ok = client.switch_to_mouse_mode()
@@ -721,32 +778,37 @@ def _word_care_plan_interaction(click_x: int, click_y: int, config) -> bool:
         print("[ERROR] ヘッダー情報の検出に失敗しました", file=sys.stderr)
         return False
 
-    kinen_left_x  = header["kinen_left_x"]
-    kinen_right_x = header["kinen_right_x"]
     ry            = header["kinen_y"]
-    kaime_right_x = header["kaime_right_x"]
+    reiwa_left_x  = header["reiwa_left_x"]
+    reiwa_right_x = header["reiwa_right_x"]
 
-    # "記入日" トークンは3文字の漢字 → 1文字分の幅を推定
-    kinen_char_w = max(10, (kinen_right_x - kinen_left_x) // 3)
-    drag_start_x = max(0, kinen_left_x - kinen_char_w)
-    print(f"  ドラッグ範囲: ({drag_start_x}, {ry}) → ({kaime_right_x}, {ry})")
+    # --- 日付部分の削除 ---
+    # 同じ高さで「日」文字を直接OCR検索して右端位置を取得
+    day_right_x = _find_day_char_position(word_frame, header["kinen_right_x"], reiwa_right_x, ry)
+    if day_right_x is None:
+        print("[ERROR] 日付の'日'位置が検出できませんでした", file=sys.stderr)
+        return False
 
-    # ドラッグ選択: 記入日の1文字前 ～ 回目の右端
+    # ドラッグ範囲: 令和の左端 ～ 日の右端（「日」文字まで削除）
+    drag_start_x = reiwa_left_x
+    drag_end_x = day_right_x
+    print(f"  日付削除ドラッグ: ({drag_start_x}, {ry}) → ({drag_end_x}, {ry})")
+
     client.switch_to_mouse_mode()
     client.move_mouse_to_position(drag_start_x, ry)
     client.mouse_down()
     time.sleep(0.15)
-    client.move_mouse_to_position(kaime_right_x, ry)
+    client.move_mouse_to_position(drag_end_x, ry)
     time.sleep(0.15)
     client.mouse_up()
     time.sleep(0.3)
 
-    # 選択範囲を削除
     client.switch_to_keyboard_mode()
     client.press_key("backspace")
     time.sleep(0.3)
+    print("  日付部分を削除しました")
 
-    # 半角/全角キーで半角モードに切り替え (ehr_input.toggle_ime と同パターン)
+    # 半角/全角キーで半角モードに切り替え
     print("  [IME切替] 半角/全角 を送信")
     client.press_key("zenkaku")
     time.sleep(0.5)
@@ -757,10 +819,52 @@ def _word_care_plan_interaction(click_x: int, click_y: int, config) -> bool:
     print(f"  入力する日付: {date_str}")
     client.type_text(date_str)
     time.sleep(0.2)
+    print("  日付入力完了")
+
+    # --- 回目の数字の更新（別プロセス） ---
+    old_n, n_center_x = _find_kaime_number(
+        header["all_results"],
+        reiwa_right_x,
+        ry,
+        word_frame,
+        header["kaime_right_x"],
+    )
+    if old_n is None or n_center_x is None:
+        print("[ERROR] 回目の前の数字が検出できませんでした", file=sys.stderr)
+        return False
+
+    # 数字の幅を推定（右側テキストの1〜2文字分）
+    n_width = max(20, (header["kaime_right_x"] - header["kaime_left_x"]) // 2)
+    n_left_x = max(0, n_center_x - n_width // 2)
+    n_right_x = n_center_x + n_width // 2
+    print(f"  回目数字削除ドラッグ: ({n_left_x}, {ry}) → ({n_right_x}, {ry}) (old_n={old_n})")
+
+    client.switch_to_mouse_mode()
+    client.move_mouse_to_position(n_left_x, ry)
+    client.mouse_down()
+    time.sleep(0.15)
+    client.move_mouse_to_position(n_right_x, ry)
+    time.sleep(0.15)
+    client.mouse_up()
+    time.sleep(0.3)
+
+    client.switch_to_keyboard_mode()
+    client.press_key("backspace")
+    time.sleep(0.3)
+    print("  回目の数字を削除しました")
+
+    # 新しい数字を入力（スペースを先に入力）
+    new_n = old_n + 1
+    print(f"  入力する回目: {new_n}")
+    client.type_text(" ")  # 半角スペース
+    time.sleep(0.1)
+    client.type_text(str(new_n))
+    time.sleep(0.2)
+    print("  回目数字入力完了")
 
     # 年齢パターン (例: 〔93才)) の検出と削除
     print("年齢パターンを検出中...")
-    age_pos = _find_age_to_delete(header["all_results"])
+    age_pos = _find_age_to_delete(header["all_results"], frame=word_frame)
     if age_pos:
         drag_x1, drag_x2, age_y = age_pos
         client.switch_to_mouse_mode()

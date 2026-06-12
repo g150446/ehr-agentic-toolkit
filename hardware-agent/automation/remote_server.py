@@ -78,6 +78,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._run_module("automation.ehr_controller", "--open-note")
         elif self.path == "/run/open-test":
             self._run_module("automation.ehr_controller", "--open-test")
+        elif self.path == "/run/care-plan":
+            self._run_module("automation.ehr_controller", "--care-plan")
         else:
             self._json(404, {"error": "not found"})
 

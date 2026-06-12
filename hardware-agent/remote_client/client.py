@@ -94,10 +94,15 @@ def run_open_note(host: str, port: int, api_key: str) -> int:
     return _run_flow(host, port, api_key, "/run/open-note")
 
 
+def run_care_plan(host: str, port: int, api_key: str) -> int:
+    return _run_flow(host, port, api_key, "/run/care-plan")
+
+
 _COMMANDS: dict[str, str] = {
     "copy prev rx": "/run/copy-prev-rx",
     "open note":    "/run/open-note",
     "open test":    "/run/open-test",
+    "care plan":    "/run/care-plan",
 }
 
 
@@ -132,6 +137,7 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument("--copy-prev-rx", action="store_true", help="前回処方フローを実行")
     group.add_argument("--open-note", action="store_true", help="メモ帳を開く")
+    group.add_argument("--care-plan", action="store_true", help="療養計画書フローを実行")
     group.add_argument("--health", action="store_true", help="サーバーのヘルスチェック")
     args = parser.parse_args()
 
@@ -141,6 +147,8 @@ def main() -> None:
         sys.exit(run_copy_prev_rx(args.host, args.port, args.api_key))
     elif args.open_note:
         sys.exit(run_open_note(args.host, args.port, args.api_key))
+    elif args.care_plan:
+        sys.exit(run_care_plan(args.host, args.port, args.api_key))
     else:
         sys.exit(interactive_mode(args.host, args.port, args.api_key))
 
