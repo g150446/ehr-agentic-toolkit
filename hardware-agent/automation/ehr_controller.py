@@ -379,6 +379,39 @@ def _find_word_text_edges(
     return None
 
 
+def _find_age_to_delete(
+    all_results: list,
+) -> tuple[int, int, int] | None:
+    """OCR全結果から年齢パターン [（(]\d+才[)）] の位置を返す。
+
+    テキストブロック内のマッチ位置を線形補間して、ドラッグ開始・終了X座標を計算する。
+    1件目を見つけたら即座に返す（1箇所のみの出現を想定）。
+    Returns: (drag_start_x, drag_end_x, y) or None.
+    """
+    pattern = re.compile(r'[〔（(\[]\s*(\d+)\s*才\s*[)）〕\]]')
+    for bbox, text, conf in all_results:
+        if conf < 0.1:
+            continue
+        m = pattern.search(text)
+        if m:
+            xs = [p[0] for p in bbox]
+            ys = [p[1] for p in bbox]
+            bx1 = int(min(xs))
+            bx2 = int(max(xs))
+            y_c = int(sum(ys) / len(ys))
+            # パターンの開始・終了位置を線形補間してドラッグ範囲を計算
+            text_len = max(len(text), 1)
+            ratio_start = m.start() / text_len
+            ratio_end = m.end() / text_len
+            drag_x1 = int(bx1 + ratio_start * (bx2 - bx1))
+            drag_x2 = int(bx1 + ratio_end * (bx2 - bx1))
+            print(f"  年齢パターン検出: '{m.group()}' in '{text}'")
+            print(f"    drag range: ({drag_x1}, {y_c}) -> ({drag_x2}, {y_c})")
+            return (drag_x1, drag_x2, y_c)
+    print("  年齢パターンは検出されませんでした")
+    return None
+
+
 def _find_care_plan_header_bounds(
     frame: np.ndarray,
 ) -> tuple[int, int, int, int] | None:
@@ -724,6 +757,30 @@ def _word_care_plan_interaction(click_x: int, click_y: int, config) -> bool:
     print(f"  入力する日付: {date_str}")
     client.type_text(date_str)
     time.sleep(0.2)
+
+    # 年齢パターン (例: 〔93才)) の検出と削除
+    print("年齢パターンを検出中...")
+    age_pos = _find_age_to_delete(header["all_results"])
+    if age_pos:
+        drag_x1, drag_x2, age_y = age_pos
+        client.switch_to_mouse_mode()
+        client.move_mouse_to_position(drag_x1, age_y)
+        client.mouse_down()
+        time.sleep(0.15)
+        client.move_mouse_to_position(drag_x2, age_y)
+        time.sleep(0.15)
+        client.mouse_up()
+        time.sleep(0.3)
+        client.switch_to_keyboard_mode()
+        client.press_key("backspace")
+        time.sleep(0.3)
+        print("  年齢パターンを削除しました")
+
+    # 全処理完了後、IMEを半角モードに切り替え
+    print("  [IME切替] 半角/全角 を送信")
+    client.switch_to_keyboard_mode()
+    client.press_key("zenkaku")
+    time.sleep(0.5)
 
     print("ヘッダー更新完了")
     return True
