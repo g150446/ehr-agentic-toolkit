@@ -298,14 +298,22 @@ def _detect_edit_button_bottom(
     x_start: int,
     x_end: int,
     *,
+    template_path: Path | str | None = None,
     threshold: float = 0.7,
 ) -> int | None:
-    """過去カルテパネル内の printer_button.png を検出し、下側一致位置の下端 y 座標を返す。"""
-    template_path = (
-        Path(__file__).resolve().parent.parent
-        / "match_templates"
-        / "printer_button.png"
-    )
+    """パネル内のテンプレート画像を検出し、下側一致位置の下端 y 座標を返す。
+
+    template_path が None の場合は match_templates/printer_button.png を使用する。
+    """
+    if template_path is None:
+        template_path = (
+            Path(__file__).resolve().parent.parent
+            / "match_templates"
+            / "printer_button.png"
+        )
+    template_path = Path(template_path)
+    template_name = template_path.name
+
     if not template_path.exists():
         print(f"[WARNING] テンプレート画像が見つかりません: {template_path}")
         return None
@@ -334,7 +342,7 @@ def _detect_edit_button_bottom(
     best_x, best_y = max(points, key=lambda p: p[1])
     bottom_y = best_y + h
 
-    print(f"  printer_button 検出: ({best_x + x_start}, {best_y})〜({best_x + x_start + w}, {bottom_y}) (score={result[best_y, best_x]:.3f})")
+    print(f"  {template_name} 検出: ({best_x + x_start}, {best_y})〜({best_x + x_start + w}, {bottom_y}) (score={result[best_y, best_x]:.3f})")
     return bottom_y
 
 

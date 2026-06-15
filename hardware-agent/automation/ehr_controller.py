@@ -238,16 +238,23 @@ def _find_care_plan_row(
 ) -> tuple[int, int] | None:
     """書状タブのテーブルから keyword を含む行を検出し、最上位行の全画面座標 (x, y) を返す。
 
-    1. printer_button.png でコンテンツ開始 y を検出（失敗時は OCR で「表示名」を探す）
+    1. new-letter.jpg でコンテンツ開始 y を検出（失敗時は OCR で「表示名」を探す）
     2. 書状パネル領域を切り出して OCR
     3. keyword を含む結果を y 昇順でソートし最小 y の行を返す
     """
     x_start = dividers[0]
     x_end = dividers[1]
 
-    y_start = _detect_edit_button_bottom(frame, x_start, x_end)
+    template_path = (
+        Path(__file__).resolve().parent.parent
+        / "match_templates"
+        / "new-letter.jpg"
+    )
+    y_start = _detect_edit_button_bottom(
+        frame, x_start, x_end, template_path=template_path
+    )
     if y_start is None:
-        print("  printer_button 未検出 → OCR で「表示名」を検索してフォールバック...")
+        print("  new-letter 未検出 → OCR で「表示名」を検索してフォールバック...")
         panel = frame[:, x_start:x_end]
         ocr_results = run_ocr_backend(panel, backend="ndlocr")
         y_start = None
@@ -307,8 +314,8 @@ def _find_care_plan_row(
         if keyword in text:
             xs = [p[0] for p in bbox]
             ys = [p[1] for p in bbox]
-            cx = x_start + int(sum(xs) / len(xs))
-            cy = y_start + int(sum(ys) / len(ys))
+            cx = int(x_start) + int(sum(xs) / len(xs))
+            cy = int(y_start) + int(sum(ys) / len(ys))
             candidates.append((cy, cx, text, conf))
             print(f"  '{keyword}' 候補: text='{text}' conf={conf:.2f} 座標=({cx}, {cy})")
 
