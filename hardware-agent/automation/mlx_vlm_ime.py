@@ -344,6 +344,7 @@ def _find_gray_divider_candidates(
     spread_max: int = 14,
     value_min: int = 120,
     coverage_ratio: float = 0.45,
+    kernel_h_div: int = 6,
 ) -> list[int]:
     h, w = frame.shape[:2]
     y1 = int(h * 0.05)
@@ -355,12 +356,13 @@ def _find_gray_divider_candidates(
     spread = np.maximum(np.maximum(b, g), r) - np.minimum(np.minimum(b, g), r)
     value = ((b + g + r) / 3.0)
     mask = ((spread <= spread_max) & (value >= value_min) & (value <= 235)).astype(np.uint8) * 255
-    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, max(25, (y2 - y1) // 6)))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(25, (y2 - y1) // kernel_h_div)))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, vertical_kernel)
     mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 15)))
 
     col_strength = np.count_nonzero(mask, axis=0)
     threshold = max(int((y2 - y1) * coverage_ratio), 40)
+    edge_margin = max(5, w // 100)
     candidates: list[int] = []
     start: Optional[int] = None
     for x, strength in enumerate(col_strength):
@@ -368,13 +370,15 @@ def _find_gray_divider_candidates(
             start = x
         elif strength < threshold and start is not None:
             end = x - 1
-            if 1 <= end - start + 1 <= max(18, w // 30):
-                candidates.append((start + end) // 2)
+            cx = (start + end) // 2
+            if 1 <= end - start + 1 <= max(18, w // 30) and edge_margin <= cx <= w - edge_margin:
+                candidates.append(cx)
             start = None
     if start is not None:
         end = len(col_strength) - 1
-        if 1 <= end - start + 1 <= max(18, w // 30):
-            candidates.append((start + end) // 2)
+        cx = (start + end) // 2
+        if 1 <= end - start + 1 <= max(18, w // 30) and edge_margin <= cx <= w - edge_margin:
+            candidates.append(cx)
     return candidates
 
 

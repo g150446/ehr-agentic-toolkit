@@ -929,8 +929,9 @@ def main(argv: list[str] | None = None) -> int:
             print("[ERROR] HDMIキャプチャデバイスからフレームを取得できませんでした", file=sys.stderr)
             return 1
 
+        _save_debug_frame(frame, "care_plan_full")
         print("区切り線を検出中...")
-        dividers = _detect_all_dividers(frame)
+        dividers = _detect_all_dividers(frame, debug=True)
         if dividers is None:
             print("[ERROR] 患者カルテ画面の区切り線（太いグレーの縦線3本）を検出できませんでした", file=sys.stderr)
             return 1

@@ -177,6 +177,7 @@ def _select_thick_gray_dividers(
     spread_max: int = 14,
     value_min: int = 120,
     coverage_ratio: float = 0.45,
+    kernel_h_div: int = 6,
 ) -> list[int]:
     """太いグレーの縦線を優先して num_lines 本を選ぶ。"""
     gray_candidates = _find_gray_divider_candidates(
@@ -184,6 +185,7 @@ def _select_thick_gray_dividers(
         spread_max=spread_max,
         value_min=value_min,
         coverage_ratio=coverage_ratio,
+        kernel_h_div=kernel_h_div,
     )
     if not gray_candidates:
         return []
@@ -215,6 +217,7 @@ def _try_detect_dividers(
     spread_max: int = 14,
     value_min: int = 120,
     coverage_ratio: float = 0.45,
+    kernel_h_div: int = 6,
     debug: bool = False,
 ) -> Optional[list[int]]:
     """指定パラメータで区切り線を検出し、3本見つかれば座標を返す。"""
@@ -225,6 +228,7 @@ def _try_detect_dividers(
         spread_max=spread_max,
         value_min=value_min,
         coverage_ratio=coverage_ratio,
+        kernel_h_div=kernel_h_div,
     )
 
     if debug:
@@ -235,6 +239,7 @@ def _try_detect_dividers(
             spread_max=spread_max,
             value_min=value_min,
             coverage_ratio=coverage_ratio,
+            kernel_h_div=kernel_h_div,
         )
         for x in gray_candidates:
             cv2.line(overlay, (x, 0), (x, h - 1), (0, 215, 255), 1)
@@ -274,6 +279,24 @@ def _detect_all_dividers(
     )
     if accepted is not None:
         print(f"    第2段階で成功: {accepted[:3]}")
+        return accepted[:3]
+
+    # 第3段階: 短いカーネル（分断された細い縦線に対応）
+    print("  区切り線検出 第3段階（短カーネル: spread≤14, value≥120, カバレッジ25%, kernel÷20）...")
+    accepted = _try_detect_dividers(
+        frame, spread_max=14, value_min=120, coverage_ratio=0.25, kernel_h_div=20, debug=debug,
+    )
+    if accepted is not None:
+        print(f"    第3段階で成功: {accepted[:3]}")
+        return accepted[:3]
+
+    # 第4段階: 最大緩和パラメータ
+    print("  区切り線検出 第4段階（最大緩和パラメータ: spread≤50, value≥60, カバレッジ15%）...")
+    accepted = _try_detect_dividers(
+        frame, spread_max=50, value_min=60, coverage_ratio=0.15, debug=debug,
+    )
+    if accepted is not None:
+        print(f"    第4段階で成功: {accepted[:3]}")
         return accepted[:3]
 
     print("    検出失敗")
