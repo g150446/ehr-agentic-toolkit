@@ -541,6 +541,116 @@ python -m automation.gui_image_analyzer \
 
 ---
 
+## CXR Crop
+
+Crops the chest X-ray (CXR) region out of an HDMI capture of the PSP Viewer reading screen (読影画面), and blacks out the viewer's burned-in annotations (e.g. `立位 P→A`). Layout-driven, no VLM required — used as the ROI-extraction step for `MEDGEMMA_CXR_COMMENT_PLAN.md`.
+
+### Quick Start
+
+Normal usage needs nothing but `--image` (or `--device` for HDMI) and `--out` — auto-detection handles the crop. `--roi` / `--full` below are fallbacks for when auto-detection picks the wrong region; **do not add `--full` to the basic command**, it deliberately skips cropping and returns the whole screen.
+
+```bash
+# Crop from an image file (auto-detect — this is the normal case)
+python -m automation.cxr_crop --image captures/xray.jpg --out /tmp/cxr.png
+
+# Crop from a live HDMI capture (auto-detect)
+python -m automation.cxr_crop --device 0 --out /tmp/cxr.png
+
+# Fallback: auto-detection picked the wrong region → specify it manually
+python -m automation.cxr_crop --image captures/xray.jpg --roi 600,330,692,674 --out /tmp/cxr.png
+
+# Fallback: skip cropping entirely and keep the whole screen
+python -m automation.cxr_crop --image captures/xray.jpg --full --out /tmp/cxr.png
+
+# Save intermediate masks to inspect the detection
+python -m automation.cxr_crop --image captures/xray.jpg --out /tmp/cxr.png --debug
+```
+
+### How It Works
+
+1. **Viewer frame**: find the pure-blue selection frame the viewer draws around the active image pane.
+2. **Radiograph blob**: inside that pane (or the full screen if no frame is found), find the large achromatic bright blob — grayscale saturation is what separates a radiograph from the surrounding UI chrome.
+3. **Candidate filter**: reject blobs that are too small, cover almost the whole screen, or aren't roughly square (aspect ratio 0.5–2.0).
+4. **Overlay masking** (default on): black out every pixel not connected to the anatomy component. Burned-in annotations sit on the radiograph's black background, so they're never part of that component and are removed without touching the anatomy. Annotations drawn directly over the lung fields stay connected and survive — use `--roi` to work around those.
+5. **Sanity check**: reject the result if it isn't grayscale-ish (mean saturation) or has no contrast (flat gray std) — signals a wrong region was picked.
+
+If nothing passes the filter, the command exits non-zero and suggests `--full` or `--roi`.
+
+### Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--image PATH` | Input image (default: capture from HDMI) |
+| `--device N` | Capture device index (default: from config) |
+| `--roi x,y,w,h` | Manual ROI, bypasses auto-detection |
+| `--full` | Treat the whole image as the CXR, bypasses auto-detection |
+| `--no-mask-overlay` | Keep viewer annotations inside the crop |
+| `--out PATH` | Save the cropped image |
+| `--debug` | Save intermediate masks/overlay to `--debug-dir` (default `./automation_outputs/cxr_crop`) |
+| `--env-file PATH` | Custom `.env` path |
+
+### Known Limitation
+
+Measurement lines or annotations drawn **directly over the lung fields** merge with the anatomy component and are not masked out. Use `--debug` to inspect `cxr_blob_mask*.png` / `cxr_detection*.png`, then fall back to `--roi` if needed.
+
+---
+
+## MedGemma CXR Comment
+
+Runs [`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it) on a chest X-ray and prints a short, non-diagnostic pulmonary nodule screening comment. Accepts either an already-cropped CXR image directly, or a raw screen capture that gets cropped via `automation.cxr_crop` first.
+
+**Educational / experimental use only — not for clinical diagnosis.**
+
+### Quick Start
+
+```bash
+# Read an already-cropped CXR image directly (no crop step)
+python -m automation.medgemma_cxr_comment --image captures/cxr.png
+
+# Crop a screen capture first, then read it
+python -m automation.medgemma_cxr_comment --capture captures/xray.jpg
+
+# Crop a live HDMI capture first, then read it
+python -m automation.medgemma_cxr_comment --device 0
+
+# Continuous mode, reusing the loaded model (Ctrl+C to stop)
+python -m automation.medgemma_cxr_comment --capture captures/xray.jpg --watch 10
+
+# Save the capture/crop image and comment text
+python -m automation.medgemma_cxr_comment --capture captures/xray.jpg --save-dir ./out
+```
+
+### How It Works
+
+1. **Input**: `--image` is used as-is (already the CXR). `--capture`/`--device` go through `automation.cxr_crop.crop_cxr()` first (same `--roi`/`--full`/`--no-mask-overlay` options as `cxr_crop`).
+2. **Model load**: `transformers.pipeline("image-text-to-text", ...)` with a single `device=` (mps/cuda/cpu), not `device_map="auto"` — this avoids requiring `accelerate`. Runs unquantized in bf16 (fits Apple Silicon unified memory at 4B params).
+3. **Prompt**: asks MedGemma to focus on pulmonary nodules/masses and explicitly state presence or absence (plus approximate location if present), ending with a line starting `Comment:`. Override with `--prompt` for a different focus. MedGemma 1.5's thinking trace (between `<unused94>`/`<unused95>` tokens) is stripped before parsing.
+4. **Output**: prints the source, crop bbox, model/device, and the extracted `Comment:` line, followed by a disclaimer.
+5. A bad crop (non-CXR input) is detected **before** the model loads, so a failing run doesn't pay the multi-second load cost.
+
+### Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--image PATH` | Already-cropped CXR image; used as-is (no crop step) |
+| `--capture PATH` | Raw screen capture image; cropped via `automation.cxr_crop` first |
+| `--device N` | HDMI capture device index (default: from config); used when `--image`/`--capture` are omitted |
+| `--roi x,y,w,h` / `--full` / `--no-mask-overlay` | Passed through to `crop_cxr()` (see CXR Crop above); only relevant with `--capture`/`--device` |
+| `--model ID` | Hugging Face model ID (default: `google/medgemma-1.5-4b-it`) |
+| `--compute-device {auto,mps,cuda,cpu}` | Inference device (default: `auto` = mps > cuda > cpu) |
+| `--max-new-tokens N` | Max generated tokens (default: 300) |
+| `--prompt TEXT` | Override the default findings-comment prompt |
+| `--watch SEC` | Repeat every N seconds, reusing the loaded model (not compatible with `--image`) |
+| `--save-dir DIR` | Save the capture/crop image and comment text |
+| `--debug` / `--debug-dir DIR` | Debug logging + intermediate crop images |
+| `--env-file PATH` | Custom `.env` path |
+
+### Requirements
+
+Uses packages already present in `hardware-agent/venv` (torch, transformers, huggingface_hub, Pillow, opencv) — no extra install needed. MedGemma is gated on Hugging Face; you need an accepted-license, authenticated `huggingface-cli login` (or `HF_TOKEN`) before first use, and enough disk space for the ~8GB model download (cached under `~/.cache/huggingface/hub`).
+
+---
+
 ## HDMI Capture Stream Monitor
 
 Real-time video streaming tool for HDMI capture devices with optional UI detection overlay. Runs independently from the chat interface.
