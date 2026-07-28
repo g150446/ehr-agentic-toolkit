@@ -63,6 +63,7 @@ from automation.ehr_reader import (
     _wait_for_ble_connected,
     _build_runtime_config,
     _unload_omlx_model,
+    _vlm_post_json,
     _OMLX_DEFAULT_MODEL,
 )
 
@@ -330,17 +331,7 @@ def _generate_summary(
         "max_tokens": 2048,
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers=headers,
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
 
     return result["choices"][0]["message"]["content"]
 
@@ -874,13 +865,25 @@ def _read_past_chart_scroll(
     print(f"切り出しサイズ: {past_chart.shape[1]}x{past_chart.shape[0]} px")
 
     print("\nVLM で過去カルテの表構造を読み取り中...")
-    raw_md = _read_past_chart_as_markdown(
-        past_chart,
-        model=runtime["chart_model"],
-        url=runtime["url"],
-        api_key=runtime["api_key"],
-        timeout=MLX_VLM_IME_TIMEOUT,
-    )
+    raw_md = None
+    for _attempt in (1, 2):
+        try:
+            raw_md = _read_past_chart_as_markdown(
+                past_chart,
+                model=runtime["chart_model"],
+                url=runtime["url"],
+                api_key=runtime["api_key"],
+                timeout=MLX_VLM_IME_TIMEOUT,
+            )
+            break
+        except RuntimeError as exc:
+            print(f"[ERROR] 過去カルテVLM呼び出し失敗(試行{_attempt}/2): {exc}", file=sys.stderr)
+            if _attempt == 1:
+                print("  2秒後にリトライします...", file=sys.stderr)
+                time.sleep(2.0)
+    if raw_md is None:
+        print("[ERROR] 過去カルテの読み取りに失敗しました（VLMサーバーエラー）。処理を中断します。", file=sys.stderr)
+        return []
     print(f"\n--- VLM マークダウン出力 ---\n{raw_md}\n--- 終了 ---\n")
     print("VLM で JSON を生成中...")
     _continuation_initial, structured = _build_json_from_markdown(
@@ -998,17 +1001,25 @@ def _read_past_chart_scroll(
             continue
 
         print(f"\n[セット {iteration}] VLM で表構造を読み取り中...")
-        try:
-            raw_md = _read_past_chart_as_markdown(
-                past_chart,
-                ocr_text=pre_ocr_text,
-                model=runtime["chart_model"],
-                url=runtime["url"],
-                api_key=runtime["api_key"],
-                timeout=MLX_VLM_IME_TIMEOUT,
-            )
-        except RuntimeError as exc:
-            print(f"[ERROR] VLM呼び出し失敗: {exc}", file=sys.stderr)
+        raw_md = None
+        for _attempt in (1, 2):
+            try:
+                raw_md = _read_past_chart_as_markdown(
+                    past_chart,
+                    ocr_text=pre_ocr_text,
+                    model=runtime["chart_model"],
+                    url=runtime["url"],
+                    api_key=runtime["api_key"],
+                    timeout=MLX_VLM_IME_TIMEOUT,
+                )
+                break
+            except RuntimeError as exc:
+                print(f"[ERROR] VLM呼び出し失敗(試行{_attempt}/2): {exc}", file=sys.stderr)
+                if _attempt == 1:
+                    print("  サーバー安定化待機後にリトライします...", file=sys.stderr)
+                    time.sleep(5.0)
+        if raw_md is None:
+            print("[ERROR] スクロール中のVLM呼び出しに失敗しました。取得済みのデータで続行します。", file=sys.stderr)
             break
         last_entry = structured[-1] if structured else {}
         continuation, raw_new_entries = _build_json_from_markdown(

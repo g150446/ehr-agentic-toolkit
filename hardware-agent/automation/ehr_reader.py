@@ -89,6 +89,39 @@ def _save_vlm_log(name: str, prompt: str, response: str) -> None:
     print(f"  [debug] VLMログ保存: {path}")
 
 
+def _vlm_post_json(url: str, payload: dict, *, api_key: str, timeout: float) -> dict:
+    """VLM (OpenAI 互換 chat/completions) に JSON を POST し、解析済みレスポンスを返す。
+
+    全 VLM 呼び出しで共通の HTTP/エラー処理を集約する。
+    HTTPError の場合はサーバーが返した本文（メモリガードの拒否理由など）を
+    例外メッセージに含めることで、原因を即座に特定できるようにする。
+    """
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+        excerpt = body[:1500] if body else "(応答本文なし)"
+        raise RuntimeError(f"VLMサーバーがHTTP {exc.code}を返しました: {excerpt}") from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"VLMサーバーへの接続に失敗しました: {exc}") from exc
+
+    # HTTP 200 でも choices 無し（メモリ圧迫時のモデルアンロード/ディープリセット等のソフトエラー）を検出。
+    # これを RuntimeError に変換することで、呼び出し側の except RuntimeError ハンドラで処理できるようにする。
+    if not isinstance(data.get("choices"), list) or not data["choices"]:
+        body = json.dumps(data, ensure_ascii=False)[:1500]
+        raise RuntimeError(
+            f"VLM応答に choices が含まれません（サーバーアンロード/リセットの可能性）: {body}"
+        )
+    return data
+
+
 def _parse_jp_date(date_str: str) -> "_date":
     """'YYYY年MM月DD日' → datetime.date。パース失敗時は datetime.date.min を返す。"""
     m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_str)
@@ -780,16 +813,7 @@ def _read_past_chart_with_vlm_merge(
         "max_tokens": 4096,
     }
 
-    headers = {"Content-Type": "application/json"}
-    headers["Authorization"] = f"Bearer {api_key}"
-
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers=headers,
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
 
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("past_chart_merge", prompt, raw)
@@ -868,10 +892,7 @@ def _find_new_entries_with_vlm(
         "max_tokens": 2048,
     }
 
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
 
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("find_new_entries", prompt, raw)
@@ -931,10 +952,7 @@ def _process_scroll_with_vlm(
         "max_tokens": 4096,
     }
 
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
 
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("scroll", prompt, raw)
@@ -1017,13 +1035,7 @@ def _read_past_chart_as_markdown(
         "stream": False,
         "max_tokens": 4096,
     }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read())
-    except (urllib.error.URLError, OSError) as exc:
-        raise RuntimeError(f"VLMサーバーへの接続に失敗しました: {exc}") from exc
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("past_chart_markdown", prompt, raw)
     return raw
@@ -1153,10 +1165,7 @@ def _build_json_from_markdown(
         "stream": False,
         "max_tokens": 4096,
     }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
 
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("past_chart_from_markdown", prompt, raw)
@@ -1444,10 +1453,7 @@ def _extract_dates_from_text(
         "stream": False,
         "max_tokens": 256,
     }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("extract_dates", prompt, raw)
     raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()
@@ -1486,10 +1492,7 @@ def _check_admission_reached(
         "stream": False,
         "max_tokens": 256,
     }
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read())
+    result = _vlm_post_json(url, payload, api_key=api_key, timeout=timeout)
     raw = result["choices"][0]["message"]["content"]
     _save_vlm_log("find_admission", prompt, raw)
     raw = re.sub(r"```json\s*", "", raw, flags=re.DOTALL).strip()

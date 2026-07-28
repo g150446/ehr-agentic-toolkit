@@ -81,6 +81,31 @@ python -m automation.ehr_input "open test" "MRI所見"
 python -m automation.ehr_input "open test" data/patient_records/asthma_1.txt
 ```
 
+### Dual Notepad IME
+
+Reads a text file and inputs it into **two Notepad windows** via IME conversion:
+- **Conversion Notepad** (maximized): Used for Japanese IME conversion.
+- **Result Notepad** (maximized): Receives the converted text line by line.
+
+The script switches between the two windows with **Alt+Tab** and uses **Ctrl+A → Ctrl+X → Ctrl+V** to move text.
+
+```bash
+# Basic usage
+python -m automation.dual_notepad_ime input.txt
+
+# Using venv
+./venv/bin/python -m automation.dual_notepad_ime input.txt
+```
+
+**Prerequisites:**
+- `ble_server.py` must be running
+- omlx VLM server (`http://localhost:8000`) must be running for Japanese kanji conversion
+- HDMI capture device must be connected for IME mode detection
+
+**Notes:**
+- Do not bring other windows to the foreground while the script is running; Alt+Tab relies on the two Notepad windows being the most recent windows.
+- Empty lines in the source file are preserved as blank lines in the result Notepad.
+
 When given Japanese text, `ehr_input.py` uses **Gemma 4 26B** as the main model for segment splitting, corrects romaji via a local dictionary, and then inputs through IME. If Gemma's splitting is too fine-grained and destabilizes IME candidates, it automatically falls back to `sudachipy + pykakasi` local segmentation. If the argument is a readable text file, its **contents** flow into the same input pipeline. In helper reset, **the patient_record third pane coordinates are detected once at command start and validated by VLM, and the same coordinates are reused for subsequent compare crops**. On the comparison string side, an **anchor tail** consisting of the last Japanese anchor concatenated with any immediately following confirmed ASCII/symbol suffix (e.g., `症状(`) is used for baseline/compare, so even if that suffix remains after Escape, it is judged as a normal reset completion.
 
 Full-width symbols that should be displayed as-is are currently given special handling: **`、` `。` `・` `ー` `〜` `「` `」` `『` `』`**. `、` `。` `・` `〜` `「` `」` `『` `』` are **isolated as standalone tokens** from surrounding words and sent in Japanese mode, then immediately confirmed with **Enter**. **The long vowel mark `ー` is only instantly confirmed when it appears alone**; when it follows hiragana or katakana, it is kept as part of that word and converted/confirmed together (e.g., `コーテフ`, `えーと`, `アレルギー`). Other full-width symbols (e.g., `（` `）` `％` `：` `［` `］` `【` `】`) are currently **normalized to half-width ASCII** before sending.

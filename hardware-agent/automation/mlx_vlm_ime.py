@@ -211,6 +211,7 @@ def _build_google_ai_studio_request(
 
 _MIN_FRAME_HEIGHT = 80
 _MIN_FRAME_WIDTH = 200
+_MAX_FRAME_LONG_EDGE = 768
 
 
 def _captures_dir() -> str:
@@ -255,6 +256,21 @@ def _ensure_min_size(frame: np.ndarray) -> np.ndarray:
     if scale <= 1.0:
         return frame
     return cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+
+
+def _ensure_max_size(frame: np.ndarray, *, max_long_edge: int = _MAX_FRAME_LONG_EDGE) -> np.ndarray:
+    """VLM の vision トークン数を抑えるため、長辺が上限を超える場合は縮小する（アスペクト比維持）。
+
+    Gemma-3 系 VLM は画像を 256px タイルに分割してトークン化するため、
+    画像が大きいと vision トークンが増大し、oMLX の prefill memory guard に弾かれる。
+    長辺を 768px に抑えることで安定してタイル数を最小化する。
+    """
+    h, w = frame.shape[:2]
+    long_edge = max(h, w)
+    if long_edge <= max_long_edge:
+        return frame
+    scale = max_long_edge / float(long_edge)
+    return cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
 
 def reset_active_typing_line_hint() -> None:
@@ -309,6 +325,7 @@ def crop_to_active_typing_line(
 def _encode_image_data_url(frame: np.ndarray, *, debug_name: str = "") -> str:
     """numpy BGR フレームを data URI 形式の PNG base64 文字列に変換する。"""
     frame = _ensure_min_size(frame)
+    frame = _ensure_max_size(frame)
     if debug_name:
         _save_debug_frame(frame, name=debug_name, prefix="debug_vlm_input")
     ok, encoded = cv2.imencode(".png", frame)
